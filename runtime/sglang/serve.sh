@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # SGLang is the agent/tool-calling runtime target for SHINRA-Agent.
-# Do not pass Qwen mrope_section. SHINRA v1 is text-only RoPE.
+# SHINRA v1 is text-only RoPE.
 
 CKPT="${1:?path or Hub id of SHINRA checkpoint}"
 PORT="${PORT:-30000}"

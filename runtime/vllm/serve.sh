@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Target vLLM serve for SHINRA weights. Requires a vLLM Shinra plugin
-# or Transformers backend with trust_remote_code. Not Qwen MRoPE.
+# or Transformers backend with trust_remote_code.
 
 CKPT="${1:?path or Hub id of SHINRA checkpoint}"
 PORT="${PORT:-8000}"

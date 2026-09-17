@@ -137,7 +137,7 @@ python -m inference.generate --model $CKPT --prompt "Write RMSNorm in PyTorch."
 python -m inference.server --model $CKPT --port 8000
 ```
 
-Serving engines (vLLM / SGLang / TokenSpeed) — [`runtime/`](runtime/README.md). Это не обучение. Qwen3.8 MRoPE не копируем: SHINRA v1 text-only.
+Serving engines (vLLM / SGLang / TokenSpeed) — [`runtime/`](runtime/README.md). Это не обучение.
 
 ---
 

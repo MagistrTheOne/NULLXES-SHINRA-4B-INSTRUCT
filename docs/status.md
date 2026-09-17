@@ -25,11 +25,7 @@ dataset stream (sample-10BT)
 
 Pilot mix 50/25/15/10, language 70/15/10/5, disk <150GB. Not FineWeb 1.3T. Not 200B.
 
-## What Qwen3.8-27B is (Hub-verified)
-
-[Qwen/Qwen3.8-27B](https://huggingface.co/Qwen/Qwen3.8-27B): `image-text-to-text`, `Qwen3_5ForConditionalGeneration`, vision encoder, Gated DeltaNet hybrid, MRoPE `[11,11,10]`, native 262k, YaRN to 1M **in vLLM/SGLang/TokenSpeed**. That is a VLM serving stack. SHINRA v1 is language-only.
-
-vLLM/SGLang/TokenSpeed = **inference engines**. SHINRA uses them as `runtime/`, not in FSDP pretrain. Do not copy MRoPE into SHINRA-4B.
+vLLM / SGLang / TokenSpeed — inference (`runtime/`), не FSDP pretrain.
 
 ## Roadmap
 
@@ -38,4 +34,5 @@ vLLM/SGLang/TokenSpeed = **inference engines**. SHINRA uses them as `runtime/`, 
 3. SHINRA-4B BASE v0.1 — 20–50B tokens on RunPod / 10TB
 4. SHINRA-4B BASE v1 — 100–200B
 5. SHINRA-Agent — SGLang/vLLM + tools + repo tokens
-6. SHINRA-M — CERBER vision encoder + multimodal adapter (MRoPE only then)
+6. SHINRA-M — CERBER vision encoder + multimodal adapter
+
