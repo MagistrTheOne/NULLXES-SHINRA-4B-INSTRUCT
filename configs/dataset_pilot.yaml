@@ -1,0 +1,69 @@
+# SHINRA-COLAB-PILOT — hypothesis corpus, not the 200B lake.
+# Disk cap <150GB. Streaming only. FineWeb sample-10BT, never the full 1.3T dump.
+
+dataset:
+  name: SHINRA-COLAB-PILOT
+  pilot_tokens: 5000000000
+  colab_session_tokens: 100000000
+  format: parquet
+  sequence_length: 2048
+
+mix:
+  general:
+    weight: 0.50
+    sources:
+      - hf_id: HuggingFaceFW/fineweb-edu
+        subset: sample-10BT
+        split: train
+        text_field: text
+        domain: web
+  code:
+    weight: 0.25
+    sources:
+      - hf_id: HuggingFaceTB/smollm-corpus
+        subset: python-edu
+        split: train
+        text_field: text
+        domain: code
+      - hf_id: bigcode/the-stack-smol-xl
+        subset: null
+        split: train
+        text_field: content
+        domain: code
+  math_stem:
+    weight: 0.15
+    sources:
+      - hf_id: open-web-math/open-web-math
+        subset: null
+        split: train
+        text_field: text
+        domain: math
+  multilingual:
+    weight: 0.10
+    sources:
+      - hf_id: wikimedia/wikipedia
+        subset: 20231101.ru
+        split: train
+        text_field: text
+        domain: encyclopedia
+      - hf_id: wikimedia/wikipedia
+        subset: 20231101.zh
+        split: train
+        text_field: text
+        domain: encyclopedia
+
+language_quotas:
+  en: 0.70
+  ru: 0.15
+  zh: 0.10
+  other: 0.05
+
+storage:
+  streaming: true
+  cache_dir: /content/shinra_cache
+  scratch_dir: /content/shinra_scratch
+  max_disk_gb: 150
+
+tokenizer_corpus:
+  max_chars: 2000000000
+  output: tokenizer/corpus

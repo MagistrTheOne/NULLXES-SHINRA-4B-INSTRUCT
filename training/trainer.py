@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
-import math
 import os
+import subprocess
+import math
 import time
 from pathlib import Path
 
@@ -114,9 +115,22 @@ def run_lm_training(cfg: TrainConfig) -> None:
         kwargs_handlers=[ddp_kwargs],
     )
     if cfg.wandb_project and accelerator.is_main_process:
+        commit = "unknown"
+        try:
+            commit = subprocess.check_output(
+                ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1], text=True
+            ).strip()
+        except Exception:
+            pass
         accelerator.init_trackers(
             cfg.wandb_project,
-            config=cfg.__dict__ | {"stage": cfg.stage},
+            config={
+                **{k: str(v) for k, v in cfg.__dict__.items()},
+                "stage": cfg.stage,
+                "git_commit": commit,
+                "config_path": str(cfg.model_config),
+                "train_config": str(cfg.model_config),
+            },
             init_kwargs={"wandb": {"name": cfg.wandb_run_name or f"shinra-{cfg.stage}"}},
         )
 
@@ -181,6 +195,7 @@ def run_lm_training(cfg: TrainConfig) -> None:
                 avg = running / cfg.logging_steps
                 ppl = math.exp(min(avg, 20))
                 lr = scheduler.get_last_lr()[0]
+                nan_flag = not math.isfinite(avg)
                 metrics = {
                     "loss": avg,
                     "ppl": ppl,
@@ -188,6 +203,7 @@ def run_lm_training(cfg: TrainConfig) -> None:
                     "tokens": tokens,
                     "tokens_per_sec": tps,
                     "step": step,
+                    "nan": int(nan_flag),
                 }
                 accelerator.log(metrics, step=step)
                 progress.set_postfix(loss=f"{avg:.4f}", ppl=f"{ppl:.2f}", tps=f"{tps:.0f}")

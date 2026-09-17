@@ -8,4 +8,6 @@
 # accelerate_a100_multinode.yaml
 # tokenizer.yaml
 # data_mix.yaml
-# colab.yaml                  Google Colab Pro A100 40GB bring-up (not RTX 2080)
+# dataset_pilot.yaml          SHINRA-COLAB-PILOT 5B spec / 100M session
+# colab.yaml                  Google Colab Pro A100 80GB
+# pretrain_colab_100m.yaml    hypothesis 100M tokens

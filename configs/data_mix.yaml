@@ -1,3 +1,4 @@
+# Production pretrain mix (cluster). Colab uses configs/dataset_pilot.yaml.
 pretrain:
   target_tokens: 200000000000
   sequence_length: 8192

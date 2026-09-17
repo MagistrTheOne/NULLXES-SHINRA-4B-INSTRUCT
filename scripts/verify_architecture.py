@@ -18,11 +18,13 @@ def main() -> None:
     parser.add_argument("--seq", type=int, default=128)
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--forward", action="store_true", help="Run a BF16 CUDA forward+generate pass")
+    parser.add_argument("--backward", action="store_true", help="Run one BF16 train step (forward+backward)")
+    parser.add_argument("--attn", default="sdpa", choices=["eager", "sdpa", "flash_attention_2"])
     args = parser.parse_args()
 
     analytical = count_parameters(ShinraSpec())
-    cfg = ShinraConfig(use_cache=True, attention_implementation="eager")
-    cfg._attn_implementation = "eager"
+    cfg = ShinraConfig(use_cache=True, attention_implementation=args.attn)
+    cfg._attn_implementation = args.attn
     meta = torch.device("meta")
     with torch.device(meta):
         meta_model = ShinraForCausalLM(cfg)
@@ -59,6 +61,29 @@ def main() -> None:
         )
         if not report["loss_finite"]:
             raise SystemExit("Non-finite loss")
+    if args.backward:
+        if not args.device.startswith("cuda") or not torch.cuda.is_available():
+            raise SystemExit("--backward requires CUDA")
+        model = ShinraForCausalLM(cfg).to(device=args.device, dtype=torch.bfloat16)
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        model.train()
+        input_ids = torch.randint(0, cfg.vocab_size, (args.batch, args.seq), device=model.device)
+        out = model(input_ids=input_ids, labels=input_ids, use_cache=False)
+        if not torch.isfinite(out.loss):
+            raise SystemExit("Non-finite loss before backward")
+        out.loss.backward()
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        report.update(
+            {
+                "backward_loss": float(out.loss.detach().item()),
+                "grad_norm": float(grad_norm),
+                "grad_finite": bool(torch.isfinite(grad_norm)),
+                "dtype": str(next(model.parameters()).dtype),
+                "device": str(next(model.parameters()).device),
+            }
+        )
+        if not report["grad_finite"]:
+            raise SystemExit("Non-finite grad_norm")
     print(json.dumps(report, indent=2))
     if abs(analytical["total"] - trainable) > 10_000:
         raise SystemExit("Parameter count mismatch exceeds 10k")

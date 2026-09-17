@@ -1,0 +1,19 @@
+# SHINRA vLLM target contract.
+# Not Qwen MRoPE. Text-only YaRN for a future 128k extension.
+# Native PagedAttention needs a vLLM model plugin (not in Phase 0).
+
+model_name: NULLXES-SHINRA-4B-INSTRUCT
+trust_remote_code: true
+dtype: bfloat16
+max_model_len: 32768
+rope_parameters:
+  rope_type: yarn
+  factor: 4.0
+  rope_theta: 1000000.0
+  original_max_position_embeddings: 8192
+  mrope_interleaved: false
+hf_overrides:
+  rope_scaling:
+    rope_type: yarn
+    factor: 4.0
+    original_max_position_embeddings: 8192

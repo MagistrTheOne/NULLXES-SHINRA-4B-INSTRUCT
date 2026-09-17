@@ -164,3 +164,79 @@ DPO_MIX: dict[str, dict] = {
         "weight": 0.20,
     },
 }
+
+# Colab / hypothesis mix. Token-capped. Do not substitute for PRETRAIN_MIX.
+PILOT_MIX: dict[str, dict] = {
+    "fineweb_edu_10bt": {
+        "hf_id": "HuggingFaceFW/fineweb-edu",
+        "subset": "sample-10BT",
+        "split": "train",
+        "text_field": "text",
+        "weight": 0.50,
+        "bucket": "general",
+        "domain": "web",
+        "license": "ODC-By",
+    },
+    "python_edu": {
+        "hf_id": "HuggingFaceTB/smollm-corpus",
+        "subset": "python-edu",
+        "split": "train",
+        "text_field": "text",
+        "weight": 0.15,
+        "bucket": "code",
+        "domain": "code",
+        "license": "ODC-By",
+    },
+    "stack_smol": {
+        "hf_id": "bigcode/the-stack-smol-xl",
+        "subset": None,
+        "split": "train",
+        "text_field": "content",
+        "weight": 0.10,
+        "bucket": "code",
+        "domain": "code",
+        "license": "various-permissive",
+    },
+    "openwebmath": {
+        "hf_id": "open-web-math/open-web-math",
+        "subset": None,
+        "split": "train",
+        "text_field": "text",
+        "weight": 0.15,
+        "bucket": "math_stem",
+        "domain": "math",
+        "license": "ODC-By",
+    },
+    "wikipedia_ru": {
+        "hf_id": "wikimedia/wikipedia",
+        "subset": "20231101.ru",
+        "split": "train",
+        "text_field": "text",
+        "weight": 0.06,
+        "bucket": "multilingual",
+        "domain": "encyclopedia",
+        "license": "CC-BY-SA-3.0",
+    },
+    "wikipedia_zh": {
+        "hf_id": "wikimedia/wikipedia",
+        "subset": "20231101.zh",
+        "split": "train",
+        "text_field": "text",
+        "weight": 0.04,
+        "bucket": "multilingual",
+        "domain": "encyclopedia",
+        "license": "CC-BY-SA-3.0",
+    },
+}
+
+PILOT_BUCKET_WEIGHTS = {"general": 0.50, "code": 0.25, "math_stem": 0.15, "multilingual": 0.10}
+PILOT_LANGUAGE_QUOTAS = {"en": 0.70, "ru": 0.15, "zh": 0.10, "other": 0.05}
+
+PRODUCTION_MIX_V1 = {
+    "high_quality_web": 0.40,
+    "code": 0.20,
+    "math_science": 0.15,
+    "books_wikipedia": 0.10,
+    "multilingual": 0.10,
+    "nullxes_domain": 0.05,
+}

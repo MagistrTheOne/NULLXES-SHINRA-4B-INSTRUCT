@@ -1,3 +1,3 @@
-from .sources import DPO_MIX, PRETRAIN_MIX, SFT_MIX
+from .sources import DPO_MIX, PILOT_MIX, PRETRAIN_MIX, PRODUCTION_MIX_V1, SFT_MIX
 
-__all__ = ["PRETRAIN_MIX", "SFT_MIX", "DPO_MIX"]
+__all__ = ["PRETRAIN_MIX", "SFT_MIX", "DPO_MIX", "PILOT_MIX", "PRODUCTION_MIX_V1"]

@@ -40,13 +40,16 @@ model = AutoModelForCausalLM.from_pretrained(
 architecture/     спецификация и подсчёт параметров
 model/            ShinraConfig, блоки, GQA+RoPE, SwiGLU, HF Auto*
 tokenizer/        SentencePiece Unigram 131072 + chat template
-data/             mix, cleaning, MinHash, packing, SFT/DPO builders
+data/             mix, cleaning, MinHash, packing, SFT/DPO, **pilot builder**
 training/         pretrain / SFT / DPO, FSDP, WSD, fused AdamW
-evaluation/       PPL, lm-eval, needle-in-haystack
-inference/        generate, chat, OpenAI HTTP server
-configs/          shinra_4b.yaml + A100 Accelerate/FSDP
+evaluation/       PPL, lm-eval, needle, code/multilingual slices
+inference/        generate, chat, OpenAI HTTP
+runtime/          vLLM / SGLang / TokenSpeed **serving** (не обучение)
+models/           registry имён, без весов
+configs/          shinra_4b.yaml, dataset_pilot.yaml, Colab 100M, A100
 scripts/          команды кластера и публикация на Hub
-docs/             architecture, data, tokenizer, training, hub, model card
+docs/             status, architecture, data, tokenizer, training, hub, model card
+notebooks/        SHINRA_COLAB.ipynb
 ```
 
 ---
@@ -133,6 +136,8 @@ python -m evaluation.needle --model $CKPT
 python -m inference.generate --model $CKPT --prompt "Write RMSNorm in PyTorch."
 python -m inference.server --model $CKPT --port 8000
 ```
+
+Serving engines (vLLM / SGLang / TokenSpeed) — [`runtime/`](runtime/README.md). Это не обучение. Qwen3.8 MRoPE не копируем: SHINRA v1 text-only.
 
 ---
 

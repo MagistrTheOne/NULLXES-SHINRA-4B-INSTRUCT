@@ -1,19 +1,13 @@
 # Google Colab — SHINRA bring-up
 
-Локальная RTX 2080 **не является** целью. 4B BF16 + AdamW туда не встаёт. Не ставить модель локально.
+Локальная RTX 2080 **не является** целью. 4B BF16 + AdamW туда не встаёт.
 
 | Среда | Назначение |
 |-------|------------|
-| Google Colab Pro **A100 40GB** | tokenizer, data dry-run, meta param count, короткий pipeline check |
-| 8× A100 80GB | pretrain / SFT / DPO |
+| Google Colab Pro **A100 80GB** (167 GB RAM) | Phase 0: pipeline + 100M token hypothesis |
+| 8× A100 80GB | SHINRA-4B-BASE / SFT / DPO |
 
-Ноутбук: [`notebooks/SHINRA_COLAB.ipynb`](../notebooks/SHINRA_COLAB.ipynb)
+Ноутбук: [`notebooks/SHINRA_COLAB.ipynb`](../notebooks/SHINRA_COLAB.ipynb)  
+Конфиги: [`configs/colab.yaml`](../configs/colab.yaml), [`configs/dataset_pilot.yaml`](../configs/dataset_pilot.yaml), [`configs/pretrain_colab_100m.yaml`](../configs/pretrain_colab_100m.yaml)
 
-Конфиг: [`configs/colab.yaml`](../configs/colab.yaml)
-
-На Colab:
-
-1. Runtime → GPU → A100
-2. Клонировать `MagistrTheOne/NULLXES-SHINRA-4B-INSTRUCT`
-3. Обучить tokenizer на representative mix (не на 2080)
-4. Полный претрейн — только кластер из `configs/pretrain_a100.yaml`
+vLLM/SGLang/TokenSpeed: [`runtime/README.md`](../runtime/README.md) — serving после весов, не Colab pretrain.
