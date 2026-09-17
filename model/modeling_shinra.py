@@ -93,7 +93,6 @@ class ShinraPreTrainedModel(PreTrainedModel):
     _supports_cache_class = True
     _supports_quantized_cache = True
     _supports_static_cache = True
-    _tied_weights_keys = ["lm_head.weight"]
 
     def _init_weights(self, module: nn.Module) -> None:
         std = self.config.initializer_range
@@ -278,7 +277,7 @@ class ShinraModel(ShinraPreTrainedModel):
 
 
 class ShinraForCausalLM(ShinraPreTrainedModel, GenerationMixin):
-    _tied_weights_keys = ["lm_head.weight"]
+    _tied_weights_keys = {"lm_head.weight": "model.embed_tokens.weight"}
 
     def __init__(self, config: ShinraConfig) -> None:
         super().__init__(config)
