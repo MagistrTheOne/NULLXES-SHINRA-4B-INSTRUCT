@@ -1,0 +1,102 @@
+# NULLXES SHINRA-4B — production model + cluster configuration
+# Architecture class: decoder-only dense Transformer
+# Parameter count: 3.93B (tied embeddings)
+# Hardware target: NVIDIA A100 80GB (SXM / PCIe), 8-GPU node baseline
+
+model:
+  name: NULLXES-SHINRA-4B
+  model_type: nullxes_shinra
+  architectures: [ShinraForCausalLM]
+  hidden_size: 3072
+  intermediate_size: 9216
+  num_hidden_layers: 32
+  num_attention_heads: 24
+  num_key_value_heads: 8
+  head_dim: 128
+  vocab_size: 131072
+  max_position_embeddings: 32768
+  train_sequence_length: 8192
+  hidden_act: silu
+  rms_norm_eps: 1.0e-6
+  rope_theta: 1000000.0
+  rope_scaling:
+    rope_type: default
+    factor: 1.0
+  attention_dropout: 0.0
+  residual_dropout: 0.0
+  embedding_dropout: 0.0
+  attention_bias: false
+  mlp_bias: false
+  tie_word_embeddings: true
+  qk_norm: true
+  initializer_range: 0.02
+  use_cache: true
+  bos_token_id: 1
+  eos_token_id: 2  # <|eot|> generation stop; document stop is <|end_of_text|>
+  pad_token_id: 3
+  sliding_window: null
+  layer_types: null
+  attention_implementation: sdpa
+  z_loss_coefficient: 1.0e-5
+
+precision:
+  dtype: bfloat16
+  tf32: true
+  allow_fp16_reduced_precision_reduction: false
+
+optimizer:
+  name: adamw_torch_fused
+  learning_rate: 3.0e-4
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.1
+  grad_clip: 1.0
+
+scheduler:
+  name: wsd
+  warmup_steps: 2000
+  stable_ratio: 0.80
+  min_lr_ratio: 0.10
+
+batch:
+  sequence_length: 8192
+  micro_batch_size: 2
+  gradient_accumulation_steps: 16
+  # 8 GPUs × 2 micro × 16 accum × 8192 tokens = 2,097,152 tokens / optimizer step
+  num_processes: 8
+  tokens_per_step: 2097152
+
+training:
+  seed: 42
+  max_tokens: 200000000000
+  logging_steps: 10
+  eval_steps: 1000
+  save_steps: 1000
+  gradient_checkpointing: true
+  max_grad_norm: 1.0
+  dataloader_num_workers: 8
+  dataloader_pin_memory: true
+  persistent_workers: true
+  prefetch_factor: 4
+
+fsdp:
+  sharding_strategy: FULL_SHARD
+  transformer_layer_cls: ShinraDecoderLayer
+  backward_prefetch: BACKWARD_PRE
+  state_dict_type: SHARDED_STATE_DICT
+  forward_prefetch: true
+  use_orig_params: true
+  sync_module_states: true
+  limit_all_gathers: true
+  cpu_offload: false
+  mixed_precision:
+    param_dtype: bfloat16
+    reduce_dtype: float32
+    buffer_dtype: bfloat16
+
+hardware:
+  gpu: NVIDIA A100 80GB
+  node_gpus: 8
+  interconnect: NVLink / InfiniBand
+  activation_checkpointing: true
+  flash_attention: true

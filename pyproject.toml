@@ -1,0 +1,108 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nullxes-shinra"
+version = "1.0.0"
+description = "NULLXES SHINRA-4B-INSTRUCT — proprietary language intelligence layer"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "NULLXES Research" }]
+keywords = ["llm", "transformer", "shinra", "nullxes"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+  "torch>=2.4.0",
+  "transformers>=4.44.0",
+  "accelerate>=0.34.0",
+  "datasets>=2.21.0",
+  "tokenizers>=0.19.0",
+  "sentencepiece>=0.2.0",
+  "safetensors>=0.4.4",
+  "trl>=0.11.0",
+  "peft>=0.12.0",
+  "pyyaml>=6.0.1",
+  "omegaconf>=2.3.0",
+  "tqdm>=4.66.0",
+  "numpy>=1.26.0",
+  "pandas>=2.2.0",
+  "pyarrow>=16.0.0",
+  "ftfy>=6.2.0",
+  "regex>=2024.5.15",
+  "datasketch>=1.6.4",
+  "xxhash>=3.4.1",
+  "orjson>=3.10.0",
+  "huggingface_hub>=0.24.0",
+  "protobuf>=4.25.0",
+  "einops>=0.8.0",
+  "packaging>=24.0",
+  "rich>=13.7.0",
+  "typer>=0.12.0",
+]
+
+[project.optional-dependencies]
+flash = ["flash-attn>=2.6.0"]
+train = [
+  "wandb>=0.17.0",
+  "deepspeed>=0.14.0",
+  "liger-kernel>=0.3.0",
+]
+eval = [
+  "lm-eval>=0.4.4",
+  "nltk>=3.8.1",
+  "sacrebleu>=2.4.2",
+]
+infer = [
+  "fastapi>=0.112.0",
+  "uvicorn>=0.30.0",
+  "pydantic>=2.8.0",
+  "sse-starlette>=2.1.0",
+]
+lang = ["fasttext-wheel>=0.9.2"]
+all = [
+  "nullxes-shinra[flash,train,eval,infer,lang]",
+]
+
+[project.scripts]
+shinra-pretrain = "training.pretrain:main"
+shinra-sft = "training.sft:main"
+shinra-dpo = "training.dpo:main"
+shinra-tokenize = "tokenizer.train_tokenizer:main"
+shinra-generate = "inference.generate:main"
+shinra-serve = "inference.server:main"
+shinra-publish = "scripts.publish_hub:main"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+include = [
+  "architecture*",
+  "model*",
+  "tokenizer*",
+  "data*",
+  "training*",
+  "evaluation*",
+  "inference*",
+  "scripts*",
+]
+
+[tool.setuptools.package-data]
+tokenizer = ["*.jinja", "*.json"]
+configs = ["*.yaml"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
+ignore = ["E501"]

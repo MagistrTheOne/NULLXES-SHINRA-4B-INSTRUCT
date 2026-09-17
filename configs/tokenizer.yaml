@@ -1,0 +1,48 @@
+vocab_size: 131072
+model_type: unigram
+character_coverage: 0.99995
+byte_fallback: true
+normalization: nfkc
+split_digits: true
+max_sentence_length: 65536
+input_sentence_size: 20000000
+frozen: true
+special_tokens:
+  unk: "<|unk|>"
+  bos: "<|bos|>"
+  eot: "<|eot|>"
+  pad: "<|pad|>"
+  end_of_text: "<|end_of_text|>"
+  chat:
+    - "<|system|>"
+    - "<|user|>"
+    - "<|assistant|>"
+    - "<|reasoning|>"
+  code:
+    - "<|code|>"
+    - "<|language|>"
+    - "<|fim_prefix|>"
+    - "<|fim_suffix|>"
+    - "<|fim_middle|>"
+  repo:
+    - "<|repo|>"
+    - "<|file|>"
+  tools:
+    - "<|tool_call|>"
+    - "<|tool_response|>"
+  meta:
+    - "<|document|>"
+    - "<|end_of_text|>"
+reasoning_policy: latent
+corpus:
+  min_chars: 10000000000
+  representative_mix:
+    web: 0.45
+    wikipedia: 0.08
+    books: 0.07
+    code: 0.18
+    stem: 0.13
+    multilingual: 0.09
+acceptance:
+  unk_rate_max: 0.001
+  bytes_per_token_min: 3.5

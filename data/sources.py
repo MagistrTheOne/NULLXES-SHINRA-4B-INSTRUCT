@@ -1,0 +1,166 @@
+"""Dataset mix recipes for SHINRA pretrain / SFT / DPO."""
+
+from __future__ import annotations
+
+PRETRAIN_MIX: dict[str, dict] = {
+    "web_edu": {
+        "hf_id": "HuggingFaceFW/fineweb-edu",
+        "subset": "sample-100BT",
+        "split": "train",
+        "text_field": "text",
+        "weight": 0.42,
+        "domain": "web",
+        "license": "ODC-By",
+    },
+    "wikipedia": {
+        "hf_id": "wikimedia/wikipedia",
+        "subset": "20231101.en",
+        "split": "train",
+        "text_field": "text",
+        "weight": 0.06,
+        "domain": "encyclopedia",
+        "license": "CC-BY-SA-3.0",
+    },
+    "wikipedia_multilingual": {
+        "hf_id": "wikimedia/wikipedia",
+        "subset": "20231101.ru",
+        "split": "train",
+        "text_field": "text",
+        "weight": 0.03,
+        "domain": "encyclopedia",
+        "license": "CC-BY-SA-3.0",
+    },
+    "books": {
+        "hf_id": "TeraflopAI/TinyStories-GPT4",
+        "subset": None,
+        "split": "train",
+        "text_field": "text",
+        "weight": 0.02,
+        "domain": "narrative",
+        "license": "research",
+        "note": "Replace with Project Gutenberg / Dolma books shard in production ingest.",
+    },
+    "pg19": {
+        "hf_id": "deepmind/pg19",
+        "subset": None,
+        "split": "train",
+        "text_field": "text",
+        "weight": 0.05,
+        "domain": "books",
+        "license": "public-domain",
+    },
+    "stack_edu_python": {
+        "hf_id": "HuggingFaceTB/smollm-corpus",
+        "subset": "python-edu",
+        "split": "train",
+        "text_field": "text",
+        "weight": 0.08,
+        "domain": "code",
+        "license": "ODC-By",
+    },
+    "stack_edu_edu": {
+        "hf_id": "HuggingFaceTB/smollm-corpus",
+        "subset": "cosmopedia-v2",
+        "split": "train",
+        "text_field": "text",
+        "weight": 0.07,
+        "domain": "educational",
+        "license": "ODC-By",
+    },
+    "the_stack_smol": {
+        "hf_id": "bigcode/the-stack-smol-xl",
+        "subset": None,
+        "split": "train",
+        "text_field": "content",
+        "weight": 0.10,
+        "domain": "code",
+        "license": "various-permissive",
+    },
+    "openwebmath": {
+        "hf_id": "open-web-math/open-web-math",
+        "subset": None,
+        "split": "train",
+        "text_field": "text",
+        "weight": 0.06,
+        "domain": "math",
+        "license": "ODC-By",
+    },
+    "arxiv": {
+        "hf_id": "CShorten/ML-ArXiv-Papers",
+        "subset": None,
+        "split": "train",
+        "text_field": "abstract",
+        "weight": 0.03,
+        "domain": "cs_arxiv",
+        "license": "arXiv",
+    },
+    "proof_pile": {
+        "hf_id": "EleutherAI/proof-pile-2",
+        "subset": "algebraic-stack",
+        "split": "train",
+        "text_field": "text",
+        "weight": 0.04,
+        "domain": "stem",
+        "license": "various",
+    },
+    "pes2o": {
+        "hf_id": "allenai/peS2o",
+        "subset": "v2",
+        "split": "train",
+        "text_field": "text",
+        "weight": 0.04,
+        "domain": "science",
+        "license": "ODC-By",
+    },
+}
+
+SFT_MIX: dict[str, dict] = {
+    "tulu": {
+        "hf_id": "allenai/tulu-v2-sft-mixture",
+        "split": "train",
+        "weight": 0.35,
+        "kind": "conversation",
+    },
+    "openhermes": {
+        "hf_id": "teknium/OpenHermes-2.5",
+        "split": "train",
+        "weight": 0.20,
+        "kind": "instruction",
+    },
+    "code_feedback": {
+        "hf_id": "m-a-p/CodeFeedback-Filtered-Instruction",
+        "split": "train",
+        "weight": 0.15,
+        "kind": "code",
+    },
+    "openmathinstruct": {
+        "hf_id": "nvidia/OpenMathInstruct-2",
+        "split": "train",
+        "weight": 0.15,
+        "kind": "reasoning",
+    },
+    "smol_smoltalk": {
+        "hf_id": "HuggingFaceTB/smol-smoltalk",
+        "split": "train",
+        "weight": 0.15,
+        "kind": "conversation",
+    },
+}
+
+DPO_MIX: dict[str, dict] = {
+    "ultrafeedback": {
+        "hf_id": "HuggingFaceH4/ultrafeedback_binarized",
+        "split": "train_prefs",
+        "weight": 0.55,
+    },
+    "orca_dpo": {
+        "hf_id": "Intel/orca_dpo_pairs",
+        "split": "train",
+        "weight": 0.25,
+    },
+    "code_ultrafeedback": {
+        "hf_id": "mlabonne/orca-dpo-pairs-cleaned",
+        "split": "train",
+        "weight": 0.20,
+    },
+}

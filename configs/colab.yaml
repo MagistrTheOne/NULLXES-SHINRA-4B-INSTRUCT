@@ -1,0 +1,34 @@
+# Google Colab Pro — A100 40GB bring-up (NOT local RTX 2080)
+# Production pretrain remains configs/pretrain_a100.yaml on 8× A100 80GB.
+
+runtime: google-colab-pro
+gpu: NVIDIA A100 40GB
+local_gpu: forbidden
+note: "Do not load SHINRA-4B weights on RTX 2080."
+
+model:
+  name: NULLXES-SHINRA-4B
+  attention_implementation: sdpa
+
+tokenizer:
+  vocab_size: 131072
+  output_dir: tokenizer/artifacts
+
+precision:
+  dtype: bfloat16
+
+batch:
+  sequence_length: 2048
+  micro_batch_size: 1
+  gradient_accumulation_steps: 8
+  num_processes: 1
+
+training:
+  gradient_checkpointing: true
+  dataloader_num_workers: 2
+  purpose: tokenizer_and_pipeline_bringup
+  max_steps: 0
+
+fsdp:
+  enabled: false
+  cpu_offload: true

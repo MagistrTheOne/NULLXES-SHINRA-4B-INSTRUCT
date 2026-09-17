@@ -1,0 +1,39 @@
+stage: sft
+output_name: NULLXES-SHINRA-4B-INSTRUCT
+max_steps: 8000
+
+optimizer:
+  name: adamw_torch_fused
+  learning_rate: 2.0e-5
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.05
+  grad_clip: 1.0
+
+scheduler:
+  name: cosine
+  warmup_steps: 200
+  stable_ratio: 0.0
+  min_lr_ratio: 0.10
+
+batch:
+  sequence_length: 8192
+  micro_batch_size: 1
+  gradient_accumulation_steps: 16
+  num_processes: 8
+  tokens_per_step: 1048576
+
+training:
+  seed: 42
+  logging_steps: 10
+  eval_steps: 500
+  save_steps: 500
+  gradient_checkpointing: true
+  dataloader_num_workers: 8
+
+hardware:
+  gpu: NVIDIA A100 80GB
+  node_gpus: 8
+  precision: bf16
+  flash_attention: true
+  fsdp: full_shard

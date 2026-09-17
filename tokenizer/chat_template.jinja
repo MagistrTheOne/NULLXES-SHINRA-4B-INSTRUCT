@@ -1,0 +1,37 @@
+{{- bos_token -}}
+{%- for message in messages -%}
+{%- if message['role'] == 'system' -%}
+{{- '<|system|>' + message['content'] + '<|eot|>' -}}
+{%- elif message['role'] == 'user' -%}
+{{- '<|user|>' + message['content'] + '<|eot|>' -}}
+{%- elif message['role'] == 'assistant' -%}
+{%- if message.get('reasoning') -%}
+{{- '<|reasoning|>' + message['reasoning'] + '<|eot|>' -}}
+{%- endif -%}
+{%- if message.get('tool_calls') -%}
+{{- '<|assistant|>' -}}
+{%- for call in message['tool_calls'] -%}
+{%- set fn = call['function'] if (call is mapping and 'function' in call) else call -%}
+{%- set args = fn['arguments'] -%}
+{%- if args is string -%}
+{{- '<|tool_call|>{"name":"' + fn['name'] + '","arguments":' + args + '}<|eot|>' -}}
+{%- else -%}
+{{- '<|tool_call|>{"name":"' + fn['name'] + '","arguments":' + (args | tojson) + '}<|eot|>' -}}
+{%- endif -%}
+{%- endfor -%}
+{%- else -%}
+{{- '<|assistant|>' + (message['content'] or '') + '<|eot|>' -}}
+{%- endif -%}
+{%- elif message['role'] == 'tool' -%}
+{{- '<|tool_response|>' + message['content'] + '<|eot|>' -}}
+{%- elif message['role'] == 'code' -%}
+{{- '<|code|>' -}}
+{%- if message.get('language') -%}
+{{- '<|language|>' + message['language'] + '\n' -}}
+{%- endif -%}
+{{- message['content'] + '<|eot|>' -}}
+{%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+{{- '<|assistant|>' -}}
+{%- endif -%}

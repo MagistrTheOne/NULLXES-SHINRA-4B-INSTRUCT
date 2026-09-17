@@ -1,0 +1,58 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Checkpoints and artifacts
+outputs/
+checkpoints/
+runs/
+wandb/
+lightning_logs/
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+
+# Data
+data/raw/
+data/clean/
+data/packed/
+data/cache/
+data/shards/
+*.parquet
+*.arrow
+*.jsonl.gz
+
+# Tokenizer trained artifacts (keep configs, not giant corpus dumps)
+tokenizer/artifacts/*.txt
+tokenizer/artifacts/*.tsv
+tokenizer/corpus/
+
+# IDE / OS
+.idea/
+.vscode/
+.cursor/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+.env.*
+hf_token
+*.pem
+
+# Eval dumps
+evaluation/results/
+inference/logs/

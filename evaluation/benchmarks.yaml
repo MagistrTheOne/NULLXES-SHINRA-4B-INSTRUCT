@@ -1,0 +1,18 @@
+tasks:
+  general:
+    - arc_challenge
+    - hellaswag
+    - winogrande
+    - truthfulqa_mc2
+  knowledge:
+    - mmlu
+  math:
+    - gsm8k
+    - minerva_math
+  code:
+    - humaneval
+    - mbpp
+  long_context:
+    - needle_in_haystack
+context_lengths: [2048, 4096, 8192, 16384, 32768]
+report_to: evaluation/results

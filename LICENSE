@@ -1,0 +1,23 @@
+NULLXES RESEARCH LICENSE
+Version 1.0
+
+Copyright (c) 2026 NULLXES
+
+This repository contains the source code, tokenizer recipes, training
+pipeline, and documentation for NULLXES SHINRA — the Language Intelligence
+Layer of the NULLXES system.
+
+1. Source code in this repository is licensed for research, evaluation,
+   and internal production use by NULLXES and authorized partners.
+
+2. Model weights, tokenizer artifacts, and trained checkpoints are
+   proprietary assets of NULLXES. Redistribution of weights requires a
+   separate written grant from NULLXES.
+
+3. You may not use this software or resulting models to train, distill,
+   or initialize competing general-purpose language models for public
+   commercial release without a written license from NULLXES.
+
+4. THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+
+Contact: ceo@nullxes.com

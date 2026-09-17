@@ -1,0 +1,40 @@
+pretrain:
+  target_tokens: 200000000000
+  sequence_length: 8192
+  mix:
+    web_edu: 0.42
+    wikipedia: 0.06
+    wikipedia_multilingual: 0.03
+    books_pg19: 0.05
+    educational_synthetic: 0.07
+    code_edu: 0.08
+    code_stack_licensed: 0.10
+    math_openwebmath: 0.06
+    stem_proofpile: 0.04
+    science_pes2o: 0.04
+    arxiv_cs: 0.03
+    narrative_aux: 0.02
+  filters:
+    min_chars: 200
+    max_chars: 1000000
+    minhash_threshold: 0.80
+    minhash_permutations: 128
+    toxicity_threshold: 0.50
+    language_confidence: 0.35
+
+sft:
+  mix:
+    conversation: 0.50
+    instruction: 0.20
+    code: 0.15
+    reasoning: 0.15
+  mask: assistant_only
+  sequence_length: 8192
+
+dpo:
+  mix:
+    ultrafeedback: 0.55
+    orca: 0.25
+    cleaned_pairs: 0.20
+  beta: 0.10
+  max_length: 8192
