@@ -47,16 +47,20 @@ mix:
         text_field: text
         domain: encyclopedia
       - hf_id: wikimedia/wikipedia
-        subset: 20231101.zh
+        subset: 20231101.de
+        split: train
+        text_field: text
+        domain: encyclopedia
+      - hf_id: wikimedia/wikipedia
+        subset: 20231101.fr
         split: train
         text_field: text
         domain: encyclopedia
 
 language_quotas:
-  en: 0.70
+  en: 0.75
   ru: 0.15
-  zh: 0.10
-  other: 0.05
+  eu: 0.10
 
 storage:
   streaming: true

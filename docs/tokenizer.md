@@ -65,3 +65,12 @@ bash scripts/train_tokenizer.sh /data/tokmix
 - `corpus_stats.json`, `tokenizer_stats.json`
 
 Критерии приёмки: `unk_rate < 0.1%` на holdout, `bytes/token ≳ 3.5`, все control-токены с id ≠ unk.
+
+Дружба корпуса с DNA **до** обучения Unigram:
+
+```bash
+python -m tokenizer.analyze_tokenizer
+python -m tokenizer.analyze_tokenizer --corpus tokenizer/corpus --parquet-dir data/clean/pilot
+```
+
+Отчёт: `tokenizer_friendship.json` — скрипты, утечки `<|...|>`, code/math/JSON density, и fertility только если `tokenizer/artifacts` уже существует.

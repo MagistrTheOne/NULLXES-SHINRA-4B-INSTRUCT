@@ -1,20 +1,28 @@
-# Production pretrain mix (cluster). Colab uses configs/dataset_pilot.yaml.
+# SHINRA-4B-BASE v1 — cluster recipe. Colab uses configs/dataset_pilot.yaml.
+# Not locked for a 200B run until Phase 0.1 + tokenizer friendship pass.
+
 pretrain:
+  name: SHINRA_PRETRAIN_V1
   target_tokens: 200000000000
   sequence_length: 8192
+  language_quotas:
+    en: 0.75
+    ru: 0.15
+    other: 0.10
   mix:
-    web_edu: 0.42
-    wikipedia: 0.06
-    wikipedia_multilingual: 0.03
-    books_pg19: 0.05
-    educational_synthetic: 0.07
-    code_edu: 0.08
-    code_stack_licensed: 0.10
-    math_openwebmath: 0.06
-    stem_proofpile: 0.04
-    science_pes2o: 0.04
-    arxiv_cs: 0.03
-    narrative_aux: 0.02
+    high_quality_web: 0.40
+    code: 0.20
+    math_science: 0.15
+    books: 0.10
+    multilingual: 0.10
+    nullxes_engineering: 0.05
+  sources:
+    web: HuggingFaceFW/fineweb-edu sample-10BT
+    code: smollm python-edu + licensed The Stack (code+docs, not TinyStories)
+    math_science: OpenWebMath, ProofPile-2, peS2o, arxiv full articles
+    books: PG19 + Gutenberg English
+    multilingual: Wikipedia ru/de/fr
+    nullxes: arxiv full CS/engineering bodies + stack Markdown/CUDA docs
   filters:
     min_chars: 200
     max_chars: 1000000
@@ -22,20 +30,29 @@ pretrain:
     minhash_permutations: 128
     toxicity_threshold: 0.50
     language_confidence: 0.35
+  excluded:
+    - TinyStories
+    - Qwen corpora
+    - Chinese instruction/alignment dumps
+    - FineWeb-Edu 1.3T full
 
 sft:
+  name: SHINRA_SFT_V1
   mix:
-    conversation: 0.50
-    instruction: 0.20
-    code: 0.15
-    reasoning: 0.15
+    conversation: 0.30
+    code: 0.25
+    math_reasoning: 0.20
+    agent_tools: 0.15
+    general: 0.10
   mask: assistant_only
   sequence_length: 8192
 
 dpo:
+  name: SHINRA_DPO_V1
   mix:
-    ultrafeedback: 0.55
-    orca: 0.25
-    cleaned_pairs: 0.20
+    general: 0.40
+    code: 0.30
+    tools: 0.20
+    formatting: 0.10
   beta: 0.10
   max_length: 8192

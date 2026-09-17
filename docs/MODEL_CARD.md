@@ -85,14 +85,14 @@ Special tokens: `<|bos|>` `<|eot|>` `<|system|>` `<|user|>` `<|assistant|>` `<|r
 
 Three stages.
 
-**Pretrain → NULLXES SHINRA-4B-BASE (200B tokens)**  
-FineWeb-Edu, Wikipedia (en + ru and additional multilingual dumps), Project Gutenberg / PG19, SmolLM educational + Python-edu, licensed The Stack shards, OpenWebMath, ProofPile-2, peS2o, arXiv CS abstracts. Documents pass ftfy normalization, Gopher/FineWeb quality gates, script/language ID, toxicity heuristics, code AST/minified filters, and MinHash-LSH near-dedup (Jaccard 0.80).
+**Pretrain → NULLXES SHINRA-4B-BASE**  
+SHINRA_PRETRAIN_V1: 40% FineWeb-Edu, 20% code (python-edu + licensed Stack), 15% math/science (OpenWebMath, ProofPile-2, peS2o, **full** arXiv bodies), 10% books (PG19 + Gutenberg; no TinyStories), 10% Wikipedia ru/de/fr, 5% NULLXES engineering (robotics/CUDA/docs slice). Language quotas en 75 / ru 15 / other 10. Documents pass ftfy, Gopher/FineWeb quality, script/language ID, toxicity heuristics, code AST/minified filters, and MinHash-LSH (Jaccard 0.80).
 
 **SFT → NULLXES SHINRA-4B-INSTRUCT**  
-Tulu-v2 mixture, OpenHermes-2.5, CodeFeedback, OpenMathInstruct-2, SmolTalk. Packed to 8192 with loss on assistant tokens only.
+30% conversation (Tulu + SmolTalk), 25% code, 20% math, 15% tools/JSON (Hermes function-calling), 10% general (OpenHermes). Packed to 8192 with loss on assistant tokens only.
 
 **DPO**  
-UltraFeedback-binarized and cleaned Orca preference pairs, β = 0.10.
+40% UltraFeedback, 30% Python code preference, 20% instruction/tool mix, 10% format (Orca), β = 0.10.
 
 Exact mix weights live in `configs/data_mix.yaml`. Tokenizer trained on a ≥10B-character representative sample of the same mix.
 

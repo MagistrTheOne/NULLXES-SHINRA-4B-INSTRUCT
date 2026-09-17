@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+import os
 
 from transformers.configuration_utils import PretrainedConfig
 
@@ -121,3 +122,62 @@ class ShinraConfig(PretrainedConfig):
         data["auto_map"] = self._auto_map()
         data["architectures"] = ["ShinraForCausalLM"]
         return data
+
+    @classmethod
+    def from_yaml(cls, path: str | os.PathLike[str]) -> ShinraConfig:
+        """Load architecture from YAML.
+
+        Train recipes (e.g. pretrain_colab_100m.yaml) have no `model:` block.
+        Architecture always comes from that file's `model:` section or from
+        sibling `shinra_4b.yaml`. Training hyperparams are ignored here.
+        """
+        from pathlib import Path
+
+        import yaml
+
+        yaml_path = Path(path)
+        payload = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        model_raw = payload.get("model")
+        if not model_raw:
+            arch_path = yaml_path.parent / "shinra_4b.yaml"
+            if not arch_path.exists():
+                raise FileNotFoundError(
+                    f"{yaml_path} has no model: section and {arch_path} is missing"
+                )
+            model_raw = (yaml.safe_load(arch_path.read_text(encoding="utf-8")) or {}).get("model")
+        if not model_raw:
+            raise ValueError(f"No model architecture in {yaml_path}")
+        allowed = {
+            "vocab_size",
+            "hidden_size",
+            "intermediate_size",
+            "num_hidden_layers",
+            "num_attention_heads",
+            "num_key_value_heads",
+            "head_dim",
+            "hidden_act",
+            "max_position_embeddings",
+            "initializer_range",
+            "rms_norm_eps",
+            "use_cache",
+            "pad_token_id",
+            "bos_token_id",
+            "eos_token_id",
+            "tie_word_embeddings",
+            "rope_theta",
+            "rope_scaling",
+            "attention_bias",
+            "attention_dropout",
+            "residual_dropout",
+            "embedding_dropout",
+            "mlp_bias",
+            "qk_norm",
+            "sliding_window",
+            "layer_types",
+            "attention_implementation",
+            "z_loss_coefficient",
+            "attention_multiplier",
+        }
+        kwargs = {k: v for k, v in model_raw.items() if k in allowed}
+        return cls(**kwargs)
+

@@ -37,12 +37,12 @@ reasoning_policy: latent
 corpus:
   min_chars: 10000000000
   representative_mix:
-    web: 0.45
-    wikipedia: 0.08
-    books: 0.07
-    code: 0.18
-    stem: 0.13
-    multilingual: 0.09
+    web: 0.40
+    code: 0.20
+    stem: 0.15
+    books: 0.10
+    multilingual: 0.10
+    nullxes: 0.05
 acceptance:
   unk_rate_max: 0.001
   bytes_per_token_min: 3.5

@@ -23,7 +23,17 @@ dataset stream (sample-10BT)
  → checkpoint
 ```
 
-Pilot mix 50/25/15/10, language 70/15/10/5, disk <150GB. Not FineWeb 1.3T. Not 200B.
+Pilot mix 50/25/15/10, language **en 75 / ru 15 / eu 10**. No Chinese corpora. Disk <150GB. Not FineWeb 1.3T. Not 200B.
+
+## Phase 0.1 (now)
+
+Random `ShinraForCausalLM` on Colab A100 80GB. No `from_pretrained`. Env → param count 3,926,076,416 → tied embeddings → BF16 → forward (2, 2048) → backward → one fused AdamW step → tokenizer DNA stats.
+
+```bash
+python -m scripts.phase01_bringup --config configs/pretrain_colab_100m.yaml
+```
+
+Architecture YAML is always `configs/shinra_4b.yaml`; `from_yaml` on a train recipe pulls `model:` from that sibling file.
 
 vLLM / SGLang / TokenSpeed — inference (`runtime/`), не FSDP pretrain.
 

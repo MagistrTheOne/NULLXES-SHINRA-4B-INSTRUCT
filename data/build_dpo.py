@@ -15,8 +15,10 @@ from .sources import DPO_MIX
 
 
 def _prompt_chosen_rejected(row: dict[str, Any]) -> tuple[str, str, str] | None:
-    if row.get("chosen") and row.get("rejected") and row.get("prompt"):
-        return str(row["prompt"]), str(row["chosen"]), str(row["rejected"])
+    if row.get("chosen") and row.get("rejected") and (row.get("prompt") or row.get("question")):
+        return str(row.get("prompt") or row.get("question") or ""), str(row["chosen"]), str(row["rejected"])
+    if row.get("accepted") and row.get("rejected"):
+        return str(row.get("prompt") or row.get("question") or ""), str(row["accepted"]), str(row["rejected"])
     chosen = row.get("chosen")
     rejected = row.get("rejected")
     if isinstance(chosen, list) and isinstance(rejected, list):

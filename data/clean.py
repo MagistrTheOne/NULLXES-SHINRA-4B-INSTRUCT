@@ -49,18 +49,32 @@ def clean_record(
     dedup: DedupIndex,
     quality: QualityThresholds,
     path_field: str | None = "path",
+    path_suffixes: list[str] | None = None,
+    keyword_any: list[str] | None = None,
+    forced_language: str | None = None,
 ) -> dict | None:
+    path_val = record.get(path_field) if path_field else None
+    if path_suffixes:
+        path_str = str(path_val or "")
+        if not any(path_str.endswith(suffix) for suffix in path_suffixes):
+            return None
     text = normalize_text(extract_text(record, text_field))
     if not text:
         return None
+    if keyword_any:
+        hay = text[:12000].lower()
+        if not any(key.lower() in hay for key in keyword_any):
+            return None
     lang = detect_language(text)
     if not lang["keep"]:
         return None
     tox = score_toxicity(text)
     if not tox["keep"]:
         return None
-    if domain == "code":
-        code = score_code(text, path=record.get(path_field) if path_field else None)
+    path_str = str(path_val or "")
+    treat_as_code = domain == "code" or path_str.endswith((".cu", ".cuh", ".py", ".c", ".cpp"))
+    if treat_as_code:
+        code = score_code(text, path=path_str or None)
         if not code["keep"]:
             return None
         quality_info = {"keep": True, "quality_score": 1.0, "drop_reasons": []}
@@ -77,7 +91,7 @@ def clean_record(
         "id": doc_id,
         "text": text,
         "domain": domain,
-        "language": lang["language"],
+        "language": forced_language or lang["language"],
         "script": lang["script"],
         "quality_score": quality_info.get("quality_score", 1.0),
         "toxicity": tox["toxicity"],
@@ -132,7 +146,16 @@ def run_clean(
         print(f"[clean] source={name} domain={domain}", flush=True)
         for row in tqdm(iter_source(spec, max_docs_per_source), desc=name):
             stats["seen"] += 1
-            cleaned = clean_record(row, text_field=text_field, domain=domain, dedup=dedup, quality=quality)
+            cleaned = clean_record(
+                row,
+                text_field=text_field,
+                domain=domain,
+                dedup=dedup,
+                quality=quality,
+                path_suffixes=spec.get("path_suffixes"),
+                keyword_any=spec.get("keyword_any"),
+                forced_language=spec.get("language"),
+            )
             if cleaned is None:
                 stats["dropped"] += 1
                 continue
