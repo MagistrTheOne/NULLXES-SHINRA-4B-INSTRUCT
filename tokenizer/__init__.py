@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
-from transformers import AutoTokenizer, PreTrainedTokenizerFast
+if TYPE_CHECKING:
+    from transformers import PreTrainedTokenizerFast
 
 
 def load_shinra_tokenizer(path: str | Path) -> PreTrainedTokenizerFast:
+    from transformers import AutoTokenizer
+
     tokenizer = AutoTokenizer.from_pretrained(str(path), use_fast=True, trust_remote_code=True)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token

@@ -72,7 +72,11 @@ class ShinraConfig(PretrainedConfig):
         self.rms_norm_eps = rms_norm_eps
         self.use_cache = use_cache
         self.rope_theta = rope_theta
-        self.rope_scaling = rope_scaling if rope_scaling is not None else {"rope_type": "default", "factor": 1.0}
+        self.rope_scaling = dict(rope_scaling) if rope_scaling is not None else {"rope_type": "default"}
+        # Default RoPE never uses a scaling factor; HF5 validates this during
+        # PretrainedConfig initialization (including legacy YAML/config loads).
+        if self.rope_scaling.get("rope_type", "default") == "default":
+            self.rope_scaling.pop("factor", None)
         self.attention_bias = attention_bias
         self.attention_dropout = attention_dropout
         self.residual_dropout = residual_dropout
@@ -180,4 +184,3 @@ class ShinraConfig(PretrainedConfig):
         }
         kwargs = {k: v for k, v in model_raw.items() if k in allowed}
         return cls(**kwargs)
-

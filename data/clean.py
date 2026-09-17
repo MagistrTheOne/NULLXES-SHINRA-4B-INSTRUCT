@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import uuid
 from collections import Counter
 from pathlib import Path
 from typing import Iterator
@@ -13,7 +12,7 @@ import ftfy
 from datasets import Dataset, load_dataset
 from tqdm import tqdm
 
-from .dedup import DedupIndex
+from .dedup import DedupIndex, exact_hash
 from .filters.code import score_code
 from .filters.language import detect_language
 from .filters.quality import QualityThresholds, score_document
@@ -83,7 +82,7 @@ def clean_record(
         if not quality_info["keep"]:
             return None
         code = None
-    doc_id = str(record.get("id") or uuid.uuid4())
+    doc_id = str(record.get("id") or exact_hash(text))
     is_dup, reason = dedup.is_duplicate(doc_id, text)
     if is_dup:
         return None

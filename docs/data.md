@@ -26,6 +26,9 @@ python -m tokenizer.analyze_tokenizer --corpus tokenizer/corpus --parquet-dir da
 
 `build_pilot` пишет `pilot_report.json` (факт vs квоты) и `tokenizer_friendship.json` (131k DNA, скрипты, утечки `<|...|>`, unk/bytes-per-token если артефакты уже есть).
 
+Безопасное продолжение существующего пилота: `python -m data.build_pilot --max-tokens 100000000 --resume`.
+Политика остановки, checkpoint, восстановление корпуса и проверки: [pilot_resume.md](pilot_resume.md).
+
 ## SHINRA-4B-BASE v1 (кластер, не Colab)
 
 Не финальный lock. Рецепт после ревью микса:
