@@ -141,6 +141,7 @@ def _build_pilot_locked(
 
     from .clean import clean_record, iter_source
     from .filters.quality import QualityThresholds
+    from .pilot_schedule import primary_language, quota_conflicts, rank_sources, tail_limit
     from .pilot_state import (
         PilotDedup, account_document, atomic_json, estimate_tokens, increment,
         lang_bucket, publish_shard, shard_files,
@@ -181,6 +182,28 @@ def _build_pilot_locked(
     interrupted = False
     publishing = False
     started = time.monotonic()
+    # Revisit eligibility after a shard or a bounded raw scan. Keep live source
+    # iterators across visits so switching does not replay within this process.
+    scan_quantum = 4096
+    iterators: dict = {}
+    source_sessions: dict = {}
+    finished: dict[str, str] = {}
+    language_stops: dict[str, str] = {}
+    round_seen: set[str] = set()
+    initial_order, initial_skipped, _ = rank_sources(
+        PILOT_MIX, state, bucket_caps, lang_caps, max_tokens, tail_tokens,
+        bucket_stops, finished, language_stops,
+    )
+    scheduling = {
+        "policy": "remaining_bucket_source_language_deficits_with_fair_rounds",
+        "initial_order": initial_order, "initial_skipped": initial_skipped,
+        "raw_scan_quantum": scan_quantum, "selections": {},
+        "source_target_fraction_per_visit": 1 / 32,
+    }
+    initial_conflicts = quota_conflicts(PILOT_MIX, state, bucket_caps, lang_caps, bucket_stops, tail_tokens)
+    print(f"[pilot schedule] eligible={initial_order} skipped={initial_skipped}", flush=True)
+    for conflict in initial_conflicts:
+        print(f"[pilot quota conflict] {json.dumps(conflict, ensure_ascii=False)}", flush=True)
 
     def flush() -> None:
         nonlocal publishing
@@ -201,145 +224,188 @@ def _build_pilot_locked(
         signatures.clear()
         publishing = False
 
-    for name, spec in PILOT_MIX.items():
-        bucket = spec["bucket"]
-        cap = bucket_caps[bucket]
-        # At most 0.1% of a bucket or tail_tokens (whichever is smaller).
-        tail = min(tail_tokens, cap // 1000)
-        remaining = cap - state["bucket_counts"].get(bucket, 0)
-        if bucket in bucket_stops or remaining <= tail:
-            state["source_stops"][name] = bucket_stops.setdefault(
-                bucket, "bucket_cap" if remaining == 0 else "bucket_tail")
-            continue
-        forced_lang = lang_bucket(spec["language"]) if spec.get("language") else None
-        if forced_lang and state["lang_counts"].get(forced_lang, 0) >= lang_caps.get(forced_lang, 0):
-            state["source_stops"][name] = "language_cap"
-            continue
-        source_session = {"seen": 0, "kept": 0, "dropped": 0}
-        source_scan = state["source_scan"].setdefault(name, {"seen": 0, "kept": 0, "dropped": 0})
-        initial_bucket = state["bucket_counts"].get(bucket, 0)
-        source_started = time.monotonic()
-        last_refresh = 0.0
-        reason = "source_exhausted"
-        bar = tqdm(total=cap, initial=initial_bucket, desc=f"{name} | {bucket}",
-                   unit="tok", unit_scale=True, dynamic_ncols=True,
-                   bar_format="{desc}: {n_fmt}/{total_fmt} tokens [{percentage:6.2f}%] {postfix}")
+    try:
+        while True:
+            ordered, skipped, deficits = rank_sources(
+                PILOT_MIX, state, bucket_caps, lang_caps, max_tokens, tail_tokens,
+                bucket_stops, finished, language_stops,
+            )
+            state["source_stops"].update(skipped)
+            if not ordered:
+                break
+            available = [name for name in ordered if name not in round_seen]
+            if not available:
+                round_seen.clear()
+                available = ordered
+            name = available[0]
+            round_seen.add(name)
+            increment(scheduling["selections"], name)
+            spec = PILOT_MIX[name]
+            bucket = spec["bucket"]
+            cap = bucket_caps[bucket]
+            tail = tail_limit(cap, tail_tokens)
+            primary_lang = primary_language(name, spec)
+            source_session = source_sessions.setdefault(name, {"seen": 0, "kept": 0, "dropped": 0})
+            source_scan = state["source_scan"].setdefault(name, {"seen": 0, "kept": 0, "dropped": 0})
+            source_deficit = deficits[name]
+            initial_source_tokens = state["source_counts"].get(name, 0)
+            # Weighted, bounded visits let RU/DE/FR all contribute before one
+            # source fills multilingual. This is a yield threshold, not a cap:
+            # whole documents still use the original bucket/language budgets.
+            visit_token_budget = max(1, min(
+                source_deficit["source_remaining"] or cap,
+                max(1, source_deficit["source_target"] // 32),
+            ))
+            initial_bucket = state["bucket_counts"].get(bucket, 0)
+            source_started = time.monotonic()
+            last_refresh = 0.0
+            reason = "source_exhausted"
+            bar = tqdm(total=cap, initial=initial_bucket, desc=f"{name} | {bucket}",
+                       unit="tok", unit_scale=True, dynamic_ncols=True,
+                       bar_format="{desc}: {n_fmt}/{total_fmt} tokens [{percentage:6.2f}%] {postfix}")
 
-        def progress(force: bool = False) -> None:
-            nonlocal last_refresh
-            now = time.monotonic()
-            if not force and now - last_refresh < 0.5:
-                return
-            last_refresh = now
-            current = state["bucket_counts"].get(bucket, 0)
-            rate = (current - initial_bucket) / max(now - source_started, 1e-9)
-            eta = f"{(cap - current) / rate:.0f}s" if rate > 0 else "unknown"
-            acceptance = source_session["kept"] / max(source_session["seen"], 1)
-            bar.n = current
-            bar.set_postfix_str(
-                f"source_tok={state['source_counts'].get(name, 0):,} "
-                f"stored_docs={state['source_docs'].get(name, 0):,} "
-                f"seen={source_session['seen']:,} kept={source_session['kept']:,} "
-                f"dropped={source_session['dropped']:,} acceptance={acceptance:.2%} "
-                f"tok/s={rate:.0f} ETA={eta} (session)", refresh=True)
+            def progress(force: bool = False) -> None:
+                nonlocal last_refresh
+                now = time.monotonic()
+                if not force and now - last_refresh < 0.5:
+                    return
+                last_refresh = now
+                current = state["bucket_counts"].get(bucket, 0)
+                rate = (current - initial_bucket) / max(now - source_started, 1e-9)
+                eta = f"{(cap - current) / rate:.0f}s" if rate > 0 else "unknown"
+                acceptance = source_session["kept"] / max(source_session["seen"], 1)
+                bar.n = current
+                bar.set_postfix_str(
+                    f"source_tok={state['source_counts'].get(name, 0):,} "
+                    f"stored_docs={state['source_docs'].get(name, 0):,} "
+                    f"seen={source_session['seen']:,} kept={source_session['kept']:,} "
+                    f"dropped={source_session['dropped']:,} acceptance={acceptance:.2%} "
+                    f"tok/s={rate:.0f} ETA={eta} (session)", refresh=True)
 
-        def dropped(key: str) -> None:
-            increment(stats, "dropped")
-            increment(stats, key)
-            increment(session, "dropped")
-            increment(source_session, "dropped")
-            increment(source_scan, "dropped")
-            progress()
-
-        iterator = iter(iter_source(spec, None))
-        try:
-            while True:
+            def dropped(key: str) -> None:
+                increment(stats, "dropped")
+                increment(stats, key)
+                increment(session, "dropped")
+                increment(source_session, "dropped")
+                increment(source_scan, "dropped")
                 progress()
-                remaining = cap - state["bucket_counts"].get(bucket, 0)
-                if state["total_tokens"] >= max_tokens:
-                    reason = stop_reason = "tokens"
-                    break
-                if remaining <= tail:
-                    reason = "bucket_cap" if remaining == 0 else "bucket_tail"
-                    bucket_stops[bucket] = reason
-                    break
-                # Finite raw scan limit also covers all-filtered/all-duplicate
-                # streams. It includes replay and is explicitly reported.
-                if source_session["seen"] >= max_source_docs:
-                    reason = "source_scan_limit"
-                    break
-                if _disk_gb(output_dir) > max_disk_gb:
-                    reason = stop_reason = "disk"
-                    break
-                try:
-                    row = next(iterator)
-                except StopIteration:
-                    break
-                for counter in (stats, session, source_session, source_scan):
-                    increment(counter, "seen")
-                cleaned = clean_record(
-                    row, text_field=spec.get("text_field", "text"),
-                    domain=spec.get("domain", "web"), dedup=dedup, quality=quality,
-                    path_suffixes=spec.get("path_suffixes"), keyword_any=spec.get("keyword_any"),
-                    forced_language=spec.get("language"),
-                )
-                if cleaned is None:
-                    dropped("dropped_filter_or_duplicate")
-                    continue
-                lang = lang_bucket(str(cleaned.get("language") or "und"))
-                tokens = estimate_tokens(cleaned)
-                lang_remaining = lang_caps.get(lang, 0) - state["lang_counts"].get(lang, 0)
-                if lang_remaining <= 0:
-                    dropped("dropped_lang_quota")
-                    if forced_lang:
-                        reason = "language_cap"
+
+            if name not in iterators:
+                iterators[name] = iter(iter_source(spec, None))
+            iterator = iterators[name]
+            visit_start_seen = source_session["seen"]
+            try:
+                while True:
+                    progress()
+                    remaining = cap - state["bucket_counts"].get(bucket, 0)
+                    if state["total_tokens"] >= max_tokens:
+                        reason = stop_reason = "tokens"
                         break
-                    continue
-                if tokens > remaining or tokens > max_tokens - state["total_tokens"]:
-                    # Whole-document policy: never hunt for a smaller document.
-                    dropped("dropped_bucket_tail")
-                    reason = "bucket_document_boundary"
-                    bucket_stops[bucket] = reason
-                    break
-                if tokens > lang_remaining:
-                    dropped("dropped_lang_quota")
-                    if forced_lang:
-                        reason = "language_cap_or_document_boundary"
+                    if remaining <= tail:
+                        reason = "bucket_cap" if remaining == 0 else "bucket_tail"
+                        bucket_stops[bucket] = reason
                         break
-                    continue
-                cleaned.update(source=name, bucket=bucket)
-                buffer.append(cleaned)
-                signatures.append(dedup.last_signature)
-                account_document(state, cleaned)
-                for counter in (session, source_session, source_scan):
-                    increment(counter, "kept")
-                if len(buffer) >= shard_size:
-                    flush()
-        except KeyboardInterrupt:
-            if publishing:
-                # Publication may already have committed a shard. Leave the
-                # buffer alone; --resume will reconcile it from disk.
-                raise
-            reason = stop_reason = "interrupted"
-            interrupted = True
-        finally:
-            progress(force=True)
-            bar.close()
+                    # Finite raw scan limit also covers all-filtered/all-duplicate
+                    # streams. It includes replay and is explicitly reported.
+                    if source_session["seen"] >= max_source_docs:
+                        reason = "source_scan_limit"
+                        break
+                    if source_session["seen"] - visit_start_seen >= scan_quantum:
+                        reason = "reschedule"
+                        break
+                    if state["source_counts"].get(name, 0) - initial_source_tokens >= visit_token_budget:
+                        reason = "reschedule"
+                        break
+                    if _disk_gb(output_dir) > max_disk_gb:
+                        reason = stop_reason = "disk"
+                        break
+                    try:
+                        row = next(iterator)
+                    except StopIteration:
+                        break
+                    for counter in (stats, session, source_session, source_scan):
+                        increment(counter, "seen")
+                    cleaned = clean_record(
+                        row, text_field=spec.get("text_field", "text"),
+                        domain=spec.get("domain", "web"), dedup=dedup, quality=quality,
+                        path_suffixes=spec.get("path_suffixes"), keyword_any=spec.get("keyword_any"),
+                        forced_language=spec.get("language"),
+                    )
+                    if cleaned is None:
+                        dropped("dropped_filter_or_duplicate")
+                        continue
+                    lang = lang_bucket(str(cleaned.get("language") or "und"))
+                    tokens = estimate_tokens(cleaned)
+                    lang_remaining = lang_caps.get(lang, 0) - state["lang_counts"].get(lang, 0)
+                    if lang_remaining <= 0:
+                        dropped("dropped_lang_quota")
+                        if primary_lang == lang:
+                            reason = "language_cap"
+                            language_stops[lang] = reason
+                            break
+                        continue
+                    if tokens > remaining or tokens > max_tokens - state["total_tokens"]:
+                        # Whole-document policy: never hunt for a smaller document.
+                        dropped("dropped_bucket_tail")
+                        reason = "bucket_document_boundary"
+                        bucket_stops[bucket] = reason
+                        break
+                    if tokens > lang_remaining:
+                        dropped("dropped_lang_quota")
+                        if primary_lang == lang:
+                            reason = "language_cap_or_document_boundary"
+                            language_stops[lang] = reason
+                            break
+                        continue
+                    cleaned.update(source=name, bucket=bucket)
+                    buffer.append(cleaned)
+                    signatures.append(dedup.last_signature)
+                    account_document(state, cleaned)
+                    for counter in (session, source_session, source_scan):
+                        increment(counter, "kept")
+                    if len(buffer) >= shard_size:
+                        flush()
+                        reason = "reschedule"
+                        break
+            except KeyboardInterrupt:
+                if publishing:
+                    # Publication may already have committed a shard. Leave the
+                    # buffer alone; --resume will reconcile it from disk.
+                    raise
+                reason = stop_reason = "interrupted"
+                interrupted = True
+            finally:
+                progress(force=True)
+                bar.close()
+            if reason != "reschedule":
+                finished[name] = reason
+                state["source_stops"][name] = reason
+                close = getattr(iterators.pop(name), "close", None)
+                if close:
+                    close()
+                flush()
+            if interrupted or stop_reason in {"disk", "tokens"}:
+                break
+    finally:
+        for iterator in iterators.values():
             close = getattr(iterator, "close", None)
             if close:
                 close()
-        state["source_stops"][name] = reason
-        flush()
-        if interrupted or stop_reason in {"disk", "tokens"}:
-            break
+    conflicts = quota_conflicts(PILOT_MIX, state, bucket_caps, lang_caps, bucket_stops, tail_tokens)
+    language_blocked = any(reason.startswith("language_") for reason in state["source_stops"].values())
     if stop_reason == "sources_exhausted":
         if state["total_tokens"] >= max_tokens:
             stop_reason = "tokens"
+        elif conflicts and language_blocked:
+            stop_reason = "quota_conflict"
         elif any(reason == "source_scan_limit" for reason in state["source_stops"].values()):
             stop_reason = "source_scan_limit"
-        elif len(bucket_stops) == len(bucket_caps):
+        elif all(cap - state["bucket_counts"].get(bucket, 0) <= tail_limit(cap, tail_tokens)
+                 or bucket in bucket_stops for bucket, cap in bucket_caps.items()):
             stop_reason = "bucket_caps_or_tails"
     state["stop_reason"] = stop_reason
+    state["scheduling"] = scheduling
+    state["quota_conflicts"] = conflicts
     flush()
     total_tokens = state["total_tokens"]
     bucket_counts, lang_counts = state["bucket_counts"], state["lang_counts"]
@@ -365,6 +431,10 @@ def _build_pilot_locked(
                     "tokens_per_second": (total_tokens - initial_tokens) / max(time.monotonic() - started, 1e-9)},
         "source_scan": state["source_scan"], "source_stops": state["source_stops"],
         "stop_reason": stop_reason, "max_source_docs": max_source_docs,
+        "scheduling": scheduling, "quota_conflicts": conflicts,
+        "completion_status": ("blocked_by_language_quotas" if stop_reason == "quota_conflict"
+                              else "budget_complete" if stop_reason in {"tokens", "bucket_caps_or_tails"}
+                              else "incomplete"),
         "tail_policy": state["tail_policy"], "tail_tokens": tail_tokens,
         "tokenizer_corpus_chars": state["corpus_chars"], "shards": len(shard_files(output_dir)),
         "next_shard_idx": state["shard_idx"], "output_dir": str(output_dir),
