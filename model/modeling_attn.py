@@ -122,6 +122,23 @@ class ShinraRotaryEmbedding(nn.Module):
             return 0.1 * math.log(self.scaling_factor) + 1.0
         return 1.0
 
+    def _apply(self, fn):
+        # RoPE inverse frequencies are numerically sensitive and must remain
+        # FP32 even when the rest of the model is cast to FP16/BF16.
+        #
+        # Rebuild the buffer after Module._apply() instead of converting the
+        # already-cast value back to FP32. A global model.to(dtype=torch.float16)
+        # can overflow/corrupt inv_freq before such a conversion is possible.
+        super()._apply(fn)
+
+        device = self.inv_freq.device
+        self.inv_freq = self._build_inv_freq(device=device).to(
+            device=device,
+            dtype=torch.float32,
+        )
+
+        return self
+
     @torch.no_grad()
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         inv_freq = self.inv_freq
