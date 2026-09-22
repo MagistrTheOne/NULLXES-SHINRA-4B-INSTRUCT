@@ -122,26 +122,30 @@ class ShinraRotaryEmbedding(nn.Module):
             return 0.1 * math.log(self.scaling_factor) + 1.0
         return 1.0
 
-    def _apply(self, fn):
-        # RoPE inverse frequencies are numerically sensitive and must remain
-        # FP32 even when the rest of the model is cast to FP16/BF16.
-        #
-        # Rebuild the buffer after Module._apply() instead of converting the
-        # already-cast value back to FP32. A global model.to(dtype=torch.float16)
-        # can overflow/corrupt inv_freq before such a conversion is possible.
-        super()._apply(fn)
-
+    def _rebuild_inv_freq(self) -> None:
         device = self.inv_freq.device
         self.inv_freq = self._build_inv_freq(device=device).to(
             device=device,
             dtype=torch.float32,
         )
 
+    def _apply(self, fn, recurse=True):
+        # inv_freq is derived runtime state rather than checkpoint state.
+        # Rebuild it after module transformations so operations such as to(),
+        # half(), to_empty(), and device moves cannot leave it stale or
+        # uninitialized.
+        super()._apply(fn, recurse=recurse)
+        self._rebuild_inv_freq()
         return self
 
     @torch.no_grad()
     def forward(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        inv_freq = self.inv_freq
+        # inv_freq is derived runtime state and is intentionally absent from
+        # checkpoints. Some loading/materialization paths can replace a
+        # non-persistent buffer with uninitialized storage. Build the
+        # authoritative FP32 frequencies at the execution boundary instead
+        # of trusting checkpoint-external buffer contents.
+        inv_freq = self._build_inv_freq(device=x.device)
         if self.rope_type == "dynamic":
             seq_len = int(position_ids.max().item()) + 1
             if seq_len > self.original_max_position_embeddings:

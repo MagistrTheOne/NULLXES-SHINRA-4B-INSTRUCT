@@ -64,3 +64,74 @@ def test_rope_outputs_remain_finite_after_fp16_cast():
 
     assert torch.isfinite(cos).all()
     assert torch.isfinite(sin).all()
+
+def test_rope_inv_freq_recovers_after_to_empty():
+    config = ShinraConfig()
+    rope = ShinraRotaryEmbedding(config, device=torch.device("cpu"))
+
+    expected = rope._build_inv_freq(device=torch.device("cpu")).float()
+
+    rope.to_empty(device=torch.device("cpu"))
+
+    assert rope.inv_freq.dtype == torch.float32
+    assert torch.isfinite(rope.inv_freq).all()
+    torch.testing.assert_close(
+        rope.inv_freq,
+        expected,
+        rtol=0.0,
+        atol=0.0,
+    )
+
+
+def test_rope_forward_ignores_corrupted_nonpersistent_buffer():
+    config = _tiny_config()
+
+    rope = ShinraRotaryEmbedding(
+        config=config,
+        device=torch.device("cpu"),
+    )
+
+    # Simulate a loader replacing the non-persistent derived buffer
+    # with arbitrary but finite garbage.
+    rope.inv_freq = torch.zeros_like(rope.inv_freq)
+
+    x = torch.zeros(
+        1,
+        7,
+        config.hidden_size,
+        dtype=torch.float32,
+    )
+
+    position_ids = torch.arange(
+        7,
+        dtype=torch.long,
+    ).unsqueeze(0)
+
+    cos_corrupt, sin_corrupt = rope(
+        x,
+        position_ids,
+    )
+
+    reference = ShinraRotaryEmbedding(
+        config=config,
+        device=torch.device("cpu"),
+    )
+
+    cos_reference, sin_reference = reference(
+        x,
+        position_ids,
+    )
+
+    torch.testing.assert_close(
+        cos_corrupt,
+        cos_reference,
+        rtol=0.0,
+        atol=0.0,
+    )
+
+    torch.testing.assert_close(
+        sin_corrupt,
+        sin_reference,
+        rtol=0.0,
+        atol=0.0,
+    )
