@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import math
 from typing import Any
 
@@ -363,7 +364,17 @@ class ShinraFlashAttention2(ShinraAttention):
                 output_attentions=True,
                 **kwargs,
             )
-        from flash_attn import flash_attn_func, flash_attn_varlen_func
+        try:
+            flash_attn = importlib.import_module("flash_attn")
+        except ImportError as exc:
+            raise ImportError(
+                "flash_attention_2 was selected, but the optional "
+                "'flash_attn' package is not installed. Install a compatible "
+                "FlashAttention build or use attention_implementation='sdpa'."
+            ) from exc
+
+        flash_attn_func = flash_attn.flash_attn_func
+        flash_attn_varlen_func = flash_attn.flash_attn_varlen_func
 
         query_states, key_states, value_states = self._project(
             hidden_states, position_embeddings, past_key_value, cache_position
