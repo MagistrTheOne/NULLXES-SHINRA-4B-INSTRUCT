@@ -1,5 +1,7 @@
 # NULLXES SHINRA — Research Program status
 
+**Training ledger (23-09-2026):** [`TRAINING_STATUS.md`](TRAINING_STATUS.md). S0 не закрыт. Следующий ход — S0.5 Blind-80, inference only, optimizer запрещён.
+
 **Status:** Architecture Frozen / Tokenizer DNA Frozen / Runtime contract added  
 **Repo:** https://github.com/MagistrTheOne/NULLXES-SHINRA-4B-INSTRUCT  
 **Hypothesis node:** Google Colab Pro A100 **80GB** (167 GB RAM). RTX 2080 forbidden.  
