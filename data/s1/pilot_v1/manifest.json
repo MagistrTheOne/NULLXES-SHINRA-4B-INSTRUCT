@@ -1,0 +1,70 @@
+{
+  "builder_version": "s1-curriculum-pilot-v1",
+  "seed": "s1-curriculum-pilot-v1",
+  "record_count": 20000,
+  "sha256": "4861604daa627df43a87da77a7ad12e292f8587b52629501c8b49af5414df1f0",
+  "languages": {
+    "en": 10000,
+    "ru": 10000
+  },
+  "families": {
+    "S1-01": 3000,
+    "S1-02": 3000,
+    "S1-03": 2400,
+    "S1-04": 2400,
+    "S1-05": 2000,
+    "S1-06": 2400,
+    "S1-07": 2000,
+    "S1-08": 1000,
+    "S1-09": 800,
+    "S1-10": 1000
+  },
+  "family_targets": {
+    "S1-01": 3000,
+    "S1-02": 3000,
+    "S1-03": 2400,
+    "S1-04": 2400,
+    "S1-05": 2000,
+    "S1-06": 2400,
+    "S1-07": 2000,
+    "S1-08": 1000,
+    "S1-09": 800,
+    "S1-10": 1000
+  },
+  "family_gap": {
+    "S1-01": 0,
+    "S1-02": 0,
+    "S1-03": 0,
+    "S1-04": 0,
+    "S1-05": 0,
+    "S1-06": 0,
+    "S1-07": 0,
+    "S1-08": 0,
+    "S1-09": 0,
+    "S1-10": 0
+  },
+  "difficulties": {
+    "A": 3000,
+    "B": 4000,
+    "C": 5439,
+    "D": 5561,
+    "E": 2000
+  },
+  "difficulty_gap": {
+    "A": 0,
+    "B": 0,
+    "C": -561,
+    "D": 561,
+    "E": 0
+  },
+  "source_mix": {
+    "NATIVE": 10200,
+    "PUBLIC": 9800
+  },
+  "public_shortfalls": {},
+  "duplicate_removed": 0,
+  "diagnostic_blocked": 0,
+  "approx_characters": 9604175,
+  "approx_tokens_chars_div_4": 2401043,
+  "token_estimate": "approximation chars//4; SHINRA tokenizer not used"
+}

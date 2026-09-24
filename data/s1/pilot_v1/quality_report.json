@@ -1,0 +1,12 @@
+{
+  "checks": {
+    "duplicate_prompts": 0,
+    "duplicate_prompt_target": 0
+  },
+  "shinra_by_family": {
+    "S1-10": 626
+  },
+  "nullxes_by_family": {
+    "S1-10": 624
+  }
+}
