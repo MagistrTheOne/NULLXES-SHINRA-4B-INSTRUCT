@@ -24,3 +24,5 @@ model = AutoModelForCausalLM.from_pretrained(
 ```
 
 Model card: `docs/MODEL_CARD.md` копируется в `README.md` репозитория модели.
+
+Корпус, рабочее состояние и опубликованные веса разведены в `docs/storage.md`. Локальный диск пользователя для датасетов и checkpoint не используется.
