@@ -2,9 +2,9 @@
 
 **Дата фиксации:** 23-09-2026  
 **Режим записи:** локальный документ. Машину не запускать.  
-**S0 в целом:** не закрыт. DEV-20 не является финальным доказательством generalization.
+**S0 в целом:** не закрыт. Слепой gate провален. Identity lock не ставится.
 
-DEV-20 видели с ошибками, и repair строился вокруг этих ошибок. Поэтому Stage 0 **не получает общую зелёную галку**, пока не пройден слепой gate.
+DEV-20 = 20/20 на уже виденном наборе. Это не генерализация. S0.5 это подтвердил.
 
 ## Stage ledger
 
@@ -18,24 +18,52 @@ DEV-20 видели с ошибками, и repair строился вокруг
 | S0.2 | Canonical route lock | ✅ | 14/18, stable canonical targets |
 | S0.3 | Contrast generalization | ✅ | best `15/20`, epoch 3 |
 | S0.4 | Micro route repair | ✅ | best `19/20`, step 4 |
-| S0.4.1 | EN language-route repair | ✅ | **20/20**, one optimizer step |
-| **S0.5** | **Blind Identity Gate 80** | 🟡 **NEXT** | inference only |
-| S0.LOCK | Identity Lock | ⬜ | requires blind gate |
+| S0.4.1 | EN language-route repair | ✅ | DEV **20/20**, one optimizer step |
+| S0.5 | Blind Identity Gate 80 | ❌ | **59/80** |
+| S0.5A | Route autopsy | ✅ | failures разобраны отдельно от теста |
+| S0.6 | Dataset build | ✅ | 96 unique, overlap с S0.5 = 0 |
+| **S0.6** | **Native route training** | 🟡 **NEXT** | full-weight, disjoint set |
+| S0.6 | Internal DEV | ⬜ | после обучения, не вместо слепого gate |
+| S0.5 | Frozen recheck | ⬜ | старый Blind-80 не доучивать |
+| S0.7 | Fresh blind gate | ⬜ | новый набор, не S0.5 |
+| S0.IDENTITY-LOCK | Identity lock | ⬜ | только после S0.7 |
 | S1 | Language + Semantics | ⬜ | dataset/curriculum TBD |
 | S2 | Mathematics | ⬜ | TBD |
 | S3 | Code | ⬜ | TBD |
 | S4 | General Reasoning | ⬜ | TBD |
 | S5 | Multilingual | ⬜ | TBD |
-| S6 | Tools + Structured Output | ⬜ | TBD |
+| S6 | Tools / Structured Output | ⬜ | TBD |
 | S7 | NULLXES Native Agent Behavior | ⬜ | TBD |
 
+## S0.5 — факт прогона
+
+```text
+BLIND-80        59/80   ❌
+EOT             80/80   ✅
+EN              26/40   ❌
+RU              33/40   ❌
+```
+
+Optimizer внутри теста не включался. Картина снята целиком, потом аутопсия.
+
+## S0.6 dataset
+
+```text
+examples        96
+unique          96
+S0.5 overlap    0
+SHA256          65b7807e...7fef
+```
+
 ## Current canonical candidate
+
+Кандидат до S0.6 training — чекпоинт, который провалил слепой gate:
 
 ```text
 /workspace/shinra-stage0/checkpoints/s041-language-repair/stage041-dev20-perfect
 ```
 
-## Current hard facts
+## Hard facts, которые не отменены провалом S0.5
 
 ```text
 PARAMETERS      3,926,076,416
@@ -43,12 +71,10 @@ TRAINING        FULL-WEIGHT NATIVE
 ADAPTERS        NONE
 DEV-20          20/20
 DEV FAILURES    0
-EOT             PASS
+EOT             80/80
 S0.4.1 STEPS    1
 PEAK VRAM       30.773 GiB
 ```
-
-DEV-20 = 20/20 на уже виденном наборе. Это не слепая генерализация.
 
 ## Развилка
 
@@ -72,49 +98,47 @@ DEV-20 = 20/20 на уже виденном наборе. Это не слепа
                        │
                        ▼
              ┌─────────────────────┐
-             │ S0.5 BLIND-80 🟡   │
-             │ TRAINING = FORBIDDEN│
+             │ S0.5 BLIND-80 ❌   │
+             │ 59/80              │
+             │ EN 26/40  RU 33/40 │
+             │ EOT 80/80          │
              └─────────────────────┘
+                       │
+                       ▼
+                 S0.5A AUTOPSY ✅
+                       │
+                       ▼
+              S0.6 DATASET 96 ✅
+              overlap with S0.5 = 0
+                       │
+                       ▼
+             ┌─────────────────────┐
+             │ S0.6 TRAIN 🟡 NEXT │
+             └─────────────────────┘
+                       │
+                       ▼
+               S0.6 INTERNAL DEV ⬜
+                       │
+                       ▼
+             S0.5 FROZEN RECHECK ⬜
+                       │
+                       ▼
+             S0.7 FRESH BLIND ⬜
                        │
                  PASS  │
                        ▼
-               🔒 IDENTITY LOCK
+            🔒 S0.IDENTITY-LOCK
                        │
                        ▼
                S1 SEMANTICS
 ```
 
-Следующая развилка отсутствует: ход один — **S0.5 BLIND-80**.
+## Правило lock
 
-## Критерий S0.5
+S0.IDENTITY-LOCK ставится только после свежего S0.7. Internal DEV и повтор старого Blind-80 lock не дают: первый набор уже использовался для repair, второй уже виден.
 
-Blind-80 строится из **80 совершенно новых prompts**: 40 EN + 40 RU.
-
-Проверяется:
-
-- identity
-- creator
-- false identity
-- false creator
-- SHINRA ≠ NULLXES
-- category boundary
-- paraphrase generalization
-- language isolation
-
-Правила прогона:
-
-- никакого optimizer
-- никакого repair внутри теста
-- сначала полная картина: 80 probes, failures, распределение по категориям
-
-Если что-то падает, S0.5 остаётся красным. Route margins диагностируются отдельно, не внутри того же прогона.
-
-Если проходит, результаты сохраняются и ставится:
-
-> **S0 IDENTITY LOCK: ✅ CLOSED**
-
-После этого Stage 0 больше не трогается как curriculum. Identity examples остаются маленьким preservation/replay slice в последующих стадиях, чтобы S1/S2/S3 не стёрли SHINRA.
+После lock Stage 0 не трогается как curriculum. Identity остаётся маленьким preservation/replay slice, чтобы S1/S2/S3 не стёрли маршрут.
 
 ## Следующий ход
 
-**S0.5 BLIND-80.** Inference only. Training forbidden.
+**S0.6 Native Route Training** на 96 уникальных примерах без пересечения с Blind-80. Машину из этого документа не запускать.

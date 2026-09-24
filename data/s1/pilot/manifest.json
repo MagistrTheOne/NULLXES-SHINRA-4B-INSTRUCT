@@ -1,0 +1,48 @@
+{
+  "builder_version": "s1-public-core-v1",
+  "record_count": 5000,
+  "family_counts": {
+    "S1-03": 793,
+    "S1-05": 550,
+    "S1-06": 800,
+    "S1-07": 1557,
+    "S1-08": 1300
+  },
+  "language_counts": {
+    "en": 2200,
+    "ru": 2800
+  },
+  "source_counts": {
+    "rsg_danetqa": 450,
+    "rsg_rcb": 400,
+    "rsg_rucos": 350,
+    "rsg_rwsd": 200,
+    "rsg_terra": 400,
+    "tydiqa_primary": 600,
+    "tydiqa_secondary": 2600
+  },
+  "duplicate_counts": 0,
+  "diagnostic_blocked": 0,
+  "excluded_split_counts": 0,
+  "license_status": "APPROVED",
+  "sha256": "ae3907c6e219727235a9aa8dc33410a015412f2023f8340a37a7b65bf7aaaaa1",
+  "frozen_family_percent": {
+    "S1-01": 15,
+    "S1-02": 15,
+    "S1-03": 12,
+    "S1-04": 12,
+    "S1-05": 10,
+    "S1-06": 12,
+    "S1-07": 10,
+    "S1-08": 5,
+    "S1-09": 4,
+    "S1-10": 5
+  },
+  "gaps": [
+    "S1-01",
+    "S1-02",
+    "S1-04",
+    "S1-09",
+    "S1-10"
+  ]
+}

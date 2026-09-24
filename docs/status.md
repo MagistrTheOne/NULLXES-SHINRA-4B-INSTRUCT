@@ -1,6 +1,6 @@
 # NULLXES SHINRA — Research Program status
 
-**Training ledger (23-09-2026):** [`TRAINING_STATUS.md`](TRAINING_STATUS.md). S0 не закрыт. Следующий ход — S0.5 Blind-80, inference only, optimizer запрещён.
+**Training ledger (23-09-2026):** [`TRAINING_STATUS.md`](TRAINING_STATUS.md). S0 не закрыт. S0.5 Blind-80 провален: 59/80 (EN 26/40, RU 33/40, EOT 80/80). Следующий ход — S0.6 native route training на 96 примерах без пересечения с тестом.
 
 **Status:** Architecture Frozen / Tokenizer DNA Frozen / Runtime contract added  
 **Repo:** https://github.com/MagistrTheOne/NULLXES-SHINRA-4B-INSTRUCT  

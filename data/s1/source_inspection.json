@@ -1,0 +1,144 @@
+{
+  "sources": [
+    {
+      "source_id": "tydiqa_secondary",
+      "config": "secondary_task",
+      "allowed_splits": [
+        "train"
+      ],
+      "schema": [
+        "answers",
+        "context",
+        "id",
+        "question",
+        "title"
+      ],
+      "sample_language_field": "finnish--763309140881452"
+    },
+    {
+      "source_id": "tydiqa_primary",
+      "config": "primary_task",
+      "allowed_splits": [
+        "train"
+      ],
+      "schema": [
+        "annotations",
+        "document_plaintext",
+        "document_title",
+        "document_url",
+        "language",
+        "passage_answer_candidates",
+        "question_text"
+      ],
+      "sample_language_field": "indonesian"
+    },
+    {
+      "config": "DaNetQA",
+      "splits_present": [
+        "",
+        "test",
+        "train",
+        "val"
+      ],
+      "train_rows": 1749,
+      "schema": [
+        "idx",
+        "label",
+        "passage",
+        "question"
+      ],
+      "opened_split": "train",
+      "source_id": "rsg_danetqa"
+    },
+    {
+      "config": "TERRa",
+      "splits_present": [
+        "",
+        "test",
+        "train",
+        "val"
+      ],
+      "train_rows": 2616,
+      "schema": [
+        "hypothesis",
+        "idx",
+        "label",
+        "premise"
+      ],
+      "opened_split": "train",
+      "source_id": "rsg_terra"
+    },
+    {
+      "config": "RCB",
+      "splits_present": [
+        "",
+        "test",
+        "train",
+        "val"
+      ],
+      "train_rows": 438,
+      "schema": [
+        "genre",
+        "hypothesis",
+        "idx",
+        "label",
+        "negation",
+        "premise",
+        "verb"
+      ],
+      "opened_split": "train",
+      "source_id": "rsg_rcb"
+    },
+    {
+      "config": "RuCoS",
+      "splits_present": [
+        "",
+        "test",
+        "train",
+        "val"
+      ],
+      "train_rows": 72193,
+      "schema": [
+        "idx",
+        "passage",
+        "qas"
+      ],
+      "opened_split": "train",
+      "source_id": "rsg_rucos"
+    },
+    {
+      "config": "RWSD",
+      "splits_present": [
+        "",
+        "test",
+        "train",
+        "val"
+      ],
+      "train_rows": 606,
+      "schema": [
+        "idx",
+        "label",
+        "target",
+        "text"
+      ],
+      "opened_split": "train",
+      "source_id": "rsg_rwsd"
+    },
+    {
+      "config": "MuSeRC",
+      "splits_present": [
+        "",
+        "test",
+        "train",
+        "val"
+      ],
+      "train_rows": 500,
+      "schema": [
+        "idx",
+        "passage"
+      ],
+      "opened_split": "train",
+      "source_id": "rsg_muserc"
+    }
+  ]
+}
