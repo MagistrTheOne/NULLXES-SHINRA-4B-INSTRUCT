@@ -92,10 +92,13 @@ def test_dedup_and_diagnostic_blacklist():
     assert dedup.removed == 1
     blocked = ExactDedup({sha256_text(record["messages"][0]["content"])})
     assert blocked.accept(record) is False
+    source = (ROOT / "data" / "s1" / "blacklist.py").read_text(encoding="utf-8")
+    assert "maxon" not in source
+    assert "C:\\Users" not in source
     blacklist = diagnostic_blacklist()
     assert len(QA_PROMPTS) == 12
     assert sha256_text(QA_PROMPTS[0]) in blacklist
-    assert len(blacklist) >= 12
+    assert len(blacklist) >= 12 + 160
 
 
 def test_spec_hash():

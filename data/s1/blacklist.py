@@ -6,17 +6,10 @@ import json
 from pathlib import Path
 
 from data.s1.foundation import sha256_text
-# Path to the S07 dataset
-S07 = Path(
-    r"C:\Users\maxon\.\huggingface\hub\models--MagistrTheOne--NULLXES-SHINRA-4B-INSTRUCT"
-    r"\snapshots\efae04115951d9473ebc2a90a2b2c684115408e7"
-    r"\exp\stage0-2026-09-24-final\eval\s07_fresh_blind_dataset.json"
-)
-S05 = Path(
-    r"C:\Users\maxon\.cache\huggingface\hub\models--MagistrTheOne--NULLXES-SHINRA-4B-INSTRUCT"
-    r"\snapshots\efae04115951d9473ebc2a90a2b2c684115408e7"
-    r"\exp\stage0-2026-09-23\research\s05-blind80\s05_blind80_dataset.json"
-)
+
+HASH_PATH = Path(__file__).resolve().parent / "frozen_diagnostic_hashes.json"
+FROZEN_REVISION = "efae04115951d9473ebc2a90a2b2c684115408e7"
+FROZEN_COUNTS = {"s05": 80, "s07": 80}
 
 QA_PROMPTS = (
     "Context:\nThe ferry from Greyhaven to Lumen Dock leaves at dawn. Mira Holt bought ticket 418 at the harbor office. The crossing takes forty minutes.\n\nQuestion:\nWhat is the number of Mira Holt's ticket?\n\nAnswer briefly using only the context.",
@@ -34,13 +27,22 @@ QA_PROMPTS = (
 )
 
 
-def _prompts(path: Path) -> list[str]:
-    if not path.exists():
-        return []
-    rows = json.loads(path.read_text(encoding="utf-8"))
-    return [str(row["prompt"]) for row in rows if row.get("prompt")]
+def frozen_prompt_hashes() -> set[str]:
+    if not HASH_PATH.is_file():
+        raise FileNotFoundError(f"missing frozen diagnostic hashes: {HASH_PATH.name}")
+    payload = json.loads(HASH_PATH.read_text(encoding="utf-8"))
+    if payload.get("revision") != FROZEN_REVISION:
+        raise ValueError("frozen diagnostic revision mismatch")
+    hashes: set[str] = set()
+    for name, expected in FROZEN_COUNTS.items():
+        item = payload["sets"][name]
+        prompts = item["prompt_sha256"]
+        if item["count"] != expected or len(prompts) != expected:
+            raise ValueError(f"incomplete frozen diagnostic set {name}")
+        hashes.update(prompts)
+    return hashes
 
 
 def diagnostic_blacklist() -> set[str]:
-    prompts = list(QA_PROMPTS) + _prompts(S05) + _prompts(S07)
-    return {sha256_text(prompt) for prompt in prompts}
+    prompts = {sha256_text(prompt) for prompt in QA_PROMPTS}
+    return prompts | frozen_prompt_hashes()
