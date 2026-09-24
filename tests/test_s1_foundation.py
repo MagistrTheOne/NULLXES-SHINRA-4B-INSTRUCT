@@ -38,7 +38,14 @@ def test_registry_guards():
     for source in registry["sources"]:
         assert source["license_status"] == "APPROVED"
         assert "test" not in source["allowed_splits"]
-        assert source["license"] in ("apache-2.0", "mit", "nullxes-internal", "google-paws-dataset+cc-by-sa-3.0")
+        assert source["license"] in (
+            "apache-2.0",
+            "mit",
+            "nullxes-internal",
+            "google-paws-dataset+cc-by-sa-3.0",
+            "cc-by-sa-4.0",
+            "cc-by-2.0",
+        )
 
 
 def test_eval_only_status_is_rejected_before_approval():

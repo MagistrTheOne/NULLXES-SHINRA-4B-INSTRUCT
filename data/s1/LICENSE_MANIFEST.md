@@ -65,6 +65,64 @@ Training status here is the V1 builder decision. It is not a new license grant.
 - restrictions/notes: no Russian split. Not added to the train registry.
 - decision: LEGAL_REVIEW
 
+## WikiSplit
+
+- dataset: WikiSplit train.tsv
+- upstream URL: https://github.com/google-research-datasets/wiki-split
+- license: cc-by-sa-4.0
+- source text: Wikipedia revision history, CC BY-SA 4.0
+- training status: APPROVED for train.tsv only
+- attribution requirement: Botha et al. 2018 and Wikipedia authors; share-alike applies
+- decision: APPROVED
+
+## FewRel train_wiki
+
+- dataset: FewRel train_wiki
+- upstream URL: https://thunlp.github.io/2/fewrel2_nota.html
+- license: cc-by-sa-4.0 on the dataset
+- source text: Wikipedia sentences, CC BY-SA
+- training status: APPROVED for train_wiki only
+- restrictions/notes: the GitHub MIT license covers code, not the sentences. NYT, PubMed, and SemEval files are not train sources.
+- decision: APPROVED
+
+## T-REx
+
+- dataset: T-REx Wikipedia/Wikidata alignments
+- upstream URL: https://w3id.org/t-rex
+- license: cc-by-sa-4.0
+- source text: Wikipedia abstracts and Wikidata, CC BY-SA
+- training status: APPROVED for the original release, one relation per sentence
+- restrictions/notes: pipeline code is MIT and is not the data license. Later benchmark test splits are excluded.
+- decision: APPROVED
+
+## SNLI
+
+- dataset: SNLI 1.0 train
+- upstream URL: https://nlp.stanford.edu/projects/snli/
+- license: cc-by-sa-4.0
+- source text: Flickr30k captions, Attribution-ShareAlike. VisualGenome pilot rows (`vg_`) are excluded.
+- training status: APPROVED for train only, gold labels only
+- restrictions/notes: validation and test are not used. The paper PDF is separately CC-BY-NC-SA and is not the dataset license.
+- decision: APPROVED
+
+## TaPaCo
+
+- dataset: TaPaCo English and Russian paraphrase sets
+- upstream URL: https://doi.org/10.5281/zenodo.3707949
+- license: cc-by-2.0
+- source text: Tatoeba sentences, CC BY 2.0 FR
+- training status: APPROVED, one pair per paraphrase set, languages kept separate
+- attribution requirement: Scherrer 2020 and Tatoeba authors
+- decision: APPROVED
+
+## DiscoFuse
+
+- dataset: DiscoFuse
+- upstream URL: https://github.com/google-research-datasets/discofuse/
+- Wikipedia subset: APPROVED reserve, not used in V2 while WikiSplit fills S1-09
+- Sports subset: not approved; underlying article rights are not shown
+- decision: RESERVE / LEGAL_REVIEW
+
 ### XNLI
 
 - dataset: XNLI
