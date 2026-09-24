@@ -1,6 +1,7 @@
 # S1-P0 Train Contract
 
 Status: FROZEN FOR COLLECTION
+Amendment: P0 Amendment 1 (2026-09-24)
 Parent: S0.4.1 step 1
 Does not modify S1_DATA_SPEC.md
 Does not authorize training by itself
@@ -65,7 +66,9 @@ The seed does not change after this contract.
 Train is a later build.
 It must reject every prompt hash in `data/s1/p0_dev/dev_prompt_hashes.json`.
 It must reject the frozen S0.5, S0.7, and QA12 blacklist.
-Identity replay is 5% of supervised target tokens, hard maximum 6%.
+Identity replay is the complete validated unique train bank, used once.
+The hard maximum is 6% of supervised target tokens.
+The 5% identity target in S1_DATA_SPEC.md is the full-S1 curriculum target. It is not a minimum quota for this 2.5M run.
 All ten families are required.
 DEV and BLIND do not count toward the 2.5M.
 
@@ -89,3 +92,51 @@ Train loss is not a promotion metric.
 ## Gate
 
 Before the first optimizer step, the manifest must record parent hash, this seed, TRAIN sha256, DEV sha256, input tokens, target tokens, target tokens per update, and the fraction of labels that are not -100.
+The manifest must also record the effective P0 family targets from Amendment 1.
+
+## P0 Amendment 1
+
+Date: 2026-09-24
+Reason: unique identity replay capacity
+
+Previous operative rule, kept here and in git history: identity replay is 5% of supervised target tokens, hard maximum 6%.
+
+That 5% floor is withdrawn for this P0 run only. S1_DATA_SPEC.md is unchanged. Full S1 stays on its own family table, including identity at 5%.
+
+P0 is an acquisition experiment. Its parent, S0.4.1, already shows identity behavior. Identity rows in P0 are replay and regression protection, not the main thing this run is trying to teach. A target-token floor larger than the unique semantic bank would require duplicate prompts, cosmetic paraphrases, or longer identity answers. Those would make the corpus worse. P0 therefore plays the validated unique bank once and keeps the 6% ceiling.
+
+S1-10 stays inside three facts: the name is SHINRA, the creator is NULLXES, and SHINRA is not NULLXES. No mission, personality, gender, consciousness, product category, biography, or new canonical fact.
+
+Rules for the bank:
+
+- use every validated unique P0 identity train prompt once
+- duplicate prompts are forbidden
+- do not mint cosmetic paraphrases to fill a quota
+- do not lengthen the identity answer to fill a quota
+- the actual fraction is whatever that bank tokenizes to
+- 12,816 is the count from the 2026-09-24 validation, not a second authority. If a later validation of the same bank recounts, the recount replaces 12,816 and the family table below is recomputed
+
+Validation on 2026-09-24, frozen tokenizer, each prompt once:
+
+- unique prompts: 2,304 (1,152 EN and 1,152 RU)
+- supervised target tokens: 12,816 (EN 6,480, RU 6,336)
+- fraction of 2,500,000: 0.51264%
+
+The released remainder is R = 2,500,000 - I. I is the validated bank. For I = 12,816, R = 2,487,184.
+
+R is split across S1-01 through S1-09 by the original weights 15, 15, 12, 12, 10, 12, 10, 5, 4. Those weights sum to 95. Each budget is the integer quotient of R * weight / 95. Leftover tokens go by the largest-remainder method. Equal remainders break by family id. S1-10 is I, not a rescaled share.
+
+Effective targets for the validated count:
+
+- S1-01: 392,713
+- S1-02: 392,713
+- S1-03: 314,171
+- S1-04: 314,171
+- S1-05: 261,809
+- S1-06: 314,171
+- S1-07: 261,809
+- S1-08: 130,904
+- S1-09: 104,723
+- S1-10: 12,816
+
+Sum: 2,500,000. The total budget does not shrink. Atomic overshoot of the last accepted row is still allowed on top of this table and must be reported. The build manifest records the same table.
