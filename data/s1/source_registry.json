@@ -123,6 +123,22 @@
       "notes": "train.jsonl only. One normalized record per question."
     },
     {
+      "source_id": "paws_wiki",
+      "hf_repo": "google-research-datasets/paws",
+      "config": "labeled_final",
+      "upstream": "https://github.com/google-research-datasets/paws",
+      "license": "google-paws-dataset+cc-by-sa-3.0",
+      "license_status": "APPROVED",
+      "languages": ["en"],
+      "allowed_splits": ["train"],
+      "forbidden_splits": ["validation", "test"],
+      "s1_families": ["S1-04"],
+      "transform_version": "paws_paraphrase.v1",
+      "source_revision": "hub-main",
+      "source_class": "PUBLIC-DERIVED",
+      "notes": "labeled_final train only. Validation, test, unlabeled_final, labeled_swap, and PAWS-QQP are not training sources."
+    },
+    {
       "source_id": "native_instruction",
       "hf_repo": null,
       "config": "native",

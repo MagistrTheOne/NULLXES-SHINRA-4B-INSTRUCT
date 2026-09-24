@@ -30,17 +30,39 @@ Training status here is the V1 builder decision. It is not a new license grant.
 
 ## Held out of V1 train
 
-### PAWS / PAWS-X
+## PAWS-Wiki
 
-- dataset: PAWS, PAWS-X
+- dataset: PAWS-Wiki labeled_final
+- upstream URL: https://github.com/google-research-datasets/paws/blob/master/LICENSE
+- distribution README: https://github.com/google-research-datasets/paws/blob/master/README.md
+- HF repo: https://huggingface.co/datasets/google-research-datasets/paws
+- config: labeled_final
+- split: train only
+- license: Google PAWS dataset license, plus Wikipedia sentence text under CC BY-SA 3.0
+- license evidence: upstream `LICENSE` states the dataset may be freely used for any purpose and asks for acknowledgement of Google LLC. Wikipedia source text is not relicensed by that file, so CC BY-SA 3.0 attribution and share-alike still apply to the sentences. The Apache-2.0 header on `qqp_generate_data.py` is a code license and is not the dataset license.
+- training status: APPROVED for labeled_final train only
+- attribution requirement: acknowledge Google LLC; attribute Wikipedia contributors and retain CC BY-SA share-alike on Wikipedia-derived sentence text
+- share-alike requirement: yes, for the Wikipedia sentence text
+- restrictions/notes: validation, test, unlabeled_final, and labeled_swap are not used. English only. A transformed training row is PUBLIC-DERIVED and keeps the upstream row id.
+- decision: APPROVED
+
+### PAWS-QQP
+
+- dataset: PAWS-QQP
+- upstream URL: https://github.com/google-research-datasets/paws/blob/master/README.md
+- license: Quora Question Pairs terms, not the PAWS dataset license
+- license evidence: the PAWS README states raw PAWS-QQP cannot be redistributed because of the QQP license. Quora's dataset release allows non-commercial use under its terms.
+- training status: not approved
+- redistribution: no
+- decision: RESTRICTED
+
+### PAWS-X
+
+- dataset: PAWS-X
 - upstream URL: https://github.com/google-research-datasets/paws
 - HF repo: https://huggingface.co/datasets/google-research-datasets/paws-x
-- license: other
-- license evidence: Hub card `license: other`; upstream license text is not copied here
-- training status: LEGAL_REVIEW
-- attribution requirement: not accepted for V1
-- share-alike requirement: unknown until the upstream text is fixed
-- restrictions/notes: not a training source in V1
+- training status: not a P0 source
+- restrictions/notes: no Russian split. Not added to the train registry.
 - decision: LEGAL_REVIEW
 
 ### XNLI

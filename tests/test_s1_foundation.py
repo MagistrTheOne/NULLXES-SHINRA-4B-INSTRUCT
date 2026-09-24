@@ -38,7 +38,7 @@ def test_registry_guards():
     for source in registry["sources"]:
         assert source["license_status"] == "APPROVED"
         assert "test" not in source["allowed_splits"]
-        assert source["license"] in ("apache-2.0", "mit", "nullxes-internal")
+        assert source["license"] in ("apache-2.0", "mit", "nullxes-internal", "google-paws-dataset+cc-by-sa-3.0")
 
 
 def test_eval_only_status_is_rejected_before_approval():
@@ -62,8 +62,9 @@ def test_eval_only_status_is_rejected_before_approval():
 
 def test_eval_only_and_unknown_are_absent_from_registry():
     text = (ROOT / "data" / "s1" / "source_registry.json").read_text(encoding="utf-8")
-    for name in ("xquad", "belebele", "rubq", "mmlu", "flores", "paws", "xnli"):
+    for name in ("xquad", "belebele", "rubq", "mmlu", "flores", "paws_qqp", "paws-x", "xnli"):
         assert name not in text
+    assert "paws_wiki" in text
 
 
 def test_transform_is_deterministic_and_user_only():

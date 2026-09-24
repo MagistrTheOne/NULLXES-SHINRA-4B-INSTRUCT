@@ -76,6 +76,24 @@ def coreference(source_id, config, row_id, language, context, question, answer, 
     )
 
 
+def paws_paraphrase(row_id, sentence1, sentence2, label):
+    answer = "yes" if int(label) == 1 else "no"
+    return make_record(
+        source_id="paws_wiki",
+        source_config="labeled_final",
+        source_split="train",
+        source_row_id=row_id,
+        language="en",
+        family="S1-04",
+        difficulty="C" if answer == "yes" else "D",
+        context=f"Sentence 1: {sentence1}\nSentence 2: {sentence2}",
+        question="Do these two sentences have the same meaning?",
+        answer=answer,
+        license_name="google-paws-dataset+cc-by-sa-3.0",
+        transform="paws_paraphrase.v1",
+    )
+
+
 def multirc(source_id, config, row_id, language, context, question, answer, license_name):
     return make_record(
         source_id=source_id,
