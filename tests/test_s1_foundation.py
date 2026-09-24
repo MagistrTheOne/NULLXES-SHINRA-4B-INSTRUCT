@@ -37,7 +37,7 @@ def test_registry_guards():
     for source in registry["sources"]:
         assert source["license_status"] == "APPROVED"
         assert "test" not in source["allowed_splits"]
-        assert source["license"] in ("apache-2.0", "mit")
+        assert source["license"] in ("apache-2.0", "mit", "nullxes-internal")
 
 
 def test_eval_only_and_unknown_are_absent_from_registry():

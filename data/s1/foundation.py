@@ -103,6 +103,7 @@ def make_record(
     answer: str,
     license_name: str,
     transform: str,
+    instruction: str | None = None,
 ) -> dict:
     source = assert_train_source(source_id, source_split)
     if language not in ("en", "ru"):
@@ -113,7 +114,7 @@ def make_record(
         raise ValueError("empty assistant target")
     stable = f"{source_id}|{source_config}|{source_split}|{source_row_id}|{family}"
     record_id = "s1v1-" + sha256_text(stable)[:16]
-    instruction = instruction_for(record_id, language)
+    instruction = instruction if instruction is not None else instruction_for(record_id, language)
     user = user_content(context.strip(), question.strip(), instruction)
     return {
         "id": record_id,
