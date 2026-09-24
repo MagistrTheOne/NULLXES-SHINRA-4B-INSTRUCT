@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 from data.s1.blacklist import QA_PROMPTS, diagnostic_blacklist
+from data.s1 import foundation
 from data.s1.foundation import (
     EN_INSTRUCTIONS,
     ExactDedup,
@@ -38,6 +39,25 @@ def test_registry_guards():
         assert source["license_status"] == "APPROVED"
         assert "test" not in source["allowed_splits"]
         assert source["license"] in ("apache-2.0", "mit", "nullxes-internal")
+
+
+def test_eval_only_status_is_rejected_before_approval():
+    original = foundation.source_by_id
+    foundation.source_by_id = lambda source_id: {
+        "source_id": source_id,
+        "license_status": "EVAL_ONLY",
+        "license": "other",
+        "allowed_splits": ["train"],
+        "forbidden_splits": ["validation", "test"],
+    }
+    try:
+        assert_train_source("custom_eval_set", "train")
+    except PermissionError as exc:
+        assert "eval-only" in str(exc)
+    else:
+        raise AssertionError("EVAL_ONLY source was accepted")
+    finally:
+        foundation.source_by_id = original
 
 
 def test_eval_only_and_unknown_are_absent_from_registry():
@@ -111,6 +131,7 @@ def test_spec_hash():
 
 if __name__ == "__main__":
     test_registry_guards()
+    test_eval_only_status_is_rejected_before_approval()
     test_eval_only_and_unknown_are_absent_from_registry()
     test_transform_is_deterministic_and_user_only()
     test_template_selection_depends_on_id_only()
