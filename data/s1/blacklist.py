@@ -6,9 +6,9 @@ import json
 from pathlib import Path
 
 from data.s1.foundation import sha256_text
-
+# Path to the S07 dataset
 S07 = Path(
-    r"C:\Users\maxon\.cache\huggingface\hub\models--MagistrTheOne--NULLXES-SHINRA-4B-INSTRUCT"
+    r"C:\Users\maxon\.\huggingface\hub\models--MagistrTheOne--NULLXES-SHINRA-4B-INSTRUCT"
     r"\snapshots\efae04115951d9473ebc2a90a2b2c684115408e7"
     r"\exp\stage0-2026-09-24-final\eval\s07_fresh_blind_dataset.json"
 )
