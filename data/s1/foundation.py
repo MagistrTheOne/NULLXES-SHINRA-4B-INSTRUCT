@@ -68,10 +68,10 @@ def source_by_id(source_id: str) -> dict:
 
 def assert_train_source(source_id: str, split: str) -> dict:
     source = source_by_id(source_id)
-    if source_id in EVAL_ONLY_SOURCES or source.get("license_status") == "EVAL_ONLY":
-        raise PermissionError(f"eval-only source {source_id}")
     if source["license_status"] != "APPROVED":
         raise PermissionError(f"license {source['license_status']} for {source_id}")
+    if source_id in EVAL_ONLY_SOURCES or source.get("license_status") == "EVAL_ONLY":
+        raise PermissionError(f"eval-only source {source_id}")
     if split != "train" or split in source["forbidden_splits"]:
         raise PermissionError(f"forbidden split {split} for {source_id}")
     if split not in source["allowed_splits"]:
