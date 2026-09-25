@@ -62,7 +62,7 @@ class Account:
             "MagistrTheOne/NULLXES-SHINRA-4B-INSTRUCT",
             "tokenizer.json",
             revision=REVISION,
-            local_files_only=os.environ.get("S1_P0_HUB") != "1",
+            local_files_only=os.environ.get("S1_P0_HUB") != "1" and os.environ.get("S1_P0_V4") != "1",
         )
         self.tokenizer = Tokenizer.from_file(path)
         template = (ROOT / "tokenizer" / "chat_template.jinja").read_text(encoding="utf-8")
@@ -237,6 +237,13 @@ class Build:
         return True
 
     def _maybe_flush(self, force: bool) -> None:
+        if os.environ.get("S1_P0_V4") == "1":
+            if not force and len(self.rows) < 60_000:
+                return
+            if not self.rows and not force:
+                return
+            self.sink.flush(force=force)
+            return
         if os.environ.get("S1_P0_HUB") != "1":
             return
         if not force and len(self.rows) < SHARD_ROWS:
@@ -515,6 +522,9 @@ def stream_rows(repo: str, config: str | None, split: str):
 
 def build() -> Build:
     job = Build()
+    prepare = getattr(Build, "_v4_prepare", None)
+    if os.environ.get("S1_P0_V4") == "1" and prepare is not None:
+        prepare(job)
     if os.environ.get("S1_P0_HUB") == "1":
         job.sink = HubSink(job)
         job.sink.restore()

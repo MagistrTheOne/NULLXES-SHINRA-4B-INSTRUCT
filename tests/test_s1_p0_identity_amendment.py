@@ -77,6 +77,14 @@ def _bank():
     return prompts, tokens
 
 
+def test_identity_argument_is_required():
+    try:
+        effective_family_targets()
+    except TypeError:
+        return
+    raise AssertionError("missing identity_tokens fell through")
+
+
 def test_unique_bank_and_budgets():
     prompts, tokens = _bank()
     assert len(prompts) == 2304
@@ -104,5 +112,6 @@ def test_unique_bank_and_budgets():
 
 
 if __name__ == "__main__":
+    test_identity_argument_is_required()
     test_unique_bank_and_budgets()
     print("test_s1_p0_identity_amendment: PASS")
