@@ -1,0 +1,1 @@
+{"text": "The value of 17 + 26 is", "source_id": "fixture-probe", "source_type": "natural", "domain": "math", "language": "en", "split": "train", "license": {"id": "fixture-local", "redistribution": true}, "provenance": {"uri_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "snapshot": "phase-b-fixture"}}

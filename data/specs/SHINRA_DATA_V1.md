@@ -54,25 +54,33 @@ Natural: `generator` null. Synthetic: generator required, `*.v0` S0 ids forbidde
 
 ---
 
-## Pipeline (phase B+, not this commit)
+## Pipeline (Phase B engine)
+
+Local JSONL/text only. No downloaders. No training.
 
 ```text
-RAW
+RAW (local path)
  → normalize (NFKC, strip NUL, reject `<|`)
- → language ID
- → classify → domain enum
- → quality / PII / garbage
+ → language ID (en|ru script; no fasttext fetch)
+ → classify → frozen domain enum
+ → sidecar (no URL) + S0 *.v0 ban
  → exact dedup (document_id)
  → near-dedup
- → train | validation
- → tokenize add_special_tokens=False
- → wrap [BOS]+body+[END_OF_TEXT=18]
- → special-token + probe-fingerprint firewall
- → stats
- → rolling shards
+ → probe fingerprint firewall
+ → body tokens (whitespace unless a tokenizer is injected)
+ → hard cap ≤ 20_000_000
+ → JSON report
 ```
 
-Phase B is a **corpus canary**: ≤20M tokens, ingest report, **no training**.
+Pack wrap `[BOS]+body+[END_OF_TEXT=18]` is **not** this phase.
+
+Allowlist: [`SHINRA_DATA_V1_SOURCES.md`](SHINRA_DATA_V1_SOURCES.md) is empty until a later commit.
+
+```bash
+python -m data.data_v1.phase_b --input tests/fixtures/data_v1/phase_b/ok
+```
+
+`scripts/validate_data_v1_phase_a.py` is a **second invocation path** of the Phase A contract, not an independent auditor.
 
 ---
 
@@ -118,5 +126,7 @@ Colab: `/content` scratch only. Do not Drive-mount the hot path.
 - [x] Offline validators + fingerprints
 - [x] Partial S0 baseline from the measured session
 - [ ] Full S0 probe pass into `eval/baselines/s0-step-00001358/` (GPU, still frozen probes)
-- [ ] Phase B canary ingest (no downloader in this commit)
+- [x] Phase B ingest engine + hard gates + fixture dry-run (no network)
+- [ ] Source allowlist in `SHINRA_DATA_V1_SOURCES.md`
+- [ ] Real ≤20M canary ingest after allowlist
 - [ ] Phase C/D authorization
