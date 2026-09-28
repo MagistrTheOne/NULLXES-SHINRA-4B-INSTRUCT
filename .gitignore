@@ -24,6 +24,10 @@ lightning_logs/
 *.safetensors
 *.ckpt
 
+# DATA V1 materializer crash leftovers (never commit slices)
+*.jsonl.tmp
+*.receipt.json.tmp
+
 # Data
 data/raw/
 data/clean/
