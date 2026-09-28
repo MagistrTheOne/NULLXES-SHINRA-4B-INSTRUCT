@@ -1,0 +1,44 @@
+{
+  "schema_version": "shinra-data-v1-sources",
+  "acquisition": "local_materialized",
+  "downloaders": false,
+  "disk": {
+    "max_materialization_gb": 8,
+    "min_free_gb": 0,
+    "scratch": "/tmp/shinra-phase-b-test"
+  },
+  "token_count": {
+    "fixture": "whitespace_allowed",
+    "canary": "tokenizer_required",
+    "add_special_tokens": false,
+    "max_canary_tokens": 20000000
+  },
+  "sources": [
+    {
+      "source_id": "fixture-canary-en",
+      "snapshot": "phase-b-fixture",
+      "license_id": "fixture-local",
+      "redistribution": true,
+      "source_type": "natural",
+      "languages": ["en"],
+      "allowed_domains": ["general", "knowledge"],
+      "acquisition_method": "local_materialized",
+      "local_materialization_format": "jsonl",
+      "expected_token_range": { "min": 1, "max": 1000 },
+      "provenance_hash_strategy": "source_id_snapshot_path"
+    },
+    {
+      "source_id": "ru",
+      "snapshot": "phase-b-fixture",
+      "license_id": "fixture-local",
+      "redistribution": true,
+      "source_type": "natural",
+      "languages": ["ru"],
+      "allowed_domains": ["general"],
+      "acquisition_method": "local_materialized",
+      "local_materialization_format": "txt",
+      "expected_token_range": { "min": 1, "max": 1000 },
+      "provenance_hash_strategy": "source_id_snapshot_path"
+    }
+  ]
+}

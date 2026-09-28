@@ -1,0 +1,17 @@
+{
+  "schema_version": "shinra-data-v1-sources",
+  "acquisition": "closed",
+  "downloaders": false,
+  "disk": {
+    "max_materialization_gb": 8,
+    "min_free_gb": 20,
+    "scratch": "/content/shinra_scratch/data_v1"
+  },
+  "token_count": {
+    "fixture": "whitespace_allowed",
+    "canary": "tokenizer_required",
+    "add_special_tokens": false,
+    "max_canary_tokens": 20000000
+  },
+  "sources": []
+}

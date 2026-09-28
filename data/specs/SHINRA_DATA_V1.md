@@ -67,17 +67,21 @@ RAW (local path)
  → exact dedup (document_id)
  → near-dedup
  → probe fingerprint firewall
- → body tokens (whitespace unless a tokenizer is injected)
- → hard cap ≤ 20_000_000
+ → body tokens:
+      fixture dry-run: whitespace allowed
+      real canary: tokenizer required, `add_special_tokens=False`, ids 2/4–17 rejected
+ → hard cap ≤ 20_000_000 **tokenizer** tokens (canary)
  → JSON report
 ```
 
 Pack wrap `[BOS]+body+[END_OF_TEXT=18]` is **not** this phase.
 
-Allowlist: [`SHINRA_DATA_V1_SOURCES.md`](SHINRA_DATA_V1_SOURCES.md) is empty until a later commit.
+Allowlist: [`SHINRA_DATA_V1_SOURCES.md`](SHINRA_DATA_V1_SOURCES.md) + [`sources.allowlist.json`](sources.allowlist.json) — **empty**, acquisition closed. Disk cap for a future canary: 8 GB raw, 20 GB free. `colab.yaml` 400 GB is not this budget.
 
 ```bash
-python -m data.data_v1.phase_b --input tests/fixtures/data_v1/phase_b/ok
+python -m data.data_v1.phase_b --mode fixture --input tests/fixtures/data_v1/phase_b/ok
+# real canary (later, after allowlist):
+# python -m data.data_v1.phase_b --mode canary --tokenizer tokenizer/artifacts/tokenizer.json --input <local>
 ```
 
 `scripts/validate_data_v1_phase_a.py` is a **second invocation path** of the Phase A contract, not an independent auditor.
@@ -127,6 +131,7 @@ Colab: `/content` scratch only. Do not Drive-mount the hot path.
 - [x] Partial S0 baseline from the measured session
 - [ ] Full S0 probe pass into `eval/baselines/s0-step-00001358/` (GPU, still frozen probes)
 - [x] Phase B ingest engine + hard gates + fixture dry-run (no network)
-- [ ] Source allowlist in `SHINRA_DATA_V1_SOURCES.md`
-- [ ] Real ≤20M canary ingest after allowlist
+- [x] Source governance schema + empty allowlist; tokenizer required for real canary
+- [ ] First authorized source records in `sources.allowlist.json`
+- [ ] Real ≤20M **tokenizer-token** canary ingest after allowlist
 - [ ] Phase C/D authorization

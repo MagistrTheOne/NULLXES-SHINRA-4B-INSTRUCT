@@ -46,6 +46,8 @@ def test_clean_local_canary_passes():
         assert key in report
     assert report["training"] is False
     assert report["network"] is False
+    assert report["run_mode"] == "fixture"
+    assert report["token_count_mode"] == "whitespace"
 
 
 def test_probe_overlap_fails_gate():
@@ -155,3 +157,60 @@ def test_canary_dedup_exact_unit():
     text = "The clay path dried before noon and the archivist closed the grey ledger."
     assert idx.check(text)[0] == "keep"
     assert idx.check(text)[0] == "exact"
+
+
+class _FakeTokenizer:
+    def encode(self, text: str, add_special_tokens: bool = False):
+        if add_special_tokens:
+            raise AssertionError("add_special_tokens must be False")
+        ids: list[int] = []
+        for _ in text.split():
+            ids.extend([19, 20])
+        return ids
+
+
+def test_production_allowlist_is_closed():
+    from data.data_v1.sources import assert_production_allowlist_closed, load_allowlist
+
+    assert_production_allowlist_closed()
+    doc = load_allowlist()
+    assert doc["sources"] == []
+    assert doc["downloaders"] is False
+    assert doc["token_count"]["canary"] == "tokenizer_required"
+    assert doc["token_count"]["add_special_tokens"] is False
+    assert doc["disk"]["max_materialization_gb"] <= 8
+
+
+def test_canary_mode_requires_tokenizer():
+    with pytest.raises(PhaseBError, match="tokenizer"):
+        run_canary(FIXTURES / "ok", mode="canary")
+
+
+def test_canary_mode_fails_closed_allowlist():
+    with pytest.raises(PhaseBError, match="allowlist empty"):
+        run_canary(FIXTURES / "ok", mode="canary", tokenizer=_FakeTokenizer())
+
+
+def test_canary_mode_counts_tokenizer_tokens_on_stub_allowlist():
+    report = run_canary(
+        FIXTURES / "ok",
+        mode="canary",
+        tokenizer=_FakeTokenizer(),
+        allowlist_path=FIXTURES / "allowlist_stub.json",
+    )
+    assert report["status"] == "pass"
+    assert report["run_mode"] == "canary"
+    assert report["token_count_mode"] == "tokenizer"
+    assert report["tokens_kept"] == 116
+    assert report["gates"]["token_count_mode"]["ok"] is True
+    assert report["allowlist_misses"] == 0
+
+
+def test_source_record_rejects_url_license():
+    from data.data_v1.sources import load_allowlist, validate_source_record
+
+    stub = load_allowlist(FIXTURES / "allowlist_stub.json")
+    src = dict(stub["sources"][0])
+    src["license_id"] = "https://example.com/license"
+    with pytest.raises(PhaseBError, match="URL"):
+        validate_source_record(src)

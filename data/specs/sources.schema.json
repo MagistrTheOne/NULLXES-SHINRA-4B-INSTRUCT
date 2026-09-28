@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nullxes.local/schemas/shinra-data-v1-sources.json",
+  "title": "SHINRA DATA V1 source allowlist",
+  "description": "Governance only. Empty sources means acquisition is closed. No downloaders.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "acquisition",
+    "downloaders",
+    "disk",
+    "token_count",
+    "sources"
+  ],
+  "properties": {
+    "schema_version": { "const": "shinra-data-v1-sources" },
+    "acquisition": { "enum": ["closed", "local_materialized"] },
+    "downloaders": { "const": false },
+    "disk": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_materialization_gb", "min_free_gb", "scratch"],
+      "properties": {
+        "max_materialization_gb": { "type": "number", "minimum": 0, "maximum": 8 },
+        "min_free_gb": { "type": "number", "minimum": 0 },
+        "scratch": { "type": "string", "minLength": 1 }
+      }
+    },
+    "token_count": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixture", "canary", "add_special_tokens", "max_canary_tokens"],
+      "properties": {
+        "fixture": { "const": "whitespace_allowed" },
+        "canary": { "const": "tokenizer_required" },
+        "add_special_tokens": { "const": false },
+        "max_canary_tokens": { "const": 20000000 }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/source" }
+    }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "snapshot",
+        "license_id",
+        "redistribution",
+        "source_type",
+        "languages",
+        "allowed_domains",
+        "acquisition_method",
+        "local_materialization_format",
+        "expected_token_range",
+        "provenance_hash_strategy"
+      ],
+      "properties": {
+        "source_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+        },
+        "snapshot": { "type": "string", "minLength": 1 },
+        "license_id": { "type": "string", "minLength": 1 },
+        "redistribution": { "type": "boolean" },
+        "source_type": { "enum": ["natural", "synthetic"] },
+        "languages": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["en", "ru"] }
+        },
+        "allowed_domains": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "general",
+              "longform",
+              "knowledge",
+              "semantic",
+              "code",
+              "math",
+              "reasoning",
+              "structured"
+            ]
+          }
+        },
+        "acquisition_method": { "enum": ["local_materialized"] },
+        "local_materialization_format": { "enum": ["jsonl", "txt", "json"] },
+        "expected_token_range": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["min", "max"],
+          "properties": {
+            "min": { "type": "integer", "minimum": 0 },
+            "max": { "type": "integer", "minimum": 1, "maximum": 20000000 }
+          }
+        },
+        "provenance_hash_strategy": {
+          "enum": ["content_sha256", "source_id_snapshot_path"]
+        }
+      }
+    }
+  }
+}

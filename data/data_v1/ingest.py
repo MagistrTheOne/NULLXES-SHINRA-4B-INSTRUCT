@@ -65,6 +65,8 @@ def iter_records(path: str | Path) -> Iterator[dict[str, Any]]:
             obj = json.loads(file.read_text(encoding="utf-8"))
             if not isinstance(obj, dict):
                 raise PhaseBError(f"{file}: json document must be an object")
+            if obj.get("schema_version") == "shinra-data-v1-sources":
+                continue
             rec = dict(obj)
             rec["text"] = _text_from_obj(obj)
             rec["_path"] = str(file)

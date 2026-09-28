@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ from data.data_v1.report import (
     finalize_status,
     public_report,
 )
+from data.data_v1.sources import ALLOWLIST_PATH, load_allowlist, source_index
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -107,23 +109,76 @@ def _count_tokens(text: str, counter: Any) -> tuple[int, list[int] | None]:
     return int(counter.count(text)), None
 
 
+def _input_bytes(path: Path) -> int:
+    if path.is_file():
+        return path.stat().st_size
+    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file())
+
+
+def load_local_tokenizer(path: str | Path) -> Any:
+    root = ensure_local_path(path)
+    json_file = root / "tokenizer.json" if root.is_dir() else root
+    if not json_file.is_file():
+        raise PhaseBError("tokenizer.json not found on local path")
+    from tokenizers import Tokenizer
+
+    return Tokenizer.from_file(str(json_file))
+
+
+def assert_allowed_sidecar(sidecar: dict[str, Any], index: dict[str, dict[str, Any]]) -> None:
+    spec = index.get(sidecar["source_id"])
+    if spec is None:
+        raise PhaseBError("allowlist_miss")
+    if sidecar["language"] not in spec["languages"]:
+        raise PhaseBError("allowlist_miss")
+    if sidecar["domain"] not in spec["allowed_domains"]:
+        raise PhaseBError("allowlist_miss")
+    if sidecar["source_type"] != spec["source_type"]:
+        raise PhaseBError("allowlist_miss")
+
+
 def run_canary(
     source: str | Path,
     *,
     max_tokens: int = MAX_CANARY_TOKENS,
     tokenizer: Any | None = None,
+    mode: str = "fixture",
+    allowlist_path: str | Path | None = None,
 ) -> dict[str, Any]:
+    if mode not in {"fixture", "canary"}:
+        raise PhaseBError("mode must be fixture|canary")
     if max_tokens > MAX_CANARY_TOKENS:
         raise PhaseBError("cannot raise Phase B canary token cap")
     if max_tokens < 1:
         raise PhaseBError("max_tokens must be >= 1")
-    ensure_local_path(source)
-    report = empty_report(max_canary_tokens=max_tokens)
-    counter: Any = TokenizerCounter(tokenizer) if tokenizer is not None else WhitespaceCounter()
+    root = ensure_local_path(source)
+    allowed: dict[str, dict[str, Any]] | None = None
+    if mode == "canary":
+        if tokenizer is None:
+            raise PhaseBError("real corpus canary requires tokenizer (add_special_tokens=False)")
+        allowlist = load_allowlist(Path(allowlist_path) if allowlist_path else ALLOWLIST_PATH)
+        if not allowlist["sources"]:
+            raise PhaseBError("allowlist empty; acquisition closed")
+        allowed = source_index(allowlist)
+        max_in = float(allowlist["disk"]["max_materialization_gb"]) * 1024**3
+        min_free = float(allowlist["disk"]["min_free_gb"])
+        nbytes = _input_bytes(root)
+        free_gb = shutil.disk_usage(root).free / 1024**3
+        if nbytes > max_in:
+            raise PhaseBError("canary input exceeds 8GB materialization cap")
+        if free_gb < min_free:
+            raise PhaseBError("disk headroom below Phase B minimum")
+    report = empty_report(max_canary_tokens=max_tokens, run_mode=mode)
+    if mode == "canary":
+        report["input_bytes"] = _input_bytes(root)
+        report["disk_free_gb"] = round(shutil.disk_usage(root).free / 1024**3, 2)
+        counter: Any = TokenizerCounter(tokenizer)
+    else:
+        counter = TokenizerCounter(tokenizer) if tokenizer is not None else WhitespaceCounter()
     report["token_count_mode"] = counter.mode
     fingerprints = frozen_probe_fingerprints()
     dedup = CanaryDedup()
-    for record in iter_records(source):
+    for record in iter_records(root):
         report["documents_seen"] += 1
         try:
             raw = record.get("text", "")
@@ -140,6 +195,8 @@ def run_canary(
             assert_no_probe_overlap(text, fingerprints)
             sidecar = build_sidecar(text, record, tokens=0)
             assert_sidecar_offline(sidecar)
+            if allowed is not None:
+                assert_allowed_sidecar(sidecar, allowed)
             n_tokens, ids = _count_tokens(text, counter)
             if ids is not None:
                 bad = forbidden_token_ids(ids)
@@ -180,6 +237,9 @@ def run_canary(
             elif reason == "langid_mismatch":
                 report["langid_mismatch"] += 1
                 add_reject(report, "langid_mismatch")
+            elif reason == "allowlist_miss":
+                report["allowlist_misses"] += 1
+                add_reject(report, "allowlist_miss")
             elif "domain" in reason:
                 report["domain_violations"] += 1
                 add_reject(report, "domain")
@@ -202,8 +262,18 @@ def main() -> None:
     parser.add_argument("--input", required=True, help="local jsonl/txt/json file or directory")
     parser.add_argument("--report", type=Path, default=None, help="write JSON report here")
     parser.add_argument("--max-tokens", type=int, default=MAX_CANARY_TOKENS)
+    parser.add_argument("--mode", choices=("fixture", "canary"), default="fixture")
+    parser.add_argument("--tokenizer", type=Path, default=None, help="local tokenizer.json or artifacts dir")
+    parser.add_argument("--allowlist", type=Path, default=None)
     args = parser.parse_args()
-    body = run_canary(args.input, max_tokens=args.max_tokens)
+    tok = load_local_tokenizer(args.tokenizer) if args.tokenizer is not None else None
+    body = run_canary(
+        args.input,
+        max_tokens=args.max_tokens,
+        tokenizer=tok,
+        mode=args.mode,
+        allowlist_path=args.allowlist,
+    )
     text = json.dumps(body, indent=2, ensure_ascii=False)
     print(text)
     if args.report is not None:

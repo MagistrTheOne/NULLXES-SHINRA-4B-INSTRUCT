@@ -22,9 +22,11 @@ REPORT_KEYS = (
 )
 
 
-def empty_report(*, max_canary_tokens: int = MAX_CANARY_TOKENS) -> dict[str, Any]:
+def empty_report(*, max_canary_tokens: int = MAX_CANARY_TOKENS, run_mode: str = "fixture") -> dict[str, Any]:
     if max_canary_tokens > MAX_CANARY_TOKENS:
         raise ValueError("cannot raise Phase B canary token cap")
+    if run_mode not in {"fixture", "canary"}:
+        raise ValueError("run_mode must be fixture|canary")
     return {
         "status": "fail",
         "documents_seen": 0,
@@ -51,6 +53,10 @@ def empty_report(*, max_canary_tokens: int = MAX_CANARY_TOKENS) -> dict[str, Any
         "split_violations": 0,
         "language_violations": 0,
         "langid_mismatch": 0,
+        "allowlist_misses": 0,
+        "run_mode": run_mode,
+        "disk_free_gb": None,
+        "input_bytes": 0,
         "reject_reasons": {},
         "gates": {},
     }
@@ -84,6 +90,16 @@ def finalize_status(report: dict[str, Any]) -> dict[str, Any]:
         "domain": {"ok": report["domain_violations"] == 0},
         "language": {"ok": report["language_violations"] == 0 and report["langid_mismatch"] == 0},
         "kept_nonempty": {"ok": report["documents_kept"] > 0},
+        "token_count_mode": {
+            "value": report["token_count_mode"],
+            "ok": (
+                (report["run_mode"] == "fixture" and report["token_count_mode"] in {"whitespace", "tokenizer"})
+                or (report["run_mode"] == "canary" and report["token_count_mode"] == "tokenizer")
+            ),
+        },
+        "allowlist": {
+            "ok": report["run_mode"] == "fixture" or report.get("allowlist_misses", 0) == 0
+        },
     }
     report["gates"] = gates
     report["status"] = "pass" if all(g["ok"] for g in gates.values()) else "fail"
