@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nullxes.local/schemas/shinra_v2_pretrain_synth.manifest.schema.json",
+  "title": "SHINRA v2 pretrain synth shard manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "corpus_id",
+    "family",
+    "language",
+    "seed",
+    "records",
+    "chars",
+    "tokens",
+    "sha256",
+    "license",
+    "generator"
+  ],
+  "properties": {
+    "corpus_id": {
+      "type": "string",
+      "const": "SHINRA-V2-PRETRAIN-SYNTH-v0"
+    },
+    "family": {
+      "type": "string",
+      "enum": [
+        "language_core",
+        "semantic_primitives",
+        "compositional",
+        "knowledge_shaped",
+        "structured"
+      ]
+    },
+    "language": {
+      "type": "string",
+      "enum": ["en", "ru"]
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "records": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "chars": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "tokens": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Whitespace-split count for fixtures. Unigram counts happen at pack."
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "license": {
+      "type": "string",
+      "const": "nullxes-synthetic-v0"
+    },
+    "generator": {
+      "type": "string",
+      "minLength": 1
+    }
+  }
+}

@@ -129,8 +129,7 @@ class ShinraModel(ShinraPreTrainedModel):
         self.norm = ShinraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = ShinraRotaryEmbedding(config)
         self.gradient_checkpointing = False
-        self.post_init()
-        self._scaled_residual_init()
+        # Weights are initialized once from ShinraForCausalLM.post_init.
 
     def get_input_embeddings(self) -> nn.Embedding:
         return self.embed_tokens
