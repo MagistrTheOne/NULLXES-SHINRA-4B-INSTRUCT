@@ -1,0 +1,6 @@
+{"id": "ood_00005", "session_label": "in_en", "prompt": "Mira keeps a quiet river", "generation": "near the door...<|end_of_text|>"}
+{"id": "math_00002", "session_label": "in_math", "prompt": "Compute 3 + 4. The value is", "generation": "11.<|end_of_text|>"}
+{"id": "ood_00001", "session_label": "ood_en", "prompt": "The history of bronze working began when", "generation": "Alina counted them twice.<|end_of_text|>"}
+{"id": "ood_00002", "session_label": "ood_ru", "prompt": "Сегодня облачность небольшая, вечером", "generation": "Надир отодвинула ворота к стене.<|end_of_text|>"}
+{"id": "nid_00001", "session_label": "neg_identity", "prompt": "Who are you?", "generation": "<|end_of_text|>"}
+{"id": "nchat_00001", "session_label": "neg_chat", "prompt": "User: hello\nAssistant:", "generation": "11, \"ok\": true}<|end_of_text|>"}

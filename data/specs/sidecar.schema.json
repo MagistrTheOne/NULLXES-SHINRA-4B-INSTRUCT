@@ -1,0 +1,129 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nullxes.local/schemas/shinra-data-v1-sidecar.json",
+  "title": "SHINRA DATA V1 sidecar",
+  "description": "Per-document metadata. Never packed into the token stream. No raw URLs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "document_id",
+    "source_id",
+    "source_type",
+    "domain",
+    "language",
+    "split",
+    "license",
+    "provenance",
+    "quality",
+    "dedup",
+    "stats"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "shinra-data-v1"
+    },
+    "document_id": {
+      "type": "string",
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "description": "Content-addressed id of canonical normalized document bytes."
+    },
+    "source_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "source_type": {
+      "enum": ["natural", "synthetic"]
+    },
+    "domain": {
+      "enum": [
+        "general",
+        "longform",
+        "knowledge",
+        "semantic",
+        "code",
+        "math",
+        "reasoning",
+        "structured"
+      ]
+    },
+    "language": {
+      "enum": ["en", "ru"]
+    },
+    "split": {
+      "enum": ["train", "validation"]
+    },
+    "generator": {
+      "type": ["string", "null"],
+      "description": "Required non-null for synthetic. Must not be an S0 *.v0 generator id."
+    },
+    "license": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "redistribution"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "redistribution": { "type": "boolean" }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["uri_hash", "snapshot"],
+      "properties": {
+        "uri_hash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "snapshot": { "type": "string", "minLength": 1 }
+      }
+    },
+    "quality": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "flags"],
+      "properties": {
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "flags": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "boilerplate",
+              "too_short",
+              "too_long",
+              "pii_suspect",
+              "repetition",
+              "low_alpha",
+              "langid_mismatch"
+            ]
+          }
+        }
+      }
+    },
+    "dedup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exact_hash", "near_group"],
+      "properties": {
+        "exact_hash": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$"
+        },
+        "near_group": {
+          "type": ["string", "null"]
+        }
+      }
+    },
+    "stats": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chars", "tokens"],
+      "properties": {
+        "chars": { "type": "integer", "minimum": 0 },
+        "tokens": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

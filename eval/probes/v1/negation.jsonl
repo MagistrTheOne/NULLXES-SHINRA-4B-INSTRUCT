@@ -1,0 +1,5 @@
+{"id": "neg_00001", "family": "negation", "language": "en", "prompt": "The bottle is not empty. The bottle is:\nA: empty\nB: not empty\nAnswer:", "scorer": "choice_exact", "expected": "B", "max_new_tokens": 8, "tags": ["negation"]}
+{"id": "neg_00002", "family": "negation", "language": "en", "prompt": "It is false that the gate is locked. The gate is:\nA: locked\nB: unlocked\nAnswer:", "scorer": "choice_exact", "expected": "B", "max_new_tokens": 8, "tags": ["negation"]}
+{"id": "neg_00003", "family": "negation", "language": "ru", "prompt": "Бутылка не пустая. Бутылка:\nA: пустая\nB: не пустая\nОтвет:", "scorer": "choice_exact", "expected": "B", "max_new_tokens": 8, "tags": ["negation"]}
+{"id": "neg_00004", "family": "negation", "language": "ru", "prompt": "Неверно, что лампа выключена. Лампа:\nA: выключена\nB: включена\nОтвет:", "scorer": "choice_exact", "expected": "B", "max_new_tokens": 8, "tags": ["negation"]}
+{"id": "neg_00005", "family": "negation", "language": "en", "prompt": "Nobody remained in the hall. How many people remained?\nA: some\nB: none\nAnswer:", "scorer": "choice_exact", "expected": "B", "max_new_tokens": 8, "tags": ["negation"]}

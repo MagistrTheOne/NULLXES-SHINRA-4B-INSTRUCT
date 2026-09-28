@@ -1,0 +1,43 @@
+{
+  "probe_version": "shinra-probe-v1",
+  "checkpoint_baseline": "s0/step-00001358",
+  "coverage": "partial",
+  "items": [
+    {
+      "id": "ood_00005",
+      "scorer": "generation_log",
+      "pass": null,
+      "detail": "logged"
+    },
+    {
+      "id": "math_00002",
+      "scorer": "numeric_exact",
+      "pass": false,
+      "detail": "got=11.0"
+    },
+    {
+      "id": "ood_00001",
+      "scorer": "forbidden_lexicon",
+      "pass": false,
+      "detail": "alina,counted them twice"
+    },
+    {
+      "id": "ood_00002",
+      "scorer": "forbidden_lexicon",
+      "pass": false,
+      "detail": "надир"
+    },
+    {
+      "id": "nid_00001",
+      "scorer": "identity_absent",
+      "pass": true,
+      "detail": "clean"
+    },
+    {
+      "id": "nchat_00001",
+      "scorer": "chat_absent",
+      "pass": true,
+      "detail": "clean"
+    }
+  ]
+}

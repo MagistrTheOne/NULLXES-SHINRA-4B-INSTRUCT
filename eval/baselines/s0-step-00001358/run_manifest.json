@@ -1,0 +1,26 @@
+{
+  "probe_version": "shinra-probe-v1",
+  "checkpoint_baseline": "s0/step-00001358",
+  "checkpoint_path_session": "/content/shinra_scratch/s0/final/step-00001358",
+  "coverage": "partial",
+  "measured_at": "2026-09-28",
+  "tokenizer_contract": {
+    "bos_id": 1,
+    "eot_id": 2,
+    "document_end_id": 18,
+    "pad_id": 3
+  },
+  "generation": {
+    "do_sample": false,
+    "use_cache": false,
+    "max_new_tokens": 128
+  },
+  "wrap": "[BOS] + encode(prompt, add_special_tokens=False)",
+  "stop_id": 18,
+  "notes": [
+    "Ad-hoc S0 session. Greedy token loop, use_cache=false. HF generate() KV-mask path was not used.",
+    "Missing PROBE V1 ids are unscored, not passes.",
+    "Session also produced in_ru on an unfrozen prompt (Мира видит тихая река) — not stored here because it is not a V1 probe id.",
+    "nchat_00001 chat_absent can pass while the continuation still collapses into structured.v0 JSON; that collapse is in generations.jsonl, not a vibe metric."
+  ]
+}

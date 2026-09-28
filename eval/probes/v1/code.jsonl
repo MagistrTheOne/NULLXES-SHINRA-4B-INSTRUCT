@@ -1,0 +1,5 @@
+{"id": "code_00001", "family": "code", "language": "en", "prompt": "def square(n):\n    return", "scorer": "text_contains", "expected": "n * n", "max_new_tokens": 24, "tags": ["code", "python"]}
+{"id": "code_00002", "family": "code", "language": "en", "prompt": "def is_empty(xs):\n    return", "scorer": "text_contains", "expected": "len(xs) == 0", "max_new_tokens": 24, "tags": ["code", "python"]}
+{"id": "code_00003", "family": "code", "language": "en", "prompt": "for i in range(3):\n    print(i)\n# this prints how many lines?\nA: 2\nB: 3\nAnswer:", "scorer": "choice_exact", "expected": "B", "max_new_tokens": 8, "tags": ["code", "python"]}
+{"id": "code_00004", "family": "code", "language": "en", "prompt": "x = [1, 2, 3]\nprint(x[-1])\n# printed value:\nA: 1\nB: 3\nAnswer:", "scorer": "choice_exact", "expected": "B", "max_new_tokens": 8, "tags": ["code", "python"]}
+{"id": "code_00005", "family": "code", "language": "en", "prompt": "def add(a, b):\n    return a + b\nadd(2, 3)\n# result:\nA: 23\nB: 5\nAnswer:", "scorer": "choice_exact", "expected": "B", "max_new_tokens": 8, "tags": ["code", "python"]}

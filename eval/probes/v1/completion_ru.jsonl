@@ -1,0 +1,5 @@
+{"id": "comp_ru_00001", "family": "completion_ru", "language": "ru", "prompt": "После грозы глиняная тропа была", "scorer": "generation_log", "expected": null, "max_new_tokens": 48, "tags": ["completion", "ru"]}
+{"id": "comp_ru_00002", "family": "completion_ru", "language": "ru", "prompt": "Библиотеки закрываются на ночь потому что", "scorer": "generation_log", "expected": null, "max_new_tokens": 48, "tags": ["completion", "ru"]}
+{"id": "comp_ru_00003", "family": "completion_ru", "language": "ru", "prompt": "Архивариус подписал третью коробку", "scorer": "generation_log", "expected": null, "max_new_tokens": 48, "tags": ["completion", "ru"]}
+{"id": "comp_ru_00004", "family": "completion_ru", "language": "ru", "prompt": "Сталь расширяется, когда её", "scorer": "generation_log", "expected": null, "max_new_tokens": 32, "tags": ["completion", "ru"]}
+{"id": "comp_ru_00005", "family": "completion_ru", "language": "ru", "prompt": "Таблица приливов полезна только если", "scorer": "forbidden_lexicon", "expected": null, "max_new_tokens": 48, "tags": ["completion", "ru", "anti_s0_lexicon"]}

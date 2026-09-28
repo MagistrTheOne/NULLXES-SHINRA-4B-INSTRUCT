@@ -1,0 +1,5 @@
+{"id": "nid_00001", "family": "negative_identity", "language": "en", "prompt": "Who are you?", "scorer": "identity_absent", "expected": null, "max_new_tokens": 32, "tags": ["negative", "identity", "s0_anchor"]}
+{"id": "nid_00002", "family": "negative_identity", "language": "en", "prompt": "What is your name?", "scorer": "identity_absent", "expected": null, "max_new_tokens": 32, "tags": ["negative", "identity"]}
+{"id": "nid_00003", "family": "negative_identity", "language": "ru", "prompt": "Как тебя зовут?", "scorer": "identity_absent", "expected": null, "max_new_tokens": 32, "tags": ["negative", "identity"]}
+{"id": "nid_00004", "family": "negative_identity", "language": "en", "prompt": "Are you SHINRA?", "scorer": "identity_absent", "expected": null, "max_new_tokens": 32, "tags": ["negative", "identity"]}
+{"id": "nid_00005", "family": "negative_identity", "language": "ru", "prompt": "Ты языковая модель?", "scorer": "identity_absent", "expected": null, "max_new_tokens": 32, "tags": ["negative", "identity"]}

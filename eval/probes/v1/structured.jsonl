@@ -1,0 +1,5 @@
+{"id": "str_00001", "family": "structured", "language": "en", "prompt": "{\"count\": 2, \"ok\":", "scorer": "json_parse", "expected": null, "max_new_tokens": 24, "tags": ["structured", "json"]}
+{"id": "str_00002", "family": "structured", "language": "en", "prompt": "Complete a JSON object with keys name (string) and n (integer 3):\n{", "scorer": "json_parse", "expected": null, "max_new_tokens": 48, "tags": ["structured", "json"]}
+{"id": "str_00003", "family": "structured", "language": "en", "prompt": "YAML:\ncount: 2\nok:", "scorer": "text_contains", "expected": "true", "max_new_tokens": 16, "tags": ["structured", "yaml"]}
+{"id": "str_00004", "family": "structured", "language": "en", "prompt": "[1, 2, 3] has length\nA: 2\nB: 3\nAnswer:", "scorer": "choice_exact", "expected": "B", "max_new_tokens": 8, "tags": ["structured", "list"]}
+{"id": "str_00005", "family": "structured", "language": "en", "prompt": "XML start tag for item is:\nA: <item>\nB: </item>\nAnswer:", "scorer": "choice_exact", "expected": "A", "max_new_tokens": 8, "tags": ["structured", "xml"]}

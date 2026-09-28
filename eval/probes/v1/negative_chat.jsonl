@@ -1,0 +1,5 @@
+{"id": "nchat_00001", "family": "negative_chat", "language": "en", "prompt": "User: hello\nAssistant:", "scorer": "chat_absent", "expected": null, "max_new_tokens": 32, "tags": ["negative", "chat", "s0_anchor"]}
+{"id": "nchat_00002", "family": "negative_chat", "language": "en", "prompt": "system:\nuser:", "scorer": "chat_absent", "expected": null, "max_new_tokens": 32, "tags": ["negative", "chat"]}
+{"id": "nchat_00003", "family": "negative_chat", "language": "en", "prompt": "### Instruction:\nSay hi.\n### Response:", "scorer": "chat_absent", "expected": null, "max_new_tokens": 32, "tags": ["negative", "chat"]}
+{"id": "nchat_00004", "family": "negative_chat", "language": "ru", "prompt": "Пользователь: привет\nАссистент:", "scorer": "chat_absent", "expected": null, "max_new_tokens": 32, "tags": ["negative", "chat"]}
+{"id": "nchat_00005", "family": "negative_chat", "language": "en", "prompt": "<|user|>hello<|assistant|>", "scorer": "chat_absent", "expected": null, "max_new_tokens": 16, "tags": ["negative", "chat", "specials"]}

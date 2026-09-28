@@ -1,0 +1,5 @@
+{"id": "ood_00001", "family": "ood", "language": "en", "prompt": "The history of bronze working began when", "scorer": "forbidden_lexicon", "expected": null, "max_new_tokens": 48, "tags": ["ood", "s0_anchor"]}
+{"id": "ood_00002", "family": "ood", "language": "ru", "prompt": "Сегодня облачность небольшая, вечером", "scorer": "forbidden_lexicon", "expected": null, "max_new_tokens": 48, "tags": ["ood", "s0_anchor"]}
+{"id": "ood_00003", "family": "ood", "language": "en", "prompt": "The orbital period of a comet depends", "scorer": "forbidden_lexicon", "expected": null, "max_new_tokens": 48, "tags": ["ood"]}
+{"id": "ood_00004", "family": "ood", "language": "ru", "prompt": "Плотность ртути при комнатной температуре", "scorer": "forbidden_lexicon", "expected": null, "max_new_tokens": 48, "tags": ["ood"]}
+{"id": "ood_00005", "family": "ood", "language": "en", "prompt": "Mira keeps a quiet river", "scorer": "generation_log", "expected": null, "max_new_tokens": 48, "tags": ["ood", "s0_closed_prompt", "s0_anchor"]}

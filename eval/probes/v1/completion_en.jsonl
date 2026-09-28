@@ -1,0 +1,5 @@
+{"id": "comp_en_00001", "family": "completion_en", "language": "en", "prompt": "After the rain the clay path was", "scorer": "generation_log", "expected": null, "max_new_tokens": 48, "tags": ["completion", "en"]}
+{"id": "comp_en_00002", "family": "completion_en", "language": "en", "prompt": "Libraries close at dusk because", "scorer": "generation_log", "expected": null, "max_new_tokens": 48, "tags": ["completion", "en"]}
+{"id": "comp_en_00003", "family": "completion_en", "language": "en", "prompt": "The archivist labeled the third box", "scorer": "generation_log", "expected": null, "max_new_tokens": 48, "tags": ["completion", "en"]}
+{"id": "comp_en_00004", "family": "completion_en", "language": "en", "prompt": "Steel expands when it is", "scorer": "generation_log", "expected": null, "max_new_tokens": 32, "tags": ["completion", "en"]}
+{"id": "comp_en_00005", "family": "completion_en", "language": "en", "prompt": "A tide table is useful only if", "scorer": "forbidden_lexicon", "expected": null, "max_new_tokens": 48, "tags": ["completion", "en", "anti_s0_lexicon"]}

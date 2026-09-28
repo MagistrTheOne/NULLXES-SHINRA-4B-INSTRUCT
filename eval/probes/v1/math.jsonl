@@ -1,0 +1,6 @@
+{"id": "math_00001", "family": "math", "language": "en", "prompt": "The value of 17 + 26 is", "scorer": "numeric_exact", "expected": 43, "max_new_tokens": 16, "tags": ["math", "addition"]}
+{"id": "math_00002", "family": "math", "language": "en", "prompt": "Compute 3 + 4. The value is", "scorer": "numeric_exact", "expected": 7, "max_new_tokens": 16, "tags": ["math", "addition", "s0_anchor"]}
+{"id": "math_00003", "family": "math", "language": "en", "prompt": "8 multiplied by 7 equals", "scorer": "numeric_exact", "expected": 56, "max_new_tokens": 16, "tags": ["math", "multiplication"]}
+{"id": "math_00004", "family": "math", "language": "en", "prompt": "100 minus 37 equals", "scorer": "numeric_exact", "expected": 63, "max_new_tokens": 16, "tags": ["math", "subtraction"]}
+{"id": "math_00005", "family": "math", "language": "ru", "prompt": "Значение выражения 9 + 8 равно", "scorer": "numeric_exact", "expected": 17, "max_new_tokens": 16, "tags": ["math", "addition"]}
+{"id": "math_00006", "family": "math", "language": "en", "prompt": "Half of 48 is", "scorer": "numeric_exact", "expected": 24, "max_new_tokens": 16, "tags": ["math", "division"]}

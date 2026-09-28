@@ -1,0 +1,32 @@
+{
+  "checkpoint_baseline": "s0/step-00001358",
+  "files": {
+    "code.jsonl": "sha256:1cd5b78cef2464cacf02f670005a73ac9dcbdda0b59924867621b713adf5f7e2",
+    "completion_en.jsonl": "sha256:87b767608eee667cafc1550c950037c55744517ab6a26a7aa7d1500d8b7626e9",
+    "completion_ru.jsonl": "sha256:22105dbc0cea7cde745d5d26d444214421cbac02d1699b8e1cfcef31f5efb339",
+    "coreference.jsonl": "sha256:cca347755c8882b339972f709871ca308fab5267c8285ab63b980c589f38cecd",
+    "long_context.jsonl": "sha256:f2830d8a1ecf28823e8e6f6d934fd72f5eff0384ab3709bbae51c9d384d61388",
+    "math.jsonl": "sha256:6eec5e69f0d196cae0cdeb5aebc5fedbb5c2d0a25045419bb415299b35a2a231",
+    "negation.jsonl": "sha256:dbe2f91ce4a0689305c2f49a393b319968de743b0857921cb303a7a173e0d66f",
+    "negative_chat.jsonl": "sha256:10122bbae3ff364d03d1f9e008ae9ee219f5dee9c9f6a0deb2f2fefb6c19b7e5",
+    "negative_identity.jsonl": "sha256:9162e3cb04339994559cfec03e0a2ef70bbd5c28b819f402637617a211d61bd4",
+    "ood.jsonl": "sha256:71dbd5929fa0eddabede452e4e80f426d2eb6cd116598471307113b64136f79e",
+    "semantic.jsonl": "sha256:3ea2e0e0611d6c56c1f2dd2bf4cef92b33446efd296c8267cfabcfcb737a5ad2",
+    "structured.jsonl": "sha256:7e78ba9e2f5b025aca04c644fb77f11cdcbc9f93472d754d11150a25fb86df89",
+    "syntax.jsonl": "sha256:f6bd069f69874d7356ea20ac16dcd3ee9c644839cd916cda07e9690124da83db"
+  },
+  "generation": {
+    "do_sample": false,
+    "max_new_tokens": 128,
+    "use_cache": false
+  },
+  "manifest_sha256": "c18fba5f054475fc9f87242aa048039e1ae9e3cbc860852af152647ef7d035dc",
+  "probe_bundle_sha256": "eb6d0b7552f646e2782d744ae0542f240fb0c350f980b05fb6a337b7bffc87b9",
+  "probe_version": "shinra-probe-v1",
+  "tokenizer_contract": {
+    "bos_id": 1,
+    "document_end_id": 18,
+    "eot_id": 2,
+    "pad_id": 3
+  }
+}
