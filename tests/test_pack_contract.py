@@ -39,6 +39,13 @@ def test_wrap_is_bos_body_end_of_text():
     assert 17 not in wrapped
 
 
+def test_wrap_rejects_eot_as_document_end():
+    with pytest.raises(PackContractError):
+        wrap_pretrain_document([19, 20, 21], end_id=2)
+    with pytest.raises(PackContractError):
+        wrap_pretrain_document([19, 20, 21], end_id=1)
+
+
 def test_wrap_rejects_eot_chat_document_and_wrap_ids_in_body():
     with pytest.raises(PackContractError):
         wrap_pretrain_document([19, 2, 20])

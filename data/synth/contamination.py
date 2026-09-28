@@ -14,6 +14,7 @@ IDENTITY_NEEDLES = (
     "my name is shinra",
     "nullxes-shinra-4b-instruct",
     "nullxes shinra-4b",
+    "created by nullxes",
 )
 
 INSTRUCTION_NEEDLES = (

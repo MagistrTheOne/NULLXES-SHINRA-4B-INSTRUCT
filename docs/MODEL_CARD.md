@@ -20,25 +20,25 @@ tags:
   - instruction-tuned
 library_name: transformers
 pipeline_tag: text-generation
-base_model_relation: finetune
 ---
 
 # NULLXES SHINRA-4B-INSTRUCT
 
+SHINRA. Created by NULLXES. Compatibility with other model families is not SHINRA's identity or lineage. Hugging Face compatibility is an interface property, not model ancestry.
+
+This card describes a future INSTRUCT checkpoint. S0–S2 pretrain must not use chat roles or identity lines.
+
 **NULLXES SHINRA-4B-INSTRUCT** is the Language Intelligence Layer of the NULLXES system.
 
 | Layer | Role |
-|-------|------|
-| RAIDEN | Reasoning Intelligence |
-| CERBER | Vision Intelligence |
 | **SHINRA** | **Language Intelligence** |
-| AION | Embodied Intelligence |
+ 
 
 SHINRA is responsible for multilingual understanding, coding intelligence, instruction following, structured outputs, and agent preparation. This checkpoint is the instruction-tuned (and optionally DPO-aligned) 4B-class dense decoder.
 
 ## Architecture
 
-Proprietary `ShinraForCausalLM` (not a Llama / Mistral / Qwen / GPT-NeoX wrapper).
+Proprietary `ShinraForCausalLM` (NULLXES implementation, not a wrapper around foreign weights).
 
 | | |
 |---|---|

@@ -32,7 +32,7 @@ pretrain:
     language_confidence: 0.35
   excluded:
     - TinyStories
-    - Qwen corpora
+    - third-party instruction/alignment dumps
     - Chinese instruction/alignment dumps
     - FineWeb-Edu 1.3T full
 

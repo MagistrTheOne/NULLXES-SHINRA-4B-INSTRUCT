@@ -46,11 +46,16 @@ def test_yaml_matches_v2_geometry():
     assert model["vocab_size"] == 131072
     assert model["bos_token_id"] == 1
     assert model["eos_token_id"] == 2
+    assert model["document_end_token_id"] == 18
+    assert model["eos_token_id"] != model["document_end_token_id"]
     assert model["pad_token_id"] == 3
     assert model["qk_norm"] is True
     assert model["tie_word_embeddings"] is True
     cfg = ShinraConfig.from_yaml(YAML_PATH)
     assert cfg.hidden_size == 2560
+    assert cfg.document_end_token_id == 18
+    assert cfg.eos_token_id == 2
+    assert cfg.document_end_token_id != cfg.eos_token_id
     assert cfg.num_attention_heads * cfg.head_dim == 4096
     assert cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size
 
@@ -62,6 +67,13 @@ def test_default_config_is_v2_and_decoupled():
     assert cfg.num_attention_heads == 32
     assert cfg.head_dim == 128
     assert cfg.num_attention_heads * cfg.head_dim != cfg.hidden_size
+    assert cfg.document_end_token_id == 18
+    assert cfg.eos_token_id == 2
+
+
+def test_config_refuses_collapsed_eos_and_document_end():
+    with pytest.raises(ValueError, match="document_end"):
+        ShinraConfig(document_end_token_id=2)
 
 
 def test_decoupled_q_width_constructs_attention():

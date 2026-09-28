@@ -1,0 +1,60 @@
+# S2 semantic core: +750M to 1B cumulative. This cycle 100% synth.
+# Intended later mix 70% synth / 30% natural is spec-only.
+# 1B is the GO/NO-GO gate. Do not open S3 if probes are dead.
+stage: s2
+cumulative_tokens: 1000000000
+new_tokens: 750000000
+max_tokens: 750000000
+max_steps: 45777
+mix:
+  synth: 1.0
+  natural: 0.0
+intended_mix:
+  synth: 0.70
+  natural: 0.30
+synth_layers:
+  language_core: 0.20
+  semantic_primitives: 0.40
+  compositional: 0.25
+  knowledge_shaped: 0.05
+  structured: 0.10
+
+optimizer:
+  name: adamw_torch_fused
+  learning_rate: 3.0e-4
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.1
+  grad_clip: 1.0
+
+scheduler:
+  name: wsd
+  warmup_steps: 500
+  stable_ratio: 0.80
+  min_lr_ratio: 0.10
+
+batch:
+  sequence_length: 2048
+  micro_batch_size: 1
+  gradient_accumulation_steps: 8
+  num_processes: 1
+  tokens_per_step: 16384
+
+training:
+  seed: 42
+  logging_steps: 10
+  eval_steps: 500
+  save_steps: 1000
+  gradient_checkpointing: true
+  dataloader_num_workers: 2
+  max_tokens: 750000000
+  attention_implementation: sdpa
+  allow_replay: false
+
+hardware:
+  gpu: NVIDIA RTX PRO 6000 Blackwell
+  gpu_class: G4
+  node_gpus: 1
+  precision: bf16
+  flash_attention: false
+  fsdp: false

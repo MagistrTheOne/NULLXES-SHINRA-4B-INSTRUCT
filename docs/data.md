@@ -44,7 +44,7 @@ python -m tokenizer.analyze_tokenizer --corpus tokenizer/corpus --parquet-dir da
 
 Язык BASE: en 75 / ru 15 / other 10.
 
-Исключено: TinyStories, Qwen corpora, Chinese instruction dumps, FineWeb-Edu 1.3T, abstract-only arXiv.
+Исключено: TinyStories, third-party instruction dumps, FineWeb-Edu 1.3T, abstract-only arXiv.
 
 Веса: `configs/data_mix.yaml`, `data/sources.py`.
 

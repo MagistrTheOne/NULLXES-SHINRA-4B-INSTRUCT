@@ -44,6 +44,10 @@ class TrainConfig:
     dpo_beta: float
     sft_from: Path | None
     base_from: Path | None
+    run_dir: Path
+    heldout_dir: Path | None
+    allow_replay: bool
+    disk_ceiling_gb: float
 
 
 def load_yaml(path: Path) -> dict:
@@ -65,9 +69,12 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-tokens", type=int, default=None)
     parser.add_argument("--sequence-length", type=int, default=None)
     parser.add_argument("--attention-implementation", default=None)
-    parser.add_argument("--wandb-project", default="nullxes-shinra")
+    parser.add_argument("--wandb-project", default=None)
     parser.add_argument("--wandb-run-name", default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--run-dir", default=None)
+    parser.add_argument("--heldout-dir", default=None)
+    parser.add_argument("--allow-replay", action="store_true")
 
 
 def build_train_config(stage: str, args: argparse.Namespace) -> TrainConfig:
@@ -79,9 +86,28 @@ def build_train_config(stage: str, args: argparse.Namespace) -> TrainConfig:
     train = extra.get("training", root.get("training", {}))
     model_cfg = root.get("model", {})
     tokens_per_step = batch.get("tokens_per_step", 2_097_152)
-    max_tokens = args.max_tokens or train.get("max_tokens", 200_000_000_000)
-    max_steps = args.max_steps or extra.get("max_steps") or int(max_tokens / max(tokens_per_step, 1))
+    if args.max_tokens is not None:
+        max_tokens = args.max_tokens
+    else:
+        max_tokens = train.get("max_tokens", extra.get("max_tokens", 200_000_000_000))
+    max_steps = args.max_steps or extra.get("max_steps") or int(int(max_tokens) / max(tokens_per_step, 1))
+    if int(max_tokens) <= 0:
+        max_steps = args.max_steps or extra.get("max_steps") or 0
     betas = tuple(opt.get("betas", [0.9, 0.95]))
+    wandb = getattr(args, "wandb_project", None) or None
+    if wandb == "":
+        wandb = None
+    allow_replay = bool(train.get("allow_replay", stage in {"sft", "dpo"}))
+    if getattr(args, "allow_replay", False):
+        allow_replay = True
+    run_dir = Path(args.run_dir) if getattr(args, "run_dir", None) else Path(args.output_dir)
+    heldout = getattr(args, "heldout_dir", None) or extra.get("heldout_dir") or train.get("heldout_dir")
+    storage = extra.get("storage", root.get("storage", {}))
+    attn = (
+        args.attention_implementation
+        or train.get("attention_implementation")
+        or model_cfg.get("attention_implementation", "sdpa")
+    )
     return TrainConfig(
         stage=stage,
         model_config=Path(args.config),
@@ -109,13 +135,16 @@ def build_train_config(stage: str, args: argparse.Namespace) -> TrainConfig:
         eval_steps=int(train.get("eval_steps", 1000)),
         save_steps=int(train.get("save_steps", 1000)),
         gradient_checkpointing=bool(train.get("gradient_checkpointing", True)),
-        attention_implementation=args.attention_implementation
-        or model_cfg.get("attention_implementation", "sdpa"),
+        attention_implementation=attn,
         z_loss_coefficient=float(model_cfg.get("z_loss_coefficient", 1e-5)),
         dataloader_num_workers=int(train.get("dataloader_num_workers", 8)),
-        wandb_project=args.wandb_project,
+        wandb_project=wandb,
         wandb_run_name=args.wandb_run_name,
         dpo_beta=float(extra.get("dpo", {}).get("beta", 0.1)),
         sft_from=Path(args.sft_from) if getattr(args, "sft_from", None) else None,
         base_from=Path(args.base_from) if getattr(args, "base_from", None) else None,
+        run_dir=run_dir,
+        heldout_dir=Path(heldout) if heldout else None,
+        allow_replay=allow_replay,
+        disk_ceiling_gb=float(storage.get("disk_ceiling_gb", storage.get("max_disk_gb", 400))),
     )

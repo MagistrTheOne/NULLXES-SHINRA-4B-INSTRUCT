@@ -8,6 +8,8 @@ import pyarrow.parquet as pq
 import torch
 from torch.utils.data import Dataset
 
+from data.shards import PackedBinDataset
+
 
 class PackedParquetDataset(Dataset):
     def __init__(self, data_dir: str | Path) -> None:
@@ -46,9 +48,18 @@ class PackedParquetDataset(Dataset):
         }
         if "labels" in item and item["labels"] is not None:
             out["labels"] = torch.tensor(item["labels"], dtype=torch.long)
+        else:
+            out["labels"] = out["input_ids"].clone()
         return out
 
 
 def collate_lm(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     keys = batch[0].keys()
     return {key: torch.stack([row[key] for row in batch], dim=0) for key in keys}
+
+
+def load_packed_dataset(data_dir: str | Path, pad_id: int = 3):
+    root = Path(data_dir)
+    if any(root.glob("*.bin")):
+        return PackedBinDataset(root, pad_id=pad_id)
+    return PackedParquetDataset(root)

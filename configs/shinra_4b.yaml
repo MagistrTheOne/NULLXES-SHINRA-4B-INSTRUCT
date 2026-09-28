@@ -1,6 +1,6 @@
 # NULLXES SHINRA-4B — architecture v2 contract
-# Geometry: Qwen3-4B layout, SHINRA tokenizer / identity / implementation
-# Parameters: 3,969,056,256 (tied embeddings)
+# Geometry: SHINRA tokenizer + NULLXES implementation. Residual 2560, Q 4096, 36L, GQA 32/8.
+# Random init. Not identity-conditioning. Parameters: 3,969,056,256 (tied)
 # Init node: Google Colab G4 (RTX PRO 6000 Blackwell), random init, no inherited weights
 # Optimizer / WSD / FSDP / A100 batch below are NOT part of this freeze.
 
@@ -33,7 +33,8 @@ model:
   initializer_range: 0.02
   use_cache: true
   bos_token_id: 1
-  eos_token_id: 2  # <|eot|> generation stop; document stop is <|end_of_text|>
+  eos_token_id: 2  # <|eot|> generation / later chat. NOT pretrain document stop
+  document_end_token_id: 18  # <|end_of_text|> pretrain wrap terminator
   pad_token_id: 3
   sliding_window: null
   layer_types: null

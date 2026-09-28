@@ -1,11 +1,11 @@
-# Google Colab G4 — RTX PRO 6000 Blackwell. Random-init bring-up node.
-# Not local RTX 2080. Production cluster recipe is not part of architecture v2 freeze.
+# G4 hardware profile. Not a pretrain recipe. max_tokens stays 0.
 
 runtime: google-colab
 gpu: NVIDIA RTX PRO 6000 Blackwell
 gpu_class: G4
+compute_capability: sm_120
 local_gpu: forbidden
-note: "SHINRA v2 random init on Colab G4. No from_pretrained. No v1/S0/P0 weights."
+note: "SHINRA v2 G4 hardware. Random init. No from_pretrained. No v1/S0/P0 weights. SDPA only."
 
 model:
   name: NULLXES-SHINRA-4B
@@ -15,6 +15,17 @@ model:
 tokenizer:
   vocab_size: 131072
   output_dir: tokenizer/artifacts
+  hub_repo: MagistrTheOne/NULLXES-SHINRA-4B-INSTRUCT
+  hub_allow:
+    - tokenizer.json
+    - tokenizer_config.json
+    - special_tokens_map.json
+    - tokenizer.model
+    - tokenizer.vocab
+  hub_forbid_globs:
+    - "*.safetensors"
+    - "*.bin"
+    - "exp/**"
 
 precision:
   dtype: bfloat16
@@ -31,10 +42,13 @@ training:
   dataloader_num_workers: 2
   purpose: v2_random_init
   max_tokens: 0
+  attention_implementation: sdpa
 
 storage:
   cache_dir: /content/shinra_cache
   scratch_dir: /content/shinra_scratch
+  disk_ceiling_gb: 400
+  working_cap_gb: 150
   max_disk_gb: 150
 
 fsdp:

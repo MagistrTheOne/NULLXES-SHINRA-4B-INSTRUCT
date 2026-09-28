@@ -7,9 +7,11 @@
 
 SHINRA v1 (32 × 3072, GQA 24/8, Q width = residual) is closed as experimental lineage. No v1 weights, identity checkpoints, P0 optimizer states, or post-training LR decisions are inherited.
 
-SHINRA v2 adopts the **Qwen3-4B dimensional geometry** and keeps the SHINRA tokenizer, special-token namespace, `Shinra*` implementation, and training ownership. This is not a Qwen weight load and not a `Qwen3ForCausalLM` wrapper.
+SHINRA v2 is a NULLXES implementation: `ShinraConfig` / `ShinraForCausalLM`, own Unigram tokenizer 131072, random initialization, own training lineage. Geometry is SHINRA's: residual 2560, Q width 4096 (32×128), 36 layers, GQA 32/8, SwiGLU 9728. Hugging Face `PreTrainedModel` is an interface, not ancestry. Do not load foreign checkpoints into this lineage.
 
-Random init → real pretraining → language → only then identity / instruction.
+**Invariant:** SHINRA is SHINRA. Created by NULLXES. Compatibility with other model families is not SHINRA's identity or lineage. Hugging Face compatibility is an interface property, not model ancestry. Full text: [`docs/SHINRA_INVARIANT.md`](../docs/SHINRA_INVARIANT.md)
+
+Random init → real pretraining (language) → only then identity / instruction. S0–S2 must not identity-condition.
 
 ## Target
 
@@ -18,7 +20,8 @@ Random init → real pretraining → language → only then identity / instructi
 | Type | dense decoder-only |
 | Parameters | 3,969,056,256 (tied embeddings) |
 | Precision | BF16 |
-| Train context | 8192 |
+| Train context (S0–S2 G4) | 2048 |
+| Train context (cluster recipe, not this cycle) | 8192 |
 | Native context | 32768 |
 | Vocabulary | 131072 Unigram + byte fallback |
 | Init node | Google Colab **G4** (RTX PRO 6000 Blackwell) |
@@ -55,7 +58,7 @@ Q projection width is `num_attention_heads × head_dim` and **is not required** 
 
 v1 (closed): 32 layers, residual 3072, Q width 3072, 24Q/8KV, SwiGLU 9216, 3,926,076,416 params. Mathematically valid. Not this contract.
 
-Expanded Q is a **4B layout choice**, not a Qwen3 family law. Qwen3-1.7B-Base has Q width = hidden (2048). Qwen3-4B-Base has residual 2560 and Q width 4096.
+Expanded Q (4096 vs residual 2560) is a **SHINRA 4B layout choice**. Q width is not required to equal `hidden_size`.
 
 ## Parameter accounting
 
@@ -88,7 +91,7 @@ Meta-device check: `python -m scripts.verify_architecture`.
 
 ## Tokenizer (unchanged DNA)
 
-Do not retarget vocab to Qwen 151936. SHINRA Unigram 131072 and specials 0–18 stay frozen.
+Do not retarget vocab. SHINRA Unigram 131072 and specials 0–18 stay frozen.
 
 | ID | Token | Role |
 |----|--------|------|
@@ -113,7 +116,7 @@ Optimizer, WSD, packing isolation, RMSNorm numerics, dual-BOS, and residual init
 
 These are implementation risks, not the geometry contract:
 
-1. **RMSNorm numerics** — `ShinraRMSNorm` uses `F.rms_norm` when present (input dtype). Qwen3 RMSNorm always upcasts to fp32. Align before long pretrain.
+1. **RMSNorm numerics** — `ShinraRMSNorm` uses `F.rms_norm` when present (input dtype). Keep variance in fp32 before long pretrain.
 2. **Initialization** — `post_init` runs on `ShinraModel` and again on `ShinraForCausalLM`, then `_scaled_residual_init` on `o_proj`/`down_proj`. Audit the path before trusting `0.02/sqrt(2L)`.
 3. **Dual BOS** — `chat_template.jinja` emits `bos_token`; SentencePiece→HF `TemplateProcessing` also prepends `<|bos|>` when `add_special_tokens=True`. One authoritative encode path is required.
 4. **Pretrain packing** — `data/pack.py` concatenates documents into one causal stream (`attention_mask` all ones). Decide isolated vs concatenated documents as a pretrain contract, separately from closed P0.
@@ -127,7 +130,7 @@ Then optimizer / LR / WSD.
 | Logit blow-up at 4B | Z-loss 1e-5, QK-norm, residual init (after init audit) |
 | Colab G4 activation memory | gradient checkpointing; keep init seq modest |
 | Tokenizer unk on code | byte fallback + digit split (DNA already) |
-| Copying Qwen vocab | forbidden — keep 131072 |
+| Vocab retarget | forbidden — keep 131072 |
 
 ## Implementation order
 

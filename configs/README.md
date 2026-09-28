@@ -9,5 +9,9 @@
 # tokenizer.yaml
 # data_mix.yaml
 # dataset_pilot.yaml          SHINRA-COLAB-PILOT
-# colab.yaml                  Google Colab G4 (RTX PRO 6000 Blackwell)
-# pretrain_colab_100m.yaml    leftover hypothesis recipe; init uses shinra_4b.yaml
+# colab.yaml                  Google Colab G4 hardware (not a train recipe)
+# stages/s0_bringup.yaml      S0 20M synth drum
+# stages/s1_language.yaml     S1 230M
+# stages/s2_semantic.yaml     S2 750M
+# storage_g4.yaml             rolling disk ceiling
+# pretrain_colab_100m.yaml    leftover hypothesis recipe; not the S0 drum

@@ -60,6 +60,8 @@ def test_contamination_rejects_chat_and_identity():
     with pytest.raises(ContaminationError):
         assert_clean_pretrain_text("I am SHINRA and I help.")
     with pytest.raises(ContaminationError):
+        assert_clean_pretrain_text("Created by NULLXES in a lab.")
+    with pytest.raises(ContaminationError):
         assert_clean_pretrain_text("User: do a thing")
 
 

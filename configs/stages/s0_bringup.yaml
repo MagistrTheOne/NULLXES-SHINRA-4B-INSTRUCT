@@ -1,7 +1,18 @@
-stage: pretrain_colab_hypothesis
-output_name: NULLXES-SHINRA-4B-HYPOTHESIS
-max_tokens: 100000000
-max_steps: 6104
+# S0 bring-up: 20M new tokens, 100% synth. Numerics, packing, loss movement.
+stage: s0
+cumulative_tokens: 20000000
+new_tokens: 20000000
+max_tokens: 20000000
+max_steps: 1221
+mix:
+  synth: 1.0
+  natural: 0.0
+synth_layers:
+  language_core: 0.70
+  semantic_primitives: 0.10
+  compositional: 0.05
+  knowledge_shaped: 0.05
+  structured: 0.10
 
 optimizer:
   name: adamw_torch_fused
@@ -13,7 +24,7 @@ optimizer:
 
 scheduler:
   name: wsd
-  warmup_steps: 100
+  warmup_steps: 80
   stable_ratio: 0.80
   min_lr_ratio: 0.10
 
@@ -27,11 +38,13 @@ batch:
 training:
   seed: 42
   logging_steps: 10
-  eval_steps: 200
-  save_steps: 200
+  eval_steps: 50
+  save_steps: 100
   gradient_checkpointing: true
   dataloader_num_workers: 2
-  max_tokens: 100000000
+  max_tokens: 20000000
+  attention_implementation: sdpa
+  allow_replay: false
 
 hardware:
   gpu: NVIDIA RTX PRO 6000 Blackwell
@@ -39,5 +52,4 @@ hardware:
   node_gpus: 1
   precision: bf16
   flash_attention: false
-  attention_implementation: sdpa
   fsdp: false

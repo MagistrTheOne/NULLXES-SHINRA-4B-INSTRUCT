@@ -1,8 +1,10 @@
 # Обучение SHINRA
 
+**Этот цикл — Colab G4 S0–S2.** Команды и extra `flash` ниже — кластерный рецепт, не барабан. Барабан: [`README.md`](../README.md), [`docs/colab.md`](colab.md), `scripts/v2_s0_colab.py`.
+
 Architecture **v2** is frozen in `configs/shinra_4b.yaml` / `architecture/design.md`. Optimizer, WSD, packing, and cluster topology are **not** frozen. Do not resume S0.4.1 or P0.
 
-Init: Colab G4, `python -m scripts.phase01_bringup --config configs/shinra_4b.yaml`.
+Init smoke (не S0 train): Colab G4, `python -m scripts.phase01_bringup --config configs/shinra_4b.yaml`.
 
 ## Стадии
 

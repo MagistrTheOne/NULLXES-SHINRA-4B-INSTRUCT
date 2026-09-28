@@ -23,7 +23,7 @@ encode(text, add_special_tokens=False)
 
 Pack never uses `add_special_tokens=True`. Chat `TemplateProcessing` BOS is for SFT later, not this packer.
 
-If `END_OF_TEXT` is missing, unk, or equal to `eos_token_id`, pack raises. No fallback onto EOT.
+If `END_OF_TEXT` is missing, unk, or equal to `eos_token_id`, pack raises. No fallback onto EOT. Training code must use `document_end_token_id` (18), never `config.eos_token_id` (2), as the document terminator.
 
 ## Concatenation
 

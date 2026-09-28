@@ -73,6 +73,10 @@ def assert_packed_ids_clean(ids: list[int]) -> None:
 def wrap_pretrain_document(body_ids: list[int], bos_id: int = PRETRAIN_BOS_ID, end_id: int = PRETRAIN_END_OF_TEXT_ID) -> list[int]:
     if not body_ids:
         raise PackContractError("empty document")
+    if end_id == PRETRAIN_EOT_ID or end_id == bos_id:
+        raise PackContractError("document terminator must be END_OF_TEXT, not EOT/BOS/eos")
+    if end_id != PRETRAIN_END_OF_TEXT_ID:
+        raise PackContractError(f"document terminator id {end_id} is not {PRETRAIN_END_OF_TEXT_ID}")
     assert_pretrain_body_clean(body_ids)
     wrapped = [bos_id, *body_ids, end_id]
     assert_packed_ids_clean(wrapped)

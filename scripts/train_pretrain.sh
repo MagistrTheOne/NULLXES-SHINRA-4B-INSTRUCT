@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-# Stage 1: pretrain NULLXES SHINRA-4B-BASE on 8× A100 80GB.
+# Cluster A100 pretrain. NOT the Colab G4 S0–S2 drum.
+# G4 path: python scripts/v2_s0_colab.py  (see README / docs/colab.md)
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"

@@ -1,0 +1,22 @@
+# Rolling storage on Colab G4. Used by shard lifecycle, not by bring-up.
+
+storage:
+  disk_ceiling_gb: 400
+  working_cap_gb: 150
+  active_shard_window_gb: 100
+  scratch_gb: 80
+  cache_dir: /content/shinra_cache
+  scratch_dir: /content/shinra_scratch
+  corpus_dir: /content/shinra_scratch/corpus
+  run_dir: /content/shinra_scratch/run
+
+checkpoints:
+  keep_full: 1
+  keep_weights_only: 1
+  save_optimizer: true
+
+shards:
+  format: uint32_bin
+  sequence_length: 2048
+  target_tokens_per_shard: 5000000
+  packer: shinra-v2-pack.v1

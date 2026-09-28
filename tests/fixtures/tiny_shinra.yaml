@@ -1,0 +1,26 @@
+model:
+  vocab_size: 64
+  hidden_size: 32
+  intermediate_size: 64
+  num_hidden_layers: 2
+  num_attention_heads: 4
+  num_key_value_heads: 2
+  head_dim: 8
+  hidden_act: silu
+  max_position_embeddings: 64
+  rms_norm_eps: 1.0e-6
+  rope_theta: 1000000.0
+  rope_scaling: null
+  attention_dropout: 0.0
+  residual_dropout: 0.0
+  embedding_dropout: 0.0
+  attention_bias: false
+  mlp_bias: false
+  tie_word_embeddings: true
+  qk_norm: true
+  pad_token_id: 3
+  bos_token_id: 1
+  eos_token_id: 2
+  document_end_token_id: 18
+  z_loss_coefficient: 0.0
+  attention_implementation: eager

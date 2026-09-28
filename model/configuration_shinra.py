@@ -12,10 +12,11 @@ class ShinraConfig(PretrainedConfig):
     """Decoder-only SHINRA Transformer configuration.
 
     Parameter target (tied embeddings): 3,969,056,256
-      SHINRA v2 geometry (Qwen3-4B layout, SHINRA tokenizer):
+      SHINRA v2 geometry:
       - vocab 131072 × hidden 2560
       - 36 layers, GQA 32/8, head_dim 128 (Q width 4096 != residual 2560)
       - SwiGLU intermediate 9728
+    eos_token_id is <|eot|> (generation). document_end_token_id is <|end_of_text|>.
     """
 
     model_type = "nullxes_shinra"
@@ -52,6 +53,7 @@ class ShinraConfig(PretrainedConfig):
         attention_implementation: str = "sdpa",
         z_loss_coefficient: float = 1e-5,
         attention_multiplier: float | None = None,
+        document_end_token_id: int = 18,
         **kwargs: Any,
     ) -> None:
         self.vocab_size = vocab_size
@@ -92,6 +94,7 @@ class ShinraConfig(PretrainedConfig):
         self.z_loss_coefficient = z_loss_coefficient
         self.attention_multiplier = attention_multiplier
         self.mlp_hidden_act = hidden_act
+        self.document_end_token_id = int(document_end_token_id)
         super().__init__(
             pad_token_id=pad_token_id,
             bos_token_id=bos_token_id,
@@ -99,6 +102,11 @@ class ShinraConfig(PretrainedConfig):
             tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )
+        if self.document_end_token_id == self.eos_token_id:
+            raise ValueError(
+                "document_end_token_id must not equal eos_token_id; "
+                "pretrain document stop is <|end_of_text|>, generation eos is <|eot|>"
+            )
         self._validate_rope()
 
     def _validate_rope(self) -> None:
@@ -184,6 +192,7 @@ class ShinraConfig(PretrainedConfig):
             "attention_implementation",
             "z_loss_coefficient",
             "attention_multiplier",
+            "document_end_token_id",
         }
         kwargs = {k: v for k, v in model_raw.items() if k in allowed}
         return cls(**kwargs)

@@ -1,6 +1,6 @@
 # NULLXES SHINRA-4B-INSTRUCT | TRAINING LEDGER
 
-**v2 (2026-09-28):** architecture lineage v1 closed. This ledger is R&D evidence, not a resume target. SHINRA v2 is Qwen3-4B geometry + SHINRA tokenizer, random init, no S0.4.1 / P0 weights.
+**v2 (2026-09-28):** architecture lineage v1 closed. This ledger is R&D evidence, not a resume target. SHINRA v2 is NULLXES geometry (2560/9728/36/32Q/8KV/128) + SHINRA tokenizer, random init, no S0.4.1 / P0 weights.
 
 **Дата фиксации v1:** 23-09-2026  
 **Режим записи:** локальный документ. Машину не запускать.  
