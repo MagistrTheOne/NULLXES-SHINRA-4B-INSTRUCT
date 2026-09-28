@@ -133,7 +133,15 @@ def test_refuses_remote_source():
 
 
 def test_engine_sources_have_no_network_clients():
-    banned = ("huggingface_hub", "urllib.request", "requests.get", "httpx", "datasets.load_dataset")
+    banned = (
+        "huggingface_hub",
+        "urllib.request",
+        "requests.get",
+        "import requests",
+        "httpx",
+        "datasets.load_dataset",
+        "snapshot_download",
+    )
     for path in PHASE_B_PY.glob("*.py"):
         text = path.read_text(encoding="utf-8")
         for needle in banned:
@@ -170,15 +178,28 @@ class _FakeTokenizer:
 
 
 def test_production_allowlist_is_closed():
-    from data.data_v1.sources import assert_production_allowlist_closed, load_allowlist
+    from data.data_v1.sources import assert_production_allowlist_governance, load_allowlist
 
-    assert_production_allowlist_closed()
+    assert_production_allowlist_governance()
     doc = load_allowlist()
-    assert doc["sources"] == []
+    assert [row["source_id"] for row in doc["sources"]] == ["fineweb-edu-en", "fineweb2-ru"]
     assert doc["downloaders"] is False
+    assert doc["acquisition"] == "closed"
     assert doc["token_count"]["canary"] == "tokenizer_required"
     assert doc["token_count"]["add_special_tokens"] is False
-    assert doc["disk"]["max_materialization_gb"] <= 8
+    assert doc["disk"]["max_materialized_bytes"] == 8589934592
+    for row in doc["sources"]:
+        assert row["materialization"]["status"] == "not_materialized"
+        assert row["materialization"]["content_sha256"] is None
+        assert row["max_materialized_bytes"] == 4294967296
+        assert row["expected_token_range"]["max"] == 8_000_000
+        assert row["license"]["dataset_id"] == "ODC-By-1.0"
+        assert row["license"]["dataset_redistribution"] is True
+        assert row["license"]["underlying_content_caveat"] == "common_crawl_third_party_rights"
+        assert row["license"]["common_crawl_tou"] is True
+    assert doc["sources"][1]["upstream"]["subset"] == "rus_Cyrl"
+    assert doc["sources"][0]["upstream"]["revision"] is None
+    assert all(row["provenance_hash_strategy"] == "content_sha256" for row in doc["sources"])
 
 
 def test_canary_mode_requires_tokenizer():
@@ -187,7 +208,7 @@ def test_canary_mode_requires_tokenizer():
 
 
 def test_canary_mode_fails_closed_allowlist():
-    with pytest.raises(PhaseBError, match="allowlist empty"):
+    with pytest.raises(PhaseBError, match="materialization unresolved"):
         run_canary(FIXTURES / "ok", mode="canary", tokenizer=_FakeTokenizer())
 
 
@@ -211,6 +232,158 @@ def test_source_record_rejects_url_license():
 
     stub = load_allowlist(FIXTURES / "allowlist_stub.json")
     src = dict(stub["sources"][0])
-    src["license_id"] = "https://example.com/license"
+    src["license"] = dict(src["license"])
+    src["license"]["dataset_id"] = "https://example.com/license"
     with pytest.raises(PhaseBError, match="URL"):
         validate_source_record(src)
+
+
+def test_unknown_source_id_rejected():
+    from data.data_v1.sources import load_allowlist, validate_source_record
+
+    src = dict(load_allowlist()["sources"][0])
+    src["source_id"] = "wikipedia-en"
+    with pytest.raises(PhaseBError, match="unknown source"):
+        validate_source_record(src)
+
+
+def test_fineweb2_wrong_subset_rejected():
+    from data.data_v1.sources import load_allowlist, validate_source_record
+
+    src = dict(load_allowlist()["sources"][1])
+    src["upstream"] = dict(src["upstream"])
+    src["upstream"]["subset"] = "eng_Latn"
+    with pytest.raises(PhaseBError, match="wrong subset"):
+        validate_source_record(src)
+
+
+def test_source_language_mismatch_rejected():
+    from data.data_v1.sources import load_allowlist, validate_source_record
+
+    src = dict(load_allowlist()["sources"][1])
+    src["languages"] = ["en"]
+    with pytest.raises(PhaseBError, match="language mismatch"):
+        validate_source_record(src)
+
+
+def test_source_domain_outside_allowlist_rejected():
+    from data.data_v1.sources import load_allowlist, validate_source_record
+
+    src = dict(load_allowlist()["sources"][0])
+    src["allowed_domains"] = ["general", "knowledge", "longform", "code"]
+    with pytest.raises(PhaseBError, match="domain outside allowlist"):
+        validate_source_record(src)
+
+
+def test_source_over_4_gib_rejected():
+    from data.data_v1.sources import load_allowlist, validate_source_record
+
+    src = dict(load_allowlist()["sources"][0])
+    src["max_materialized_bytes"] = 4294967296 + 1
+    with pytest.raises(PhaseBError, match="4 GiB"):
+        validate_source_record(src)
+
+
+def test_aggregate_over_8_gib_rejected():
+    from data.data_v1.sources import load_allowlist, validate_allowlist
+
+    doc = json.loads(json.dumps(load_allowlist()))
+    doc["disk"]["max_materialized_bytes"] = 8589934592 - 1
+    with pytest.raises(PhaseBError, match="aggregate materialization"):
+        validate_allowlist(doc)
+
+
+def test_unresolved_hash_cannot_enter_real_canary():
+    from data.data_v1.sources import assert_canary_materialized, load_allowlist
+
+    with pytest.raises(PhaseBError, match="materialization unresolved"):
+        assert_canary_materialized(load_allowlist())
+
+
+def test_empty_local_input_rejected():
+    with pytest.raises(PhaseBError, match="source not found"):
+        run_canary(FIXTURES / "does-not-exist.jsonl")
+
+
+def test_phase_a_hashes_unchanged():
+    from data.data_v1.phase_a import validate_phase_a
+
+    report = validate_phase_a()
+    assert report["manifest_sha256"] == "c18fba5f054475fc9f87242aa048039e1ae9e3cbc860852af152647ef7d035dc"
+    assert report["probe_bundle_sha256"] == "eb6d0b7552f646e2782d744ae0542f240fb0c350f980b05fb6a337b7bffc87b9"
+
+
+def test_assert_allowed_sidecar_unknown_and_mismatch():
+    from data.data_v1.phase_b import assert_allowed_sidecar
+    from data.data_v1.sources import load_allowlist, source_index
+
+    idx = source_index(load_allowlist())
+    with pytest.raises(PhaseBError, match="unknown source"):
+        assert_allowed_sidecar(
+            {"source_id": "nope", "language": "en", "domain": "general", "source_type": "natural"},
+            idx,
+        )
+    with pytest.raises(PhaseBError, match="language mismatch"):
+        assert_allowed_sidecar(
+            {"source_id": "fineweb-edu-en", "language": "ru", "domain": "general", "source_type": "natural"},
+            idx,
+        )
+    with pytest.raises(PhaseBError, match="domain outside allowlist"):
+        assert_allowed_sidecar(
+            {"source_id": "fineweb-edu-en", "language": "en", "domain": "code", "source_type": "natural"},
+            idx,
+        )
+
+
+def test_source_over_4_gib_rejected_for_both_ids():
+    from data.data_v1.sources import load_allowlist, validate_source_record
+
+    doc = load_allowlist()
+    for src in doc["sources"]:
+        row = dict(src)
+        row["max_materialized_bytes"] = 4294967296 + 1
+        with pytest.raises(PhaseBError, match="4 GiB"):
+            validate_source_record(row)
+
+
+def test_fineweb_edu_invented_subset_rejected():
+    from data.data_v1.sources import load_allowlist, validate_source_record
+
+    src = dict(load_allowlist()["sources"][0])
+    src["upstream"] = dict(src["upstream"])
+    src["upstream"]["subset"] = "sample-10BT"
+    with pytest.raises(PhaseBError, match="subset"):
+        validate_source_record(src)
+
+
+def test_unverified_revision_rejected():
+    from data.data_v1.sources import load_allowlist, validate_source_record
+
+    src = dict(load_allowlist()["sources"][0])
+    src["upstream"] = dict(src["upstream"])
+    src["upstream"]["revision"] = "deadbeef"
+    with pytest.raises(PhaseBError, match="unverified"):
+        validate_source_record(src)
+
+
+def test_allowlist_has_no_fake_snapshot_string():
+    from data.data_v1.sources import ALLOWLIST_PATH, SCHEMA_PATH
+
+    assert "PENDING-LOCAL-SLICE" not in ALLOWLIST_PATH.read_text(encoding="utf-8")
+    assert "PENDING-LOCAL-SLICE" not in SCHEMA_PATH.read_text(encoding="utf-8")
+
+
+def test_empty_directory_rejected(tmp_path):
+    empty = tmp_path / "empty-dir"
+    empty.mkdir()
+    with pytest.raises(PhaseBError, match="no local jsonl"):
+        run_canary(empty)
+
+
+def test_empty_jsonl_fails_kept_gate(tmp_path):
+    path = tmp_path / "empty.jsonl"
+    path.write_text("", encoding="utf-8")
+    report = run_canary(path)
+    assert report["status"] == "fail"
+    assert report["documents_kept"] == 0
+    assert report["gates"]["kept_nonempty"]["ok"] is False

@@ -76,11 +76,11 @@ RAW (local path)
 
 Pack wrap `[BOS]+body+[END_OF_TEXT=18]` is **not** this phase.
 
-Allowlist: [`SHINRA_DATA_V1_SOURCES.md`](SHINRA_DATA_V1_SOURCES.md) + [`sources.allowlist.json`](sources.allowlist.json) — **empty**, acquisition closed. Disk cap for a future canary: 8 GB raw, 20 GB free. `colab.yaml` 400 GB is not this budget.
+Allowlist: [`SHINRA_DATA_V1_SOURCES.md`](SHINRA_DATA_V1_SOURCES.md) + [`sources.allowlist.json`](sources.allowlist.json) — `fineweb-edu-en` and `fineweb2-ru` are **governance-only**. `acquisition: closed`. Real canary fail-closed until `materialization.content_sha256` exists. Disk: **8589934592 bytes** raw, **20 GB** free. Live Colab disk **235.7 / 106.9 / ~128.8 GB**. `colab.yaml` 400 GB is not this budget.
 
 ```bash
 python -m data.data_v1.phase_b --mode fixture --input tests/fixtures/data_v1/phase_b/ok
-# real canary (later, after allowlist):
+# real canary (later, after local slices + content_sha256):
 # python -m data.data_v1.phase_b --mode canary --tokenizer tokenizer/artifacts/tokenizer.json --input <local>
 ```
 
@@ -131,7 +131,6 @@ Colab: `/content` scratch only. Do not Drive-mount the hot path.
 - [x] Partial S0 baseline from the measured session
 - [ ] Full S0 probe pass into `eval/baselines/s0-step-00001358/` (GPU, still frozen probes)
 - [x] Phase B ingest engine + hard gates + fixture dry-run (no network)
-- [x] Source governance schema + empty allowlist; tokenizer required for real canary
-- [ ] First authorized source records in `sources.allowlist.json`
-- [ ] Real ≤20M **tokenizer-token** canary ingest after allowlist
+- [x] Source governance: `fineweb-edu-en` + `fineweb2-ru` listed, acquisition still closed
+- [ ] Local bounded slices + `content_sha256` (real canary still closed)
 - [ ] Phase C/D authorization

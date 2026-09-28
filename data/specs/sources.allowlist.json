@@ -3,7 +3,7 @@
   "acquisition": "closed",
   "downloaders": false,
   "disk": {
-    "max_materialization_gb": 8,
+    "max_materialized_bytes": 8589934592,
     "min_free_gb": 20,
     "scratch": "/content/shinra_scratch/data_v1"
   },
@@ -13,5 +13,72 @@
     "add_special_tokens": false,
     "max_canary_tokens": 20000000
   },
-  "sources": []
+  "sources": [
+    {
+      "source_id": "fineweb-edu-en",
+      "source_type": "natural",
+      "languages": ["en"],
+      "allowed_domains": ["general", "knowledge", "longform"],
+      "acquisition_method": "local_materialized",
+      "local_materialization_format": "jsonl",
+      "expected_token_range": { "min": 1, "max": 8000000 },
+      "max_materialized_bytes": 4294967296,
+      "license": {
+        "dataset_id": "ODC-By-1.0",
+        "dataset_redistribution": true,
+        "underlying_content_caveat": "common_crawl_third_party_rights",
+        "common_crawl_tou": true
+      },
+      "upstream": {
+        "repository": "HuggingFaceFW/fineweb-edu",
+        "subset": null,
+        "revision": null
+      },
+      "materialization": {
+        "status": "not_materialized",
+        "slice_id": null,
+        "content_sha256": null
+      },
+      "provenance_hash_strategy": "content_sha256",
+      "caveats": [
+        "common_crawl_tou",
+        "third_party_page_rights",
+        "bounded_local_slice_only",
+        "full_dataset_forbidden"
+      ]
+    },
+    {
+      "source_id": "fineweb2-ru",
+      "source_type": "natural",
+      "languages": ["ru"],
+      "allowed_domains": ["general", "knowledge", "longform"],
+      "acquisition_method": "local_materialized",
+      "local_materialization_format": "jsonl",
+      "expected_token_range": { "min": 1, "max": 8000000 },
+      "max_materialized_bytes": 4294967296,
+      "license": {
+        "dataset_id": "ODC-By-1.0",
+        "dataset_redistribution": true,
+        "underlying_content_caveat": "common_crawl_third_party_rights",
+        "common_crawl_tou": true
+      },
+      "upstream": {
+        "repository": "HuggingFaceFW/fineweb-2",
+        "subset": "rus_Cyrl",
+        "revision": null
+      },
+      "materialization": {
+        "status": "not_materialized",
+        "slice_id": null,
+        "content_sha256": null
+      },
+      "provenance_hash_strategy": "content_sha256",
+      "caveats": [
+        "common_crawl_tou",
+        "third_party_page_rights",
+        "bounded_local_slice_only",
+        "full_dataset_forbidden"
+      ]
+    }
+  ]
 }

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://nullxes.local/schemas/shinra-data-v1-sources.json",
   "title": "SHINRA DATA V1 source allowlist",
-  "description": "Governance only. Empty sources means acquisition is closed. No downloaders.",
+  "description": "Governance only. Listing a source does not authorize download, materialization, or real canary.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -20,9 +20,14 @@
     "disk": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["max_materialization_gb", "min_free_gb", "scratch"],
+      "required": ["max_materialized_bytes", "min_free_gb", "scratch"],
       "properties": {
-        "max_materialization_gb": { "type": "number", "minimum": 0, "maximum": 8 },
+        "max_materialized_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8589934592,
+          "description": "Global raw cap in bytes. 8 GiB = 8589934592. Not GB."
+        },
         "min_free_gb": { "type": "number", "minimum": 0 },
         "scratch": { "type": "string", "minLength": 1 }
       }
@@ -49,25 +54,24 @@
       "additionalProperties": false,
       "required": [
         "source_id",
-        "snapshot",
-        "license_id",
-        "redistribution",
         "source_type",
         "languages",
         "allowed_domains",
         "acquisition_method",
         "local_materialization_format",
         "expected_token_range",
-        "provenance_hash_strategy"
+        "max_materialized_bytes",
+        "license",
+        "upstream",
+        "materialization",
+        "provenance_hash_strategy",
+        "caveats"
       ],
       "properties": {
         "source_id": {
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
         },
-        "snapshot": { "type": "string", "minLength": 1 },
-        "license_id": { "type": "string", "minLength": 1 },
-        "redistribution": { "type": "boolean" },
         "source_type": { "enum": ["natural", "synthetic"] },
         "languages": {
           "type": "array",
@@ -101,8 +105,82 @@
             "max": { "type": "integer", "minimum": 1, "maximum": 20000000 }
           }
         },
+        "max_materialized_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8589934592,
+          "description": "Per-source raw cap in bytes."
+        },
+        "license": { "$ref": "#/$defs/license" },
+        "upstream": { "$ref": "#/$defs/upstream" },
+        "materialization": { "$ref": "#/$defs/materialization" },
         "provenance_hash_strategy": {
           "enum": ["content_sha256", "source_id_snapshot_path"]
+        },
+        "caveats": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "none",
+              "common_crawl_tou",
+              "third_party_page_rights",
+              "bounded_local_slice_only",
+              "full_dataset_forbidden"
+            ]
+          }
+        }
+      }
+    },
+    "license": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "dataset_id",
+        "dataset_redistribution",
+        "underlying_content_caveat",
+        "common_crawl_tou"
+      ],
+      "properties": {
+        "dataset_id": { "type": "string", "minLength": 1 },
+        "dataset_redistribution": {
+          "type": "boolean",
+          "description": "ODC-By compilation only. Not a grant over third-party crawled pages."
+        },
+        "underlying_content_caveat": {
+          "enum": ["none", "common_crawl_third_party_rights"]
+        },
+        "common_crawl_tou": { "type": "boolean" }
+      }
+    },
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "subset", "revision"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+          "description": "Hub org/name. Not a URL. Not an acquisition method."
+        },
+        "subset": { "type": ["string", "null"] },
+        "revision": {
+          "type": ["string", "null"],
+          "description": "Only a verified commit/tag. Null if unresolved."
+        }
+      }
+    },
+    "materialization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "slice_id", "content_sha256"],
+      "properties": {
+        "status": { "enum": ["not_materialized", "materialized"] },
+        "slice_id": { "type": ["string", "null"] },
+        "content_sha256": {
+          "anyOf": [
+            { "type": "null" },
+            { "type": "string", "pattern": "^sha256:[a-f0-9]{64}$" }
+          ]
         }
       }
     }

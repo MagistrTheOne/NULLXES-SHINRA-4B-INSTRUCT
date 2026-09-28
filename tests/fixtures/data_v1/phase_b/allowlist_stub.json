@@ -3,7 +3,7 @@
   "acquisition": "local_materialized",
   "downloaders": false,
   "disk": {
-    "max_materialization_gb": 8,
+    "max_materialized_bytes": 8589934592,
     "min_free_gb": 0,
     "scratch": "/tmp/shinra-phase-b-test"
   },
@@ -16,29 +16,59 @@
   "sources": [
     {
       "source_id": "fixture-canary-en",
-      "snapshot": "phase-b-fixture",
-      "license_id": "fixture-local",
-      "redistribution": true,
       "source_type": "natural",
       "languages": ["en"],
       "allowed_domains": ["general", "knowledge"],
       "acquisition_method": "local_materialized",
       "local_materialization_format": "jsonl",
       "expected_token_range": { "min": 1, "max": 1000 },
-      "provenance_hash_strategy": "source_id_snapshot_path"
+      "max_materialized_bytes": 1048576,
+      "license": {
+        "dataset_id": "fixture-local",
+        "dataset_redistribution": true,
+        "underlying_content_caveat": "none",
+        "common_crawl_tou": false
+      },
+      "upstream": {
+        "repository": "nullxes/phase-b-fixture",
+        "subset": null,
+        "revision": null
+      },
+      "materialization": {
+        "status": "materialized",
+        "slice_id": "phase-b-fixture-en",
+        "content_sha256": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "provenance_hash_strategy": "source_id_snapshot_path",
+      "caveats": ["none"]
     },
     {
       "source_id": "ru",
-      "snapshot": "phase-b-fixture",
-      "license_id": "fixture-local",
-      "redistribution": true,
       "source_type": "natural",
       "languages": ["ru"],
       "allowed_domains": ["general"],
       "acquisition_method": "local_materialized",
       "local_materialization_format": "txt",
       "expected_token_range": { "min": 1, "max": 1000 },
-      "provenance_hash_strategy": "source_id_snapshot_path"
+      "max_materialized_bytes": 1048576,
+      "license": {
+        "dataset_id": "fixture-local",
+        "dataset_redistribution": true,
+        "underlying_content_caveat": "none",
+        "common_crawl_tou": false
+      },
+      "upstream": {
+        "repository": "nullxes/phase-b-fixture",
+        "subset": null,
+        "revision": null
+      },
+      "materialization": {
+        "status": "materialized",
+        "slice_id": "phase-b-fixture-ru",
+        "content_sha256": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "provenance_hash_strategy": "source_id_snapshot_path",
+      "caveats": ["none"]
     }
   ]
 }
