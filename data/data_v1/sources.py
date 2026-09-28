@@ -9,6 +9,7 @@ from typing import Any
 
 from data.data_v1 import PhaseBError
 from data.data_v1.phase_a import DOMAINS, LANGUAGES, SOURCE_ID_RE, SOURCE_TYPES
+from data.data_v1.plan_fineweb_edu_en import REVISION as FINEWEB_EDU_EN_REVISION
 
 ROOT = Path(__file__).resolve().parents[2]
 ALLOWLIST_PATH = ROOT / "data" / "specs" / "sources.allowlist.json"
@@ -41,6 +42,7 @@ GOVERNED = {
     "fineweb-edu-en": {
         "repository": "HuggingFaceFW/fineweb-edu",
         "subset": None,
+        "revision": FINEWEB_EDU_EN_REVISION,
         "languages": ("en",),
         "domains": frozenset({"general", "knowledge", "longform"}),
         "max_bytes": SOURCE_MAX_MATERIALIZED_BYTES,
@@ -49,6 +51,7 @@ GOVERNED = {
     "fineweb2-ru": {
         "repository": "HuggingFaceFW/fineweb-2",
         "subset": "rus_Cyrl",
+        "revision": None,
         "languages": ("ru",),
         "domains": frozenset({"general", "knowledge", "longform"}),
         "max_bytes": SOURCE_MAX_MATERIALIZED_BYTES,
@@ -132,7 +135,7 @@ def validate_source_record(src: dict[str, Any]) -> None:
             raise PhaseBError("upstream repository mismatch")
         if src["upstream"]["subset"] != spec["subset"]:
             raise PhaseBError("FineWeb2 wrong subset" if sid == "fineweb2-ru" else "upstream subset mismatch")
-        if src["upstream"]["revision"] is not None:
+        if src["upstream"]["revision"] != spec["revision"]:
             raise PhaseBError("unverified upstream revision")
         if nbytes > spec["max_bytes"]:
             raise PhaseBError("max_materialized_bytes exceeds 4 GiB for this source")
@@ -284,7 +287,10 @@ def assert_production_allowlist_governance() -> None:
             raise PhaseBError("production sources must remain not_materialized")
         if row["materialization"]["content_sha256"] is not None:
             raise PhaseBError("production content_sha256 must be null")
-        if row["upstream"]["revision"] is not None:
+        if row["source_id"] == "fineweb-edu-en":
+            if row["upstream"]["revision"] != FINEWEB_EDU_EN_REVISION:
+                raise PhaseBError("fineweb-edu-en revision must stay the frozen SHA")
+        elif row["upstream"]["revision"] is not None:
             raise PhaseBError("unverified revision must stay null")
         if row["provenance_hash_strategy"] != "content_sha256":
             raise PhaseBError("production slice identity must be content_sha256")
@@ -302,8 +308,10 @@ def assert_production_allowlist_governance() -> None:
         "not_materialized",
         "allowlist approval",
         "235.7",
-        "dataset_redistribution",
         "underlying_content_caveat",
+        "87f09149",
+        "013_00000",
+        "single_frozen_file",
     ):
         if needle not in spec:
             raise PhaseBError(f"SOURCES spec missing {needle}")

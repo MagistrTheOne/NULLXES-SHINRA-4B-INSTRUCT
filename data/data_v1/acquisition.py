@@ -30,7 +30,7 @@ PRODUCTION_MATERIALIZE_ROOT = Path("/content/shinra_scratch/data_v1")
 S0_SCRATCH = Path("/content/shinra_scratch/s0")
 MIN_FREE_BYTES = 20 * (1024**3)
 RAW_FORMATS = ("parquet", "arrow", "jsonl")
-SELECTION_STRATEGY = "bounded_bytes"
+SELECTION_STRATEGIES = ("bounded_bytes", "single_frozen_file")
 INCOMPLETE_SUFFIXES = (".tmp", ".part", ".partial")
 REMOTE_RE = re.compile(r"^(https?|hf|s3|gs|ftp)://", re.IGNORECASE)
 IMMUTABLE_REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -39,7 +39,6 @@ FORBIDDEN_REVISION_LABELS = frozenset(
 )
 MANIFEST_KEYS = ("schema_version", "source_id", "upstream", "artifact", "selection", "status")
 ARTIFACT_KEYS = ("filename", "format", "bytes", "raw_content_sha256")
-SELECTION_KEYS = ("strategy", "bound_bytes")
 
 
 class AcquisitionError(PhaseBError):
@@ -127,6 +126,39 @@ def is_production_acquisition_ready(row: dict[str, Any]) -> bool:
     return revision_is_immutable(rev)
 
 
+def _validate_selection(sel: dict[str, Any], art: dict[str, Any]) -> None:
+    if not isinstance(sel, dict) or "strategy" not in sel or "bound_bytes" not in sel:
+        raise AcquisitionError("manifest selection")
+    strategy = sel["strategy"]
+    if strategy not in SELECTION_STRATEGIES:
+        raise AcquisitionError("selection.strategy")
+    if not isinstance(sel["bound_bytes"], int) or sel["bound_bytes"] < 1:
+        raise AcquisitionError("selection.bound_bytes")
+    if sel["bound_bytes"] > SOURCE_MAX_MATERIALIZED_BYTES:
+        raise AcquisitionError("selection.bound_bytes exceeds 4 GiB")
+    if art["bytes"] > sel["bound_bytes"]:
+        raise AcquisitionError("artifact bytes exceed selection.bound_bytes")
+    if strategy == "bounded_bytes":
+        if set(sel) != {"strategy", "bound_bytes"}:
+            raise AcquisitionError("manifest selection")
+        return
+    if set(sel) != {"strategy", "bound_bytes", "path", "expected_raw_sha256"}:
+        raise AcquisitionError("manifest selection")
+    path = sel["path"]
+    if not isinstance(path, str) or not path.strip():
+        raise AcquisitionError("selection.path")
+    _assert_local_ref(path)
+    if path != path.replace("\\", "/") or path.startswith("/") or ".." in path.split("/"):
+        raise AcquisitionError("selection.path must be a relative posix path")
+    if Path(path).name != str(art["filename"]):
+        raise AcquisitionError("artifact.filename must match selection.path basename")
+    expected = sel["expected_raw_sha256"]
+    if not isinstance(expected, str) or not SHA256_RE.match(expected):
+        raise AcquisitionError("malformed expected_raw_sha256")
+    if expected != art["raw_content_sha256"]:
+        raise AcquisitionError("selection expected SHA does not match artifact raw SHA")
+
+
 def validate_manifest_document(doc: dict[str, Any]) -> None:
     extra = set(doc) - set(MANIFEST_KEYS)
     if "content_sha256" in extra or (
@@ -159,17 +191,7 @@ def validate_manifest_document(doc: dict[str, Any]) -> None:
         raise AcquisitionError("artifact.bytes")
     if not isinstance(art["raw_content_sha256"], str) or not SHA256_RE.match(art["raw_content_sha256"]):
         raise AcquisitionError("malformed raw_content_sha256")
-    sel = doc["selection"]
-    if not isinstance(sel, dict) or set(sel) != set(SELECTION_KEYS):
-        raise AcquisitionError("manifest selection")
-    if sel["strategy"] != SELECTION_STRATEGY:
-        raise AcquisitionError("selection.strategy")
-    if not isinstance(sel["bound_bytes"], int) or sel["bound_bytes"] < 1:
-        raise AcquisitionError("selection.bound_bytes")
-    if sel["bound_bytes"] > SOURCE_MAX_MATERIALIZED_BYTES:
-        raise AcquisitionError("selection.bound_bytes exceeds 4 GiB")
-    if art["bytes"] > sel["bound_bytes"]:
-        raise AcquisitionError("artifact bytes exceed selection.bound_bytes")
+    _validate_selection(doc["selection"], art)
     _no_url(doc)
 
 

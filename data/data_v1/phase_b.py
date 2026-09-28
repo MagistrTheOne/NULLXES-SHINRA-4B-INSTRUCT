@@ -31,6 +31,7 @@ from data.data_v1.report import (
     finalize_status,
     public_report,
 )
+from data.data_v1.materialize import validate_artifact_pair
 from data.data_v1.sources import ALLOWLIST_PATH, assert_canary_materialized, load_allowlist, source_index
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -125,6 +126,34 @@ def load_local_tokenizer(path: str | Path) -> Any:
     return Tokenizer.from_file(str(json_file))
 
 
+def _git_stub_materialized(allowlist: dict[str, Any]) -> bool:
+    sources = allowlist.get("sources") or []
+    return bool(sources) and all((row.get("materialization") or {}).get("status") == "materialized" for row in sources)
+
+
+def assert_canary_receipt(input_path: Path, allowlist: dict[str, Any]) -> dict[str, Any] | None:
+    """Fixture stub allowlists keep git materialized flags. Production uses scratch receipts."""
+    if _git_stub_materialized(allowlist):
+        assert_canary_materialized(allowlist)
+        return None
+    path = input_path
+    if path.is_dir():
+        jsonls = sorted(p for p in path.rglob("*.jsonl") if not p.name.endswith(".tmp"))
+        if len(jsonls) != 1:
+            raise PhaseBError("materialization unresolved; real canary closed")
+        path = jsonls[0]
+    receipt_path = path.with_name(path.stem + ".receipt.json")
+    if not path.is_file() or not receipt_path.is_file():
+        raise PhaseBError("materialization unresolved; real canary closed")
+    try:
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        sid = str(receipt["source_id"])
+        row = source_index(allowlist)[sid]
+        return validate_artifact_pair(path, receipt_path, source_id=sid, allowlist_row=row)
+    except Exception as exc:
+        raise PhaseBError("materialization unresolved; real canary closed") from exc
+
+
 def assert_allowed_sidecar(sidecar: dict[str, Any], index: dict[str, dict[str, Any]]) -> None:
     spec = index.get(sidecar["source_id"])
     if spec is None:
@@ -157,8 +186,11 @@ def run_canary(
         if tokenizer is None:
             raise PhaseBError("real corpus canary requires tokenizer (add_special_tokens=False)")
         allowlist = load_allowlist(Path(allowlist_path) if allowlist_path else ALLOWLIST_PATH)
-        assert_canary_materialized(allowlist)
+        receipt_state = assert_canary_receipt(root, allowlist)
         allowed = source_index(allowlist)
+        if receipt_state is not None:
+            src_cap = int(allowed[receipt_state["source_id"]]["expected_token_range"]["max"])
+            max_tokens = min(max_tokens, src_cap)
         max_in = int(allowlist["disk"]["max_materialized_bytes"])
         min_free = float(allowlist["disk"]["min_free_gb"])
         nbytes = _input_bytes(root)

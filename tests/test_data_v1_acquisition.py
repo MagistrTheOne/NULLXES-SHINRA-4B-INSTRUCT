@@ -124,20 +124,22 @@ def test_repository_subset_revision_mismatch(tmp_path: Path):
 
 def test_null_revision_is_not_moving_head_and_not_production_ready():
     doc = _allowlist()
-    assert production_sources_readiness(doc) == {"fineweb-edu-en": False, "fineweb2-ru": False}
-    for row in doc["sources"]:
-        assert row["upstream"]["revision"] is None
-        assert is_production_acquisition_ready(row) is False
-    schema_doc = _manifest(revision=None)
+    ready = production_sources_readiness(doc)
+    assert ready["fineweb-edu-en"] is True
+    assert ready["fineweb2-ru"] is False
+    ru = next(row for row in doc["sources"] if row["source_id"] == "fineweb2-ru")
+    assert ru["upstream"]["revision"] is None
+    assert is_production_acquisition_ready(ru) is False
+    schema_doc = _manifest(source_id="fineweb2-ru", revision=None)
     validate_manifest_document(schema_doc)
     assert schema_doc["upstream"]["revision"] is None
 
 
 def test_handoff_closed_when_governance_revision_null(tmp_path: Path):
-    doc = _manifest(revision=None)
+    doc = _manifest(source_id="fineweb2-ru", revision=None)
     root, _, man = _plant(tmp_path, doc)
     with pytest.raises(AcquisitionError, match="immutable revision not frozen"):
-        validate_acquired_artifact(SOURCE_ID, man, root, _allowlist(), free_bytes=FREE)
+        validate_acquired_artifact("fineweb2-ru", man, root, _allowlist(), free_bytes=FREE)
 
 
 def test_missing_empty_manifest_and_raw(tmp_path: Path):
@@ -268,7 +270,7 @@ def test_validator_does_not_invent_revision(tmp_path: Path):
     root, _, man = _plant(tmp_path, doc)
     with pytest.raises(AcquisitionError, match="upstream identity mismatch|revision"):
         validate_acquired_artifact(SOURCE_ID, man, root, _allowlist(), free_bytes=FREE)
-    assert _allowlist()["sources"][0]["upstream"]["revision"] is None
+    assert _allowlist()["sources"][0]["upstream"]["revision"] == "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
 
 
 def test_forbidden_revision_labels_rejected():
@@ -304,12 +306,16 @@ def test_raw_sha_distinct_and_success_is_metadata_only(tmp_path: Path):
 
 def test_production_allowlist_unresolved_and_root_not_created():
     doc = load_allowlist(ALLOWLIST_PATH)
+    edu = next(row for row in doc["sources"] if row["source_id"] == "fineweb-edu-en")
+    ru = next(row for row in doc["sources"] if row["source_id"] == "fineweb2-ru")
     for row in doc["sources"]:
         assert row["materialization"]["status"] == "not_materialized"
         assert row["materialization"]["slice_id"] is None
         assert row["materialization"]["content_sha256"] is None
-        assert row["upstream"]["revision"] is None
-        assert is_production_acquisition_ready(row) is False
+    assert edu["upstream"]["revision"] == "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+    assert ru["upstream"]["revision"] is None
+    assert is_production_acquisition_ready(edu) is True
+    assert is_production_acquisition_ready(ru) is False
     assert "mkdir" not in ACQ_PY.read_text(encoding="utf-8")
 
 

@@ -131,9 +131,14 @@ Different identities. Do not conflate. Do not put `content_sha256` on an acquisi
 
 Sibling file, not embedded in the raw bytes. `status` for handoff is **`complete`**.
 
-`selection.strategy` in this contract is **`bounded_bytes`**. That records the requirement for a deterministic bound. It does **not** choose FineWeb shard numbers, row ranges, offsets, seeds, or globs. Source-specific selection is a later reviewed plan.
+`selection.strategy` may be:
 
-`selection.bound_bytes` is mandatory and in **bytes**.
+- `bounded_bytes` — generic byte cap only
+- `single_frozen_file` — one relative posix path + `expected_raw_sha256` matching the raw file
+
+FineWeb-Edu EN uses `single_frozen_file` for `sample/10BT/013_00000.parquet` at revision `87f09149ef4734204d70ed1d046ddc9ca3f2b8f9`.
+
+`selection.bound_bytes` is mandatory and in **bytes**. No remote byte-range cuts: the frozen file is acquired whole.
 
 ---
 

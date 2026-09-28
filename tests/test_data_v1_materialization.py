@@ -267,7 +267,7 @@ def test_receipt_cannot_invent_revision(tmp_path: Path):
     src = _write_input(tmp_path / "in.jsonl")
     scratch = tmp_path / "scratch"
     state = _run(tmp_path, src, scratch_root=scratch)
-    assert state["upstream"]["revision"] is None
+    assert state["upstream"]["revision"] == "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
     receipt_path = Path(state["receipt_path"])
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     receipt["upstream"] = dict(receipt["upstream"])
@@ -294,7 +294,8 @@ def test_production_allowlist_still_unresolved():
         assert row["materialization"]["status"] == "not_materialized"
         assert row["materialization"]["slice_id"] is None
         assert row["materialization"]["content_sha256"] is None
-        assert row["upstream"]["revision"] is None
+    assert doc["sources"][0]["upstream"]["revision"] == "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+    assert doc["sources"][1]["upstream"]["revision"] is None
 
 
 def test_phase_a_hashes_unchanged():

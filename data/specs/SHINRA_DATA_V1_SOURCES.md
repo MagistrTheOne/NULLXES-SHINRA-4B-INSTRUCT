@@ -1,13 +1,15 @@
 # SHINRA DATA V1 sources
 
-**Status:** two sources **approved for governance only**. Acquisition **closed**. Real canary **closed**.
+**Status:** two sources **approved**. FineWeb-Edu EN has a **frozen revision**. FineWeb2-RU does not. Git materialization fields stay unresolved. Real canary needs a scratch receipt.
 
 ```text
-downloaders: none
-network: forbidden
-acquisition: closed
+downloaders: false
+acquisition: closed   # no generic engine downloader
+fineweb-edu-en revision: 87f09149ef4734204d70ed1d046ddc9ca3f2b8f9
+fineweb-edu-en selection: single_frozen_file sample/10BT/013_00000.parquet
+fineweb2-ru revision: null
 materialization: not_materialized
-real canary: fail-closed until slice_id + content_sha256 exist
+real canary: scratch receipt + SHA
 ```
 
 Machine copy: [`sources.allowlist.json`](sources.allowlist.json)  
@@ -26,7 +28,7 @@ Independently authored web text. Not a translation pair. Not chat. Not synth-v0.
 
 | source_id | upstream | subset | language |
 |---|---|---|---|
-| `fineweb-edu-en` | `HuggingFaceFW/fineweb-edu` | unresolved (`null`) | `en` |
+| `fineweb-edu-en` | `HuggingFaceFW/fineweb-edu` @ `87f09149ef4734204d70ed1d046ddc9ca3f2b8f9` (v1.4.0) | unresolved (`null`); frozen file `sample/10BT/013_00000.parquet` | `en` |
 | `fineweb2-ru` | `HuggingFaceFW/fineweb-2` | **`rus_Cyrl`** (required) | `ru` |
 
 Official cards (evidence, not acquisition URLs in the allowlist JSON):
@@ -34,7 +36,18 @@ Official cards (evidence, not acquisition URLs in the allowlist JSON):
 - FineWeb-Edu: Hugging Face dataset `HuggingFaceFW/fineweb-edu`, Hub license `odc-by`, card text **ODC-By v1.0**, plus Common Crawl Terms of Use.
 - FineWeb2: Hugging Face dataset `HuggingFaceFW/fineweb-2`, Hub license `odc-by`, card text **ODC-By v1.0**, plus Common Crawl Terms of Use. Russian split is `rus_Cyrl`.
 
-`upstream.revision` is **null**. No commit/tag was verified as a freeze; do not invent one.
+`fineweb-edu-en` `upstream.revision` is the verified commit **`87f09149ef4734204d70ed1d046ddc9ca3f2b8f9`**. Not `main`. Not HEAD.
+
+`fineweb2-ru` `upstream.revision` stays **null**. No RU acquisition.
+
+First EN raw shard (whole file, not a byte-range cut):
+
+```text
+path: sample/10BT/013_00000.parquet
+strategy: single_frozen_file
+bound_bytes: 4294967296
+expected raw SHA256: sha256:b393f51fefab26cd6f4c8f65707c1924f6666c4961a0ebebe04bb57f7ec832de
+```
 
 ---
 

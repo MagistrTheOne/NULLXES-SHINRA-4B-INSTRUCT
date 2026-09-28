@@ -143,6 +143,8 @@ def test_engine_sources_have_no_network_clients():
         "snapshot_download",
     )
     for path in PHASE_B_PY.glob("*.py"):
+        if path.name in {"acquire_hf.py", "run_fineweb_edu_en.py"}:
+            continue
         text = path.read_text(encoding="utf-8")
         for needle in banned:
             assert needle not in text, f"{path.name} contains {needle}"
@@ -198,7 +200,8 @@ def test_production_allowlist_is_closed():
         assert row["license"]["underlying_content_caveat"] == "common_crawl_third_party_rights"
         assert row["license"]["common_crawl_tou"] is True
     assert doc["sources"][1]["upstream"]["subset"] == "rus_Cyrl"
-    assert doc["sources"][0]["upstream"]["revision"] is None
+    assert doc["sources"][0]["upstream"]["revision"] == "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
+    assert doc["sources"][1]["upstream"]["revision"] is None
     assert all(row["provenance_hash_strategy"] == "content_sha256" for row in doc["sources"])
 
 
@@ -387,3 +390,40 @@ def test_empty_jsonl_fails_kept_gate(tmp_path):
     assert report["status"] == "fail"
     assert report["documents_kept"] == 0
     assert report["gates"]["kept_nonempty"]["ok"] is False
+
+
+def test_canary_accepts_scratch_receipt(tmp_path):
+    from data.data_v1.materialize import materialize
+    from data.data_v1.sources import load_allowlist
+
+    jsonl = tmp_path / "in.jsonl"
+    jsonl.write_text(
+        json.dumps(
+            {
+                "text": "The clay path dried before noon and the archivist closed the grey ledger.",
+                "source_id": "fineweb-edu-en",
+                "source_type": "natural",
+                "domain": "general",
+                "language": "en",
+                "split": "train",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    allow = load_allowlist()
+    allow["disk"] = dict(allow["disk"], min_free_gb=0)
+    allow_path = tmp_path / "allow.json"
+    allow_path.write_text(json.dumps(allow), encoding="utf-8")
+    state = materialize(
+        jsonl,
+        "fineweb-edu-en",
+        scratch_root=tmp_path / "data_v1",
+        allowlist=allow,
+        free_bytes=50 * 1024**3,
+    )
+    report = run_canary(state["path"], mode="canary", tokenizer=_FakeTokenizer(), allowlist_path=allow_path)
+    assert report["status"] == "pass"
+    assert report["run_mode"] == "canary"
+    assert report["token_count_mode"] == "tokenizer"

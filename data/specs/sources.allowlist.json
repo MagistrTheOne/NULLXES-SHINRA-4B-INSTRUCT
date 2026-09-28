@@ -32,7 +32,7 @@
       "upstream": {
         "repository": "HuggingFaceFW/fineweb-edu",
         "subset": null,
-        "revision": null
+        "revision": "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
       },
       "materialization": {
         "status": "not_materialized",

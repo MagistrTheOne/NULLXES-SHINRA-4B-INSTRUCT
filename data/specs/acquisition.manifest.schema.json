@@ -57,13 +57,35 @@
       }
     },
     "selection": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["strategy", "bound_bytes"],
-      "properties": {
-        "strategy": { "const": "bounded_bytes" },
-        "bound_bytes": { "type": "integer", "minimum": 1 }
-      }
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["strategy", "bound_bytes"],
+          "properties": {
+            "strategy": { "const": "bounded_bytes" },
+            "bound_bytes": { "type": "integer", "minimum": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["strategy", "bound_bytes", "path", "expected_raw_sha256"],
+          "properties": {
+            "strategy": { "const": "single_frozen_file" },
+            "bound_bytes": { "type": "integer", "minimum": 1 },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Relative posix path inside the frozen revision. Not a URL."
+            },
+            "expected_raw_sha256": {
+              "type": "string",
+              "pattern": "^sha256:[a-f0-9]{64}$"
+            }
+          }
+        }
+      ]
     },
     "status": { "const": "complete" }
   }
