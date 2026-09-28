@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nullxes.local/schemas/shinra-data-v1-acquisition-manifest.json",
+  "title": "SHINRA DATA V1 acquisition manifest",
+  "description": "Sibling metadata for one completed local raw acquisition artifact. Not git governance. Not a materialization receipt. No URLs, credentials, or absolute paths.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "source_id",
+    "upstream",
+    "artifact",
+    "selection",
+    "status"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "shinra-data-v1-acquisition-manifest"
+    },
+    "source_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,127}$"
+    },
+    "upstream": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "subset", "revision"],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+        },
+        "subset": { "type": ["string", "null"] },
+        "revision": {
+          "type": ["string", "null"],
+          "description": "Immutable upstream id (40-char lowercase git SHA) or null if not frozen. Not HEAD/main/latest."
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["filename", "format", "bytes", "raw_content_sha256"],
+      "properties": {
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Basename only. Not a URL. Not an absolute path."
+        },
+        "format": { "enum": ["parquet", "arrow", "jsonl"] },
+        "bytes": { "type": "integer", "minimum": 1 },
+        "raw_content_sha256": {
+          "type": "string",
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "description": "SHA-256 of exact acquired raw file bytes. Not materialization content_sha256."
+        }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["strategy", "bound_bytes"],
+      "properties": {
+        "strategy": { "const": "bounded_bytes" },
+        "bound_bytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "status": { "const": "complete" }
+  }
+}
