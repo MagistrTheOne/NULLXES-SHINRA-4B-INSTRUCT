@@ -29,7 +29,7 @@ def main() -> None:
     parser.add_argument("--corpus-dir", default="/content/shinra_scratch/corpus")
     parser.add_argument("--output-dir", default="/content/shinra_scratch/s0")
     parser.add_argument("--records-per-shard", type=int, default=8192)
-    parser.add_argument("--max-shards", type=int, default=16)
+    parser.add_argument("--max-shards", type=int, default=1024)
     parser.add_argument("--max-tokens", type=int, default=None)
     parser.add_argument("--fake-tokenizer", action="store_true")
     parser.add_argument("--dry-hardware", action="store_true")

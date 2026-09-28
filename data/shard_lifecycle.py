@@ -97,16 +97,42 @@ def build_packed_shard(
     return meta
 
 
-def mark_consumed(bin_path: Path, ledger: RunLedger | None = None, delete_bin: bool = False) -> dict:
+def update_shard_status(
+    bin_path: Path,
+    status: str,
+    ledger: RunLedger | None = None,
+    extra: dict | None = None,
+    delete_bin: bool = False,
+) -> dict:
     meta_path = bin_path.with_suffix(".meta.json")
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    meta["status"] = "deleted" if delete_bin else "consumed"
-    meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    meta["status"] = status
+    if extra:
+        meta.update(extra)
     if delete_bin:
+        meta["status"] = "deleted"
         bin_path.unlink(missing_ok=True)
+    meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if ledger is not None:
-        ledger.append({"event": "shard_consumed", "shard_id": meta["shard_id"], "status": meta["status"]})
+        ledger.append(
+            {
+                "event": f"shard_{meta['status']}",
+                "shard_id": meta["shard_id"],
+                "sha256": meta.get("sha256"),
+                "status": meta["status"],
+                "produced_tokens": meta.get("produced_tokens"),
+            }
+        )
     return meta
+
+
+def mark_consumed(bin_path: Path, ledger: RunLedger | None = None, delete_bin: bool = False) -> dict:
+    return update_shard_status(
+        bin_path,
+        status="consumed",
+        ledger=ledger,
+        delete_bin=delete_bin,
+    )
 
 
 def resolve_ids(tokenizer) -> tuple[int, int, int]:

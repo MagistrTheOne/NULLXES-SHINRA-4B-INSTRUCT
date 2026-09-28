@@ -31,6 +31,7 @@ SKIP_DIR_NAMES = {
 }
 
 S0_S2_FILES = [
+    ROOT / "data" / "rolling_drum.py",
     ROOT / "data" / "pack.py",
     ROOT / "data" / "shard_lifecycle.py",
     ROOT / "data" / "shards.py",

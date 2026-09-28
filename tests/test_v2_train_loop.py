@@ -51,6 +51,7 @@ def test_no_replay_stops_at_budget(tmp_path: Path):
         run_dir=str(out / "run"),
         heldout_dir=None,
         allow_replay=False,
+        force_cpu=True,
     )
     cfg = build_train_config("s0", ns)
     cfg.allow_replay = False
@@ -61,6 +62,56 @@ def test_no_replay_stops_at_budget(tmp_path: Path):
     status = (out / "run" / "status.json").read_text(encoding="utf-8")
     assert "consumed_tokens" in status
     consumed = int(__import__("json").loads(status)["consumed_tokens"])
+    assert consumed >= 64
     assert consumed <= meta["produced_tokens"]
-    assert consumed >= 32
     assert __import__("json").loads(status).get("done") is True
+    assert __import__("json").loads(status).get("overshoot_tokens", 0) >= 0
+
+
+def test_token_budget_does_not_cut_mid_accumulation(tmp_path: Path):
+    data = tmp_path / "data"
+    build_packed_shard(
+        stage="s0",
+        shard_index=0,
+        seed=0,
+        record_count=40,
+        encode=_encode,
+        output_dir=data,
+        sequence_length=32,
+    )
+    out = tmp_path / "out"
+    ns = SimpleNamespace(
+        config="tests/fixtures/tiny_shinra.yaml",
+        train_config="tests/fixtures/tiny_s0.yaml",
+        data_dir=str(data),
+        tokenizer=str(tmp_path / "missing-tok"),
+        output_dir=str(out),
+        resume_from=None,
+        micro_batch_size=1,
+        gradient_accumulation_steps=2,
+        learning_rate=3e-4,
+        max_steps=1000,
+        max_tokens=20,
+        sequence_length=32,
+        attention_implementation="eager",
+        wandb_project=None,
+        wandb_run_name=None,
+        seed=0,
+        run_dir=str(out / "run"),
+        heldout_dir=None,
+        allow_replay=False,
+        record_consumed_trace=True,
+        force_cpu=True,
+    )
+    cfg = build_train_config("s0", ns)
+    cfg.allow_replay = False
+    cfg.dataloader_num_workers = 0
+    cfg.eval_steps = 0
+    cfg.save_steps = 0
+    cfg.record_consumed_trace = True
+    result = run_lm_training(cfg)
+    assert result["step"] == 1
+    assert result["dataset_index"] == 2
+    assert result["consumed_tokens"] >= 20
+    assert result["overshoot_tokens"] == result["consumed_tokens"] - 20
+    assert len(result["consumed_trace"]) == 2

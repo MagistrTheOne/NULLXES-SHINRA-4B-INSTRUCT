@@ -155,3 +155,10 @@ def test_tiny_decoupled_cpu_forward_shapes():
     assert tuple(out.logits.shape) == (1, 5, 64)
     assert out.loss is not None
     assert torch.isfinite(out.loss)
+
+
+def test_flash2_is_not_advertised():
+    from model.modeling_shinra import ShinraPreTrainedModel
+
+    assert ShinraPreTrainedModel._supports_flash_attn_2 is False
+    assert ShinraPreTrainedModel._supports_sdpa is True

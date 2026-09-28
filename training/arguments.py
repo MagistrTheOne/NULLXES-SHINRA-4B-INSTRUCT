@@ -48,6 +48,11 @@ class TrainConfig:
     heldout_dir: Path | None
     allow_replay: bool
     disk_ceiling_gb: float
+    active_shard_id: str | None
+    active_shard_sha256: str | None
+    stop_after_steps: int | None
+    record_consumed_trace: bool
+    force_cpu: bool
 
 
 def load_yaml(path: Path) -> dict:
@@ -147,4 +152,9 @@ def build_train_config(stage: str, args: argparse.Namespace) -> TrainConfig:
         heldout_dir=Path(heldout) if heldout else None,
         allow_replay=allow_replay,
         disk_ceiling_gb=float(storage.get("disk_ceiling_gb", storage.get("max_disk_gb", 400))),
+        active_shard_id=getattr(args, "active_shard_id", None),
+        active_shard_sha256=getattr(args, "active_shard_sha256", None),
+        stop_after_steps=getattr(args, "stop_after_steps", None),
+        record_consumed_trace=bool(getattr(args, "record_consumed_trace", False)),
+        force_cpu=bool(getattr(args, "force_cpu", False)),
     )

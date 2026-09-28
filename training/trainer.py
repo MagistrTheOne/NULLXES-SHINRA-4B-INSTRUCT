@@ -19,7 +19,7 @@ from transformers import AutoTokenizer
 
 from data.ledger import RunLedger
 from data.shard_lifecycle import assert_under_ceiling
-from data.shards import count_label_tokens
+from data.shards import ShardIdentityError, assert_single_shard, count_label_tokens, verify_shard_identity
 from model.configuration_shinra import ShinraConfig
 from model.modeling_shinra import ShinraForCausalLM
 from .arguments import TrainConfig
@@ -81,7 +81,7 @@ def load_model(cfg: TrainConfig) -> ShinraForCausalLM:
     else:
         shinra_cfg = config_from_yaml(cfg.model_config, cfg.attention_implementation)
         model = ShinraForCausalLM(shinra_cfg)
-        dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
+        dtype = torch.bfloat16 if torch.cuda.is_available() and not cfg.force_cpu else torch.float32
         model = model.to(dtype=dtype)
     model.config.use_cache = False
     model.config._attn_implementation = cfg.attention_implementation
@@ -159,10 +159,14 @@ def save_checkpoint(
             "step": step,
             "consumed_tokens": consumed_tokens,
             "dataset_index": dataset_index,
+            "shard_id": (extra or {}).get("shard_id"),
+            "shard_sha256": (extra or {}).get("shard_sha256"),
+            "n_sequences": (extra or {}).get("n_sequences"),
             "optimizer": optimizer.state_dict() if optimizer is not None else None,
             "scheduler": scheduler.state_dict() if scheduler is not None else None,
             "rng": torch.get_rng_state(),
             "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+            "consumed_trace": (extra or {}).get("consumed_trace"),
         }
         torch.save(blob, ckpt_dir / "trainer_state.pt")
         prune_checkpoints(output_dir)
@@ -193,16 +197,54 @@ def eval_heldout_ce(model, loader, max_batches: int = 32) -> dict:
     return {"eval_loss": avg, "eval_ppl": math.exp(min(avg, 20)), "eval_tokens": tokens}
 
 
-def run_lm_training(cfg: TrainConfig) -> None:
+def _shard_ckpt_extra(
+    cfg: TrainConfig,
+    *,
+    n_sequences: int,
+    exhausted: bool,
+    killed: bool,
+    consumed_trace: list[int],
+    overshoot_tokens: int,
+) -> dict:
+    return {
+        "shard_id": cfg.active_shard_id,
+        "shard_sha256": cfg.active_shard_sha256,
+        "n_sequences": n_sequences,
+        "exhausted": exhausted,
+        "killed": killed,
+        "overshoot_tokens": overshoot_tokens,
+        "consumed_trace": consumed_trace if cfg.record_consumed_trace else None,
+        "target_tokens": cfg.max_tokens,
+    }
+
+
+def _flush_leftover_accumulation(accelerator: Accelerator, model, optimizer, scheduler, grad_clip: float) -> bool:
+    gs = getattr(accelerator, "gradient_state", None)
+    if gs is None or bool(getattr(gs, "sync_gradients", True)):
+        return False
+    setter = getattr(gs, "_set_sync_gradients", None)
+    if setter is None:
+        return False
+    setter(True)
+    accelerator.clip_grad_norm_(model.parameters(), grad_clip)
+    optimizer.step()
+    scheduler.step()
+    optimizer.zero_grad(set_to_none=True)
+    return True
+
+
+def run_lm_training(cfg: TrainConfig) -> dict:
     enable_tf32()
     set_seed(cfg.seed)
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
-    mixed = "bf16" if torch.cuda.is_available() else "no"
+    use_cuda = torch.cuda.is_available() and not cfg.force_cpu
+    mixed = "bf16" if use_cuda else "no"
     accelerator = Accelerator(
         gradient_accumulation_steps=cfg.gradient_accumulation_steps,
         mixed_precision=mixed,
         log_with="wandb" if cfg.wandb_project else None,
         kwargs_handlers=[ddp_kwargs],
+        cpu=not use_cuda,
     )
     if cfg.wandb_project and accelerator.is_main_process:
         commit = "unknown"
@@ -224,27 +266,42 @@ def run_lm_training(cfg: TrainConfig) -> None:
             init_kwargs={"wandb": {"name": cfg.wandb_run_name or f"shinra-{cfg.stage}"}},
         )
 
+    if cfg.active_shard_id and cfg.active_shard_sha256:
+        live = assert_single_shard(cfg.data_dir, cfg.active_shard_id)
+        verify_shard_identity(live, cfg.active_shard_id, cfg.active_shard_sha256)
+
     tok_path = Path(cfg.tokenizer_path)
     tokenizer = AutoTokenizer.from_pretrained(str(tok_path), use_fast=True) if tok_path.exists() else None
     dataset = load_packed_dataset(cfg.data_dir)
+    n_sequences = len(dataset)
     dataset_index = 0
     consumed = 0
     step = 0
+    resume_blob: dict | None = None
     if cfg.resume_from:
         state_file = Path(cfg.resume_from) / "trainer_state.pt"
         if state_file.exists():
-            blob = load_trainer_state(state_file)
-            dataset_index = int(blob.get("dataset_index", 0))
-            consumed = int(blob.get("consumed_tokens", 0))
-            step = int(blob.get("step", 0))
+            resume_blob = load_trainer_state(state_file)
+            consumed = int(resume_blob.get("consumed_tokens", 0))
+            step = int(resume_blob.get("step", 0))
+            if cfg.active_shard_id:
+                same_shard = (
+                    resume_blob.get("shard_id") == cfg.active_shard_id
+                    and resume_blob.get("shard_sha256") == cfg.active_shard_sha256
+                )
+                dataset_index = int(resume_blob.get("dataset_index", 0)) if same_shard else 0
+            else:
+                dataset_index = int(resume_blob.get("dataset_index", 0))
+    if dataset_index > n_sequences:
+        raise ShardIdentityError(f"dataset_index {dataset_index} > n_sequences {n_sequences}")
     if dataset_index > 0:
-        dataset = Subset(dataset, list(range(dataset_index, len(dataset))))
+        dataset = Subset(dataset, list(range(dataset_index, n_sequences)))
     loader = DataLoader(
         dataset,
         batch_size=cfg.micro_batch_size,
         shuffle=False,
         num_workers=cfg.dataloader_num_workers,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=use_cuda,
         persistent_workers=cfg.dataloader_num_workers > 0,
         prefetch_factor=4 if cfg.dataloader_num_workers > 0 else None,
         collate_fn=collate_lm,
@@ -267,16 +324,15 @@ def run_lm_training(cfg: TrainConfig) -> None:
     model, optimizer, loader, scheduler = accelerator.prepare(model, optimizer, loader, scheduler)
     if eval_loader is not None:
         eval_loader = accelerator.prepare(eval_loader)
-    if cfg.resume_from:
-        state_file = Path(cfg.resume_from) / "trainer_state.pt"
-        if state_file.exists():
-            blob = load_trainer_state(state_file)
-            if blob.get("optimizer") is not None:
-                optimizer.load_state_dict(blob["optimizer"])
-            if blob.get("scheduler") is not None:
-                scheduler.load_state_dict(blob["scheduler"])
-            if blob.get("rng") is not None:
-                torch.set_rng_state(blob["rng"])
+    if resume_blob is not None:
+        if resume_blob.get("optimizer") is not None:
+            optimizer.load_state_dict(resume_blob["optimizer"])
+        if resume_blob.get("scheduler") is not None:
+            scheduler.load_state_dict(resume_blob["scheduler"])
+        if resume_blob.get("rng") is not None:
+            torch.set_rng_state(resume_blob["rng"])
+        if resume_blob.get("cuda_rng") is not None and use_cuda:
+            torch.cuda.set_rng_state_all(resume_blob["cuda_rng"])
 
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     cfg.run_dir.mkdir(parents=True, exist_ok=True)
@@ -286,10 +342,19 @@ def run_lm_training(cfg: TrainConfig) -> None:
     t0 = time.time()
     model.train()
     iterator = iter(loader)
-    remaining_steps = max(cfg.max_steps - step, 0)
-    progress = tqdm(total=cfg.max_steps, initial=step, disable=not accelerator.is_main_process, desc=cfg.stage)
-    exhausted = False
-    while step < cfg.max_steps and (cfg.max_tokens <= 0 or consumed < cfg.max_tokens):
+    progress = tqdm(
+        total=cfg.max_steps,
+        initial=step,
+        disable=(not accelerator.is_main_process) or cfg.force_cpu,
+        desc=cfg.stage,
+    )
+    exhausted = dataset_index >= n_sequences
+    killed = False
+    consumed_trace: list[int] = []
+    microbatches_in_group = 0
+    overshoot_tokens = 0
+
+    while step < cfg.max_steps and not exhausted and not killed:
         try:
             batch = next(iterator)
             dataset_index += 1
@@ -322,14 +387,24 @@ def run_lm_training(cfg: TrainConfig) -> None:
             optimizer.zero_grad(set_to_none=True)
         batch_tokens = count_label_tokens(batch["labels"])
         consumed += batch_tokens
+        if cfg.record_consumed_trace:
+            consumed_trace.append(consumed)
+        microbatches_in_group += 1
         if accelerator.sync_gradients:
             step += 1
+            microbatches_in_group = 0
             gathered = accelerator.gather(loss.detach())
             loss_val = float(gathered.mean().item())
             running += loss_val
             if grad_norm is not None:
                 running_grad += float(grad_norm.detach() if hasattr(grad_norm, "detach") else grad_norm)
             progress.update(1)
+            if cfg.max_tokens > 0 and consumed >= cfg.max_tokens:
+                overshoot_tokens = consumed - cfg.max_tokens
+                break
+            if cfg.stop_after_steps is not None and step >= cfg.stop_after_steps:
+                killed = True
+                break
             if step % cfg.logging_steps == 0 and accelerator.is_main_process:
                 elapsed = max(time.time() - t0, 1e-6)
                 tps = consumed / elapsed
@@ -338,6 +413,9 @@ def run_lm_training(cfg: TrainConfig) -> None:
                 lr = scheduler.get_last_lr()[0]
                 nan_flag = not math.isfinite(avg)
                 entropy = last_token_entropy(outputs.logits)
+                remaining = None
+                if cfg.max_tokens > 0:
+                    remaining = max(cfg.max_tokens - consumed, 0)
                 metrics = {
                     "loss": avg,
                     "ppl": ppl,
@@ -349,6 +427,7 @@ def run_lm_training(cfg: TrainConfig) -> None:
                     "grad_norm": running_grad / cfg.logging_steps,
                     "entropy": entropy,
                     "stage": cfg.stage,
+                    "overshoot_tokens": overshoot_tokens,
                 }
                 ledger.log_metrics(metrics)
                 ledger.write_status(
@@ -356,13 +435,16 @@ def run_lm_training(cfg: TrainConfig) -> None:
                         "stage": cfg.stage,
                         "step": step,
                         "consumed_tokens": consumed,
-                        "remaining_tokens": max(cfg.max_tokens - consumed, 0) if cfg.max_tokens > 0 else None,
+                        "remaining_tokens": remaining,
+                        "overshoot_tokens": overshoot_tokens,
                         "tokens_per_sec": tps,
                         "loss": avg,
                         "lr": lr,
                         "ppl": ppl,
                         "nan": nan_flag,
                         "exhausted": exhausted,
+                        "shard_id": cfg.active_shard_id,
+                        "shard_sha256": cfg.active_shard_sha256,
                     }
                 )
                 accelerator.log(metrics, step=step)
@@ -389,8 +471,32 @@ def run_lm_training(cfg: TrainConfig) -> None:
                     scheduler=scheduler,
                     consumed_tokens=consumed,
                     dataset_index=dataset_index,
+                    extra=_shard_ckpt_extra(
+                        cfg,
+                        n_sequences=n_sequences,
+                        exhausted=exhausted,
+                        killed=killed,
+                        consumed_trace=consumed_trace,
+                        overshoot_tokens=overshoot_tokens,
+                    ),
                 )
-    save_checkpoint(
+
+    if exhausted and microbatches_in_group > 0:
+        if _flush_leftover_accumulation(accelerator, model, optimizer, scheduler, cfg.grad_clip):
+            step += 1
+
+    if cfg.max_tokens > 0 and consumed >= cfg.max_tokens:
+        overshoot_tokens = consumed - cfg.max_tokens
+
+    extra = _shard_ckpt_extra(
+        cfg,
+        n_sequences=n_sequences,
+        exhausted=exhausted,
+        killed=killed,
+        consumed_trace=consumed_trace,
+        overshoot_tokens=overshoot_tokens,
+    )
+    ckpt_dir = save_checkpoint(
         accelerator,
         model,
         tokenizer,
@@ -400,19 +506,63 @@ def run_lm_training(cfg: TrainConfig) -> None:
         scheduler=scheduler,
         consumed_tokens=consumed,
         dataset_index=dataset_index,
-        extra={"exhausted": exhausted},
+        extra=extra,
     )
+    done = (not killed) and (exhausted or (cfg.max_tokens > 0 and consumed >= cfg.max_tokens) or cfg.max_tokens <= 0)
     if accelerator.is_main_process:
+        remaining = None
+        if cfg.max_tokens > 0:
+            remaining = max(cfg.max_tokens - consumed, 0)
         ledger.write_status(
             {
                 "stage": cfg.stage,
                 "step": step,
                 "consumed_tokens": consumed,
-                "remaining_tokens": max(cfg.max_tokens - consumed, 0) if cfg.max_tokens > 0 else None,
+                "remaining_tokens": remaining,
+                "overshoot_tokens": overshoot_tokens,
                 "exhausted": exhausted,
-                "done": True,
+                "killed": killed,
+                "done": done and not killed,
+                "shard_id": cfg.active_shard_id,
+                "shard_sha256": cfg.active_shard_sha256,
+                "dataset_index": dataset_index,
             }
         )
-        ledger.append({"event": "train_done", "step": step, "consumed_tokens": consumed, "exhausted": exhausted})
+        if not killed:
+            ledger.append(
+                {
+                    "event": "train_done",
+                    "step": step,
+                    "consumed_tokens": consumed,
+                    "exhausted": exhausted,
+                    "overshoot_tokens": overshoot_tokens,
+                    "shard_id": cfg.active_shard_id,
+                    "shard_sha256": cfg.active_shard_sha256,
+                }
+            )
+        else:
+            ledger.append(
+                {
+                    "event": "train_killed",
+                    "step": step,
+                    "consumed_tokens": consumed,
+                    "dataset_index": dataset_index,
+                    "shard_id": cfg.active_shard_id,
+                    "shard_sha256": cfg.active_shard_sha256,
+                }
+            )
     accelerator.wait_for_everyone()
     accelerator.end_training()
+    return {
+        "step": step,
+        "consumed_tokens": consumed,
+        "dataset_index": dataset_index,
+        "n_sequences": n_sequences,
+        "exhausted": exhausted,
+        "killed": killed,
+        "checkpoint_dir": str(ckpt_dir),
+        "consumed_trace": consumed_trace,
+        "overshoot_tokens": overshoot_tokens,
+        "shard_id": cfg.active_shard_id,
+        "shard_sha256": cfg.active_shard_sha256,
+    }

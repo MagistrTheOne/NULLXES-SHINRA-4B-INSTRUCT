@@ -18,6 +18,10 @@ class ShardError(RuntimeError):
     pass
 
 
+class ShardIdentityError(ShardError):
+    pass
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -83,6 +87,28 @@ def load_shard_meta(path: Path) -> dict:
     if meta_path.suffix != ".json":
         meta_path = Path(path).with_suffix(".meta.json")
     return json.loads(meta_path.read_text(encoding="utf-8"))
+
+
+def list_shard_bins(data_dir: Path) -> list[Path]:
+    return sorted(Path(data_dir).glob("*.bin"))
+
+
+def assert_single_shard(data_dir: Path, shard_id: str | None = None) -> Path:
+    bins = list_shard_bins(data_dir)
+    if len(bins) != 1:
+        raise ShardIdentityError(f"expected exactly one active shard in {data_dir}, found {len(bins)}")
+    if shard_id is not None and bins[0].stem != shard_id:
+        raise ShardIdentityError(f"active shard {bins[0].stem} != {shard_id}")
+    return bins[0]
+
+
+def verify_shard_identity(bin_path: Path, shard_id: str, sha256: str) -> dict:
+    meta = verify_shard(bin_path)
+    if meta["shard_id"] != shard_id:
+        raise ShardIdentityError(f"shard id {meta['shard_id']} != {shard_id}")
+    if meta["sha256"] != sha256:
+        raise ShardIdentityError(f"sha mismatch {bin_path.name}: file {meta['sha256']} != cursor {sha256}")
+    return meta
 
 
 def verify_shard(bin_path: Path) -> dict:
