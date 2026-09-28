@@ -69,7 +69,7 @@ Per source: `max_materialized_bytes = 4294967296` (4 GiB).
 Global: `disk.max_materialized_bytes = 8589934592` (8 GiB).  
 Per source canary tokens: max **8,000,000**. Global canary tokens: **20,000,000**.
 
-Materialize a **bounded local jsonl slice** outside this engine. Sidecar must not store raw URLs (FineWeb rows have a `url` field; hash it, do not copy it).
+Materialize a **bounded local jsonl slice** outside this engine. Sidecar must not store raw URLs (FineWeb rows have a `url` field; hash it, do not copy it). Document `text` may contain `http(s)` — that is page body, not a sidecar URL.
 
 ---
 

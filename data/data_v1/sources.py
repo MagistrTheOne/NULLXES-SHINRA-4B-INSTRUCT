@@ -312,6 +312,7 @@ def assert_production_allowlist_governance() -> None:
         "87f09149",
         "013_00000",
         "single_frozen_file",
+        "page body",
     ):
         if needle not in spec:
             raise PhaseBError(f"SOURCES spec missing {needle}")

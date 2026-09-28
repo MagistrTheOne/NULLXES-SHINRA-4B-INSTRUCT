@@ -11,7 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from data.data_v1.acquire_hf import acquire_fineweb_edu_en
-from data.data_v1.adapt_parquet import AdapterError, adapt_parquet_to_jsonl
+from data.data_v1.adapt_parquet import AdapterError, _assert_metadata_offline, adapt_parquet_to_jsonl
 from data.data_v1.acquisition import AcquisitionError, validate_manifest_document
 from data.data_v1.plan_fineweb_edu_en import (
     BOUND_BYTES,
@@ -95,8 +95,41 @@ def test_adapter_drops_url_and_writes_jsonl(tmp_path: Path):
         assert rec["source_id"] == SOURCE_ID
         assert rec["language"] == "en"
         assert "url" not in rec
-        assert "http" not in line.casefold()
+        meta = json.dumps({k: v for k, v in rec.items() if k != "text"}).casefold()
+        assert "http://" not in meta and "https://" not in meta
         assert rec["provenance"]["snapshot"] == REVISION
+
+
+def test_adapter_keeps_http_in_body_text(tmp_path: Path):
+    path = tmp_path / "body-url.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "text": ["See https://example.edu/notes for the lecture on clay paths."],
+                "url": ["https://example.com/page"],
+            }
+        ),
+        path,
+    )
+    out = tmp_path / "out.jsonl"
+    state = adapt_parquet_to_jsonl(path, out, source_id=SOURCE_ID, snapshot=REVISION)
+    assert state["records"] == 1
+    rec = json.loads(out.read_text(encoding="utf-8").splitlines()[0])
+    assert "https://example.edu/notes" in rec["text"]
+    assert "url" not in rec
+    meta = json.dumps({k: v for k, v in rec.items() if k != "text"}).casefold()
+    assert "http://" not in meta and "https://" not in meta
+    assert rec["provenance"]["uri_hash"].startswith("sha256:")
+
+
+def test_adapter_refuses_raw_url_in_metadata():
+    with pytest.raises(AdapterError, match="raw URL"):
+        _assert_metadata_offline(
+            {
+                "text": "The clay path dried before noon.",
+                "provenance": {"uri_hash": "sha256:" + "a" * 64, "snapshot": "https://evil.example/x"},
+            }
+        )
 
 
 def test_adapter_requires_text_column(tmp_path: Path):
