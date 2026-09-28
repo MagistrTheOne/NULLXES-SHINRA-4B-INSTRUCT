@@ -1,16 +1,17 @@
-# NULLXES SHINRA-4B — production model + cluster configuration
-# Architecture class: decoder-only dense Transformer
-# Parameter count: 3.93B (tied embeddings)
-# Hardware target: NVIDIA A100 80GB (SXM / PCIe), 8-GPU node baseline
+# NULLXES SHINRA-4B — architecture v2 contract
+# Geometry: Qwen3-4B layout, SHINRA tokenizer / identity / implementation
+# Parameters: 3,969,056,256 (tied embeddings)
+# Init node: Google Colab G4 (RTX PRO 6000 Blackwell), random init, no inherited weights
+# Optimizer / WSD / FSDP / A100 batch below are NOT part of this freeze.
 
 model:
   name: NULLXES-SHINRA-4B
   model_type: nullxes_shinra
   architectures: [ShinraForCausalLM]
-  hidden_size: 3072
-  intermediate_size: 9216
-  num_hidden_layers: 32
-  num_attention_heads: 24
+  hidden_size: 2560
+  intermediate_size: 9728
+  num_hidden_layers: 36
+  num_attention_heads: 32
   num_key_value_heads: 8
   head_dim: 128
   vocab_size: 131072

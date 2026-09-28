@@ -11,7 +11,7 @@
 
 SHINRA — собственный decoder-only Transformer NULLXES: своя архитектура, свой токенизатор, свой training pipeline. Это не fine-tune чужого веса и не обёртка над Llama / Mistral / Qwen / GPT-NeoX.
 
-Модель: **NULLXES SHINRA-4B** · ~**3.93B** параметров · vocab **131072** · контекст **8192** (нативное окно **32768**) · **BF16** · кластер **8× A100 80GB**.
+Модель: **NULLXES SHINRA-4B v2** · **3,969,056,256** параметров · vocab **131072** · residual **2560** · Q width **4096** · **36** слоёв · контекст **8192** / окно **32768** · **BF16**. Init: **Colab G4** (RTX PRO 6000 Blackwell), random init, без весов v1.
 
 Выходы стадий:
 
@@ -59,17 +59,18 @@ notebooks/        SHINRA_COLAB.ipynb
 ```
 Embedding
   → [ RMSNorm → GQA+RoPE (+QK-norm) → residual
-      RMSNorm → SwiGLU              → residual ] × 32
+      RMSNorm → SwiGLU              → residual ] × 36
   → RMSNorm → LM Head (tied)
 ```
 
 | | |
 |---|---|
-| hidden | 3072 |
-| layers | 32 |
-| heads / KV | 24 / 8 |
+| hidden (residual) | 2560 |
+| Q width | 4096 (32 × 128) |
+| layers | 36 |
+| heads / KV | 32 / 8 |
 | head dim | 128 |
-| SwiGLU | 9216 |
+| SwiGLU | 9728 |
 | RoPE θ | 1 000 000 |
 | RMSNorm ε | 1e-6 |
 | QK-norm | да |
@@ -109,9 +110,9 @@ bash scripts/prepare_data.sh
 
 ---
 
-## Обучение на A100
+## Init на Colab G4
 
-Локальная RTX 2080 не цель: 4B + AdamW туда не встают. Bring-up — [Google Colab A100](docs/colab.md) / `notebooks/SHINRA_COLAB.ipynb`. Претрейн — 8× A100 80GB.
+Локальная RTX 2080 не цель. Bring-up — [Google Colab G4](docs/colab.md) / `notebooks/SHINRA_COLAB.ipynb`: random init, один BF16 step, без `from_pretrained`. Кластерный претрейн и optimizer/WSD **не** заморожены в контракте v2.
 
 ```bash
 pip install -e ".[train,flash]"
@@ -123,7 +124,7 @@ bash scripts/train_dpo.sh  outputs/shinra-4b-instruct/final/step-00008000
 Конфиг модели и кластера: [`configs/shinra_4b.yaml`](configs/shinra_4b.yaml)  
 Accelerate: [`configs/accelerate_a100.yaml`](configs/accelerate_a100.yaml)
 
-Претрейн: 200B токенов, 2 097 152 ток/шаг, LR 3e-4, WSD, FSDP FULL_SHARD, gradient checkpointing, fused AdamW, SDPA Flash на A100.
+Претрейн стартует только после аудита RMSNorm / init / dual-BOS / packing. Optimizer из `shinra_4b.yaml` пока не контракт.
 
 ---
 

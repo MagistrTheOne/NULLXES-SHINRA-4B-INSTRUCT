@@ -11,9 +11,11 @@ from transformers.configuration_utils import PretrainedConfig
 class ShinraConfig(PretrainedConfig):
     """Decoder-only SHINRA Transformer configuration.
 
-    Parameter target (tied embeddings): ~3.93B
-      - vocab 131072 × hidden 3072
-      - 32 layers, GQA 24/8, SwiGLU intermediate 9216
+    Parameter target (tied embeddings): 3,969,056,256
+      SHINRA v2 geometry (Qwen3-4B layout, SHINRA tokenizer):
+      - vocab 131072 × hidden 2560
+      - 36 layers, GQA 32/8, head_dim 128 (Q width 4096 != residual 2560)
+      - SwiGLU intermediate 9728
     """
 
     model_type = "nullxes_shinra"
@@ -22,10 +24,10 @@ class ShinraConfig(PretrainedConfig):
     def __init__(
         self,
         vocab_size: int = 131072,
-        hidden_size: int = 3072,
-        intermediate_size: int = 9216,
-        num_hidden_layers: int = 32,
-        num_attention_heads: int = 24,
+        hidden_size: int = 2560,
+        intermediate_size: int = 9728,
+        num_hidden_layers: int = 36,
+        num_attention_heads: int = 32,
         num_key_value_heads: int = 8,
         head_dim: int | None = 128,
         hidden_act: str = "silu",
@@ -59,11 +61,12 @@ class ShinraConfig(PretrainedConfig):
         self.num_attention_heads = num_attention_heads
         self.num_key_value_heads = num_key_value_heads
         self.head_dim = head_dim if head_dim is not None else hidden_size // num_attention_heads
-        if self.head_dim * self.num_attention_heads != self.hidden_size:
-            raise ValueError(
-                f"hidden_size ({hidden_size}) must equal num_attention_heads "
-                f"({num_attention_heads}) * head_dim ({self.head_dim})"
-            )
+        if self.hidden_size <= 0:
+            raise ValueError(f"hidden_size must be positive, got {self.hidden_size}")
+        if self.head_dim <= 0:
+            raise ValueError(f"head_dim must be positive, got {self.head_dim}")
+        if self.num_attention_heads <= 0 or self.num_key_value_heads <= 0:
+            raise ValueError("num_attention_heads and num_key_value_heads must be positive")
         if self.num_attention_heads % self.num_key_value_heads != 0:
             raise ValueError("num_attention_heads must be divisible by num_key_value_heads")
         self.hidden_act = hidden_act

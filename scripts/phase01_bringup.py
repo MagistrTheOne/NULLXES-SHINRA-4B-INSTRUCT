@@ -1,4 +1,4 @@
-"""Phase 0.1 — prove ShinraForCausalLM lives on A100. No training run, no from_pretrained."""
+"""Phase 0.1 — prove SHINRA v2 ShinraForCausalLM lives on Colab G4. Random init only."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from tokenizer.special_tokens import ALL_SPECIAL_TOKENS, EOT, END_OF_TEXT
 from training.optim import build_optimizer
 
 EXPECTED_PARAMS = count_parameters(ShinraSpec())["total"]
+MIN_VRAM_GB = 40.0
 
 
 def environment_lock() -> dict:
@@ -33,10 +34,12 @@ def environment_lock() -> dict:
         "cuda_device": name,
         "vram_gb": round(vram_gb, 2),
         "bf16": bf16_ok,
+        "architecture": "shinra_v2",
+        "expected_parameters": EXPECTED_PARAMS,
     }
     print(json.dumps(report, indent=2))
-    if vram_gb < 70:
-        raise SystemExit(f"Need A100 80GB class, got {vram_gb:.1f} GB")
+    if vram_gb < MIN_VRAM_GB:
+        raise SystemExit(f"Need >= {MIN_VRAM_GB:.0f} GB VRAM for SHINRA-4B init, got {vram_gb:.1f} GB")
     if not bf16_ok:
         raise SystemExit("bfloat16 matmul failed")
     return report
@@ -50,6 +53,7 @@ def tokenizer_dna_report() -> dict:
         "specials": list(ALL_SPECIAL_TOKENS),
         "has_end_alias": "<|end|>" in ALL_SPECIAL_TOKENS,
         "has_tool_alias": "<|tool|>" in ALL_SPECIAL_TOKENS,
+        "vocab_size_target": 131072,
     }
     artifacts = Path("tokenizer/artifacts/tokenizer_stats.json")
     if artifacts.exists():
@@ -61,10 +65,10 @@ def tokenizer_dna_report() -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="SHINRA Phase 0.1 A100 bring-up")
-    parser.add_argument("--config", default="configs/pretrain_colab_100m.yaml")
+    parser = argparse.ArgumentParser(description="SHINRA v2 Colab G4 random-init bring-up")
+    parser.add_argument("--config", default="configs/shinra_4b.yaml")
     parser.add_argument("--seq", type=int, default=2048)
-    parser.add_argument("--batch", type=int, default=2)
+    parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--lr", type=float, default=3.0e-4)
     args = parser.parse_args()
 
@@ -78,6 +82,12 @@ def main() -> None:
     print("parameters", n_params)
     if n_params != EXPECTED_PARAMS:
         raise SystemExit(f"param count {n_params} != {EXPECTED_PARAMS}")
+    q_width = config.num_attention_heads * config.head_dim
+    print("q_width", q_width, "hidden", config.hidden_size, "layers", config.num_hidden_layers)
+    if q_width == config.hidden_size:
+        raise SystemExit("v2 requires decoupled Q width")
+    if (config.hidden_size, config.num_hidden_layers, config.num_attention_heads) != (2560, 36, 32):
+        raise SystemExit("v2 geometry mismatch")
 
     tied = model.model.embed_tokens.weight.data_ptr() == model.lm_head.weight.data_ptr()
     print("tied_embeddings", tied)
@@ -123,7 +133,10 @@ def main() -> None:
         "optimizer": "adamw_torch_fused",
         "lr": args.lr,
         "tokenizer_dna": {k: dna[k] for k in ("n_specials", "eot", "end_of_text")},
-        "phase": "0.1_bringup",
+        "phase": "v2_g4_random_init",
+        "hidden_size": config.hidden_size,
+        "q_width": q_width,
+        "layers": config.num_hidden_layers,
     }
     print(json.dumps(report, indent=2))
 

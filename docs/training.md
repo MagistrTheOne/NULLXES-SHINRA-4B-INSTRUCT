@@ -1,5 +1,9 @@
 # Обучение SHINRA
 
+Architecture **v2** is frozen in `configs/shinra_4b.yaml` / `architecture/design.md`. Optimizer, WSD, packing, and cluster topology are **not** frozen. Do not resume S0.4.1 or P0.
+
+Init: Colab G4, `python -m scripts.phase01_bringup --config configs/shinra_4b.yaml`.
+
 ## Стадии
 
 | Стадия | Скрипт | Конфиг | Выход |

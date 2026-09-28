@@ -1,17 +1,16 @@
-# Google Colab Pro — A100 80GB hypothesis node (screenshot: 167GB RAM / 80GB VRAM).
-# Not local RTX 2080. Not the 8× A100 80GB production pretrain.
+# Google Colab G4 — RTX PRO 6000 Blackwell. Random-init bring-up node.
+# Not local RTX 2080. Production cluster recipe is not part of architecture v2 freeze.
 
-runtime: google-colab-pro
-gpu: NVIDIA A100 80GB
-ram_gb: 167
-vram_gb: 80
+runtime: google-colab
+gpu: NVIDIA RTX PRO 6000 Blackwell
+gpu_class: G4
 local_gpu: forbidden
-note: "Do not load SHINRA-4B weights on RTX 2080. Colab is pipeline + 100M token check."
+note: "SHINRA v2 random init on Colab G4. No from_pretrained. No v1/S0/P0 weights."
 
 model:
   name: NULLXES-SHINRA-4B
   attention_implementation: sdpa
-  expected_parameters: 3926076416
+  expected_parameters: 3969056256
 
 tokenizer:
   vocab_size: 131072
@@ -30,8 +29,8 @@ batch:
 training:
   gradient_checkpointing: true
   dataloader_num_workers: 2
-  purpose: hypothesis_check
-  max_tokens: 100000000
+  purpose: v2_random_init
+  max_tokens: 0
 
 storage:
   cache_dir: /content/shinra_cache

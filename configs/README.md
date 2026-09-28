@@ -1,13 +1,13 @@
-# SHINRA-4B production configuration lives in this directory.
+# SHINRA-4B configuration lives in this directory.
 #
-# shinra_4b.yaml              model + optimizer + FSDP + A100 batch
-# pretrain_a100.yaml          stage 1
-# sft_a100.yaml               stage 2
-# dpo_a100.yaml               stage 3
-# accelerate_a100.yaml        8-GPU node
+# shinra_4b.yaml              architecture v2 + unfrozen optimizer/FSDP recipe
+# pretrain_a100.yaml          stage 1 recipe (not frozen)
+# sft_a100.yaml               stage 2 recipe (not frozen)
+# dpo_a100.yaml               stage 3 recipe (not frozen)
+# accelerate_a100.yaml        8-GPU node (not frozen)
 # accelerate_a100_multinode.yaml
 # tokenizer.yaml
 # data_mix.yaml
-# dataset_pilot.yaml          SHINRA-COLAB-PILOT 5B spec / 100M session
-# colab.yaml                  Google Colab Pro A100 80GB
-# pretrain_colab_100m.yaml    hypothesis 100M tokens
+# dataset_pilot.yaml          SHINRA-COLAB-PILOT
+# colab.yaml                  Google Colab G4 (RTX PRO 6000 Blackwell)
+# pretrain_colab_100m.yaml    leftover hypothesis recipe; init uses shinra_4b.yaml

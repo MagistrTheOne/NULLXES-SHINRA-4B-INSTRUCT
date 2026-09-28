@@ -1,8 +1,10 @@
 # NULLXES SHINRA-4B-INSTRUCT | TRAINING LEDGER
 
-**Дата фиксации:** 23-09-2026  
+**v2 (2026-09-28):** architecture lineage v1 closed. This ledger is R&D evidence, not a resume target. SHINRA v2 is Qwen3-4B geometry + SHINRA tokenizer, random init, no S0.4.1 / P0 weights.
+
+**Дата фиксации v1:** 23-09-2026  
 **Режим записи:** локальный документ. Машину не запускать.  
-**S0 в целом:** не закрыт. Слепой gate провален. Identity lock не ставится.
+**S0 в целом:** не закрыт как identity lock. Слепой gate провален. Для v2 это не next-step.
 
 DEV-20 = 20/20 на уже виденном наборе. Это не генерализация. S0.5 это подтвердил.
 

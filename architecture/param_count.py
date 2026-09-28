@@ -9,10 +9,10 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ShinraSpec:
-    hidden_size: int = 3072
-    intermediate_size: int = 9216
-    num_hidden_layers: int = 32
-    num_attention_heads: int = 24
+    hidden_size: int = 2560
+    intermediate_size: int = 9728
+    num_hidden_layers: int = 36
+    num_attention_heads: int = 32
     num_key_value_heads: int = 8
     head_dim: int = 128
     vocab_size: int = 131072

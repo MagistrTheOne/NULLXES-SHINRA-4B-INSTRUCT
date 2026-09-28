@@ -34,7 +34,8 @@ training:
   max_tokens: 100000000
 
 hardware:
-  gpu: NVIDIA A100 80GB
+  gpu: NVIDIA RTX PRO 6000 Blackwell
+  gpu_class: G4
   node_gpus: 1
   precision: bf16
   flash_attention: true

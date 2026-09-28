@@ -46,8 +46,8 @@ def test_flash_attention_backend_reports_missing_optional_dependency(
 ):
     config = ShinraConfig(
         vocab_size=256,
-        hidden_size=128,
-        intermediate_size=256,
+        hidden_size=80,
+        intermediate_size=160,
         num_hidden_layers=2,
         num_attention_heads=4,
         num_key_value_heads=2,

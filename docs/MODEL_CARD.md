@@ -43,11 +43,11 @@ Proprietary `ShinraForCausalLM` (not a Llama / Mistral / Qwen / GPT-NeoX wrapper
 | | |
 |---|---|
 | Type | Decoder-only Transformer |
-| Parameters | 3.93B (tied embeddings) |
-| Hidden size | 3072 |
-| Layers | 32 |
-| Attention | GQA 24 query / 8 KV heads, head dim 128 |
-| MLP | SwiGLU, intermediate 9216 |
+| Parameters | 3,969,056,256 (tied embeddings) |
+| Hidden size | 2560 residual; Q width 4096 |
+| Layers | 36 |
+| Attention | GQA 32 query / 8 KV heads, head dim 128 |
+| MLP | SwiGLU, intermediate 9728 |
 | Norm | RMSNorm, pre-norm + QK-norm |
 | Position | RoPE, θ = 1e6, YaRN-ready |
 | Context | 8192 train / 32768 native window |
@@ -106,7 +106,7 @@ Out of scope without additional alignment and policy layers: autonomous high-sta
 
 ## Limitations
 
-- 3.93B dense capacity: weaker than 70B-class models on multi-hop reasoning and rare languages.
+- 4B-class dense capacity: weaker than 70B-class models on multi-hop reasoning and rare languages.
 - Pretrain budget 200B tokens is overtrained vs Chinchilla-80B but far below frontier token counts.
 - Toxicity and safety filters are heuristic plus optional classifiers; residual harmful content is possible.
 - Long context above 8192 uses RoPE extrapolation (YaRN). Always re-run needle-in-haystack after extension.
@@ -126,7 +126,7 @@ Suite: ARC-Challenge, HellaSwag, WinoGrande, TruthfulQA, MMLU, GSM8K, HumanEval,
 
 ## Hardware
 
-Trained for NVIDIA A100 80GB, 8-GPU FSDP FULL_SHARD, BF16, gradient checkpointing, fused AdamW, PyTorch 2.x SDPA.
+Init target is Google Colab G4 (RTX PRO 6000 Blackwell), BF16. Cluster FSDP recipe is not part of architecture v2 freeze.
 
 ## License
 

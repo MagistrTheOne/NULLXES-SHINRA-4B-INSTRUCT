@@ -1,7 +1,7 @@
 # NULLXES SHINRA CORE
 #
 # Decoder-only Transformer — Language Intelligence Layer
-# Model: NULLXES SHINRA-4B  (~3.93B parameters, tied embeddings)
+# Model: NULLXES SHINRA-4B  (v2: 3,969,056,256 parameters, tied embeddings)
 
 from architecture.param_count import ShinraSpec, count_parameters
 
