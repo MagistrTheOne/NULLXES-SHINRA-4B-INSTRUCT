@@ -193,16 +193,66 @@ def _produce_shard(
     return meta
 
 
+def _file_sha256(path: Path) -> str | None:
+    try:
+        import hashlib
+
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while True:
+                chunk = handle.read(1 << 20)
+                if not chunk:
+                    break
+                digest.update(chunk)
+        return "sha256:" + digest.hexdigest()
+    except Exception:
+        return None
+
+
+def _git_commit() -> str | None:
+    try:
+        import subprocess
+
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=Path(__file__).resolve().parents[1], text=True
+        ).strip()
+    except Exception:
+        return None
+
+
 def _save_resolved_config(cfg: Any, run_dir: Path, stage: str) -> Path:
-    """Save full resolved config after all overrides next to the run ledger."""
+    """Save full resolved config after all overrides next to the run ledger.
+
+    Records effectively used values (CLI > stage > arch), file SHAs, provenance
+    per value source, and the code commit. Source YAMLs alone are NOT the record.
+    """
     out = Path(run_dir) / f"resolved_{stage}.json"
-    payload = {}
+    payload: dict[str, Any] = {}
     for key in getattr(cfg, "__dict__", {}):
         try:
-            payload[key] = str(getattr(cfg, key))
+            payload[f"value.{key}"] = str(getattr(cfg, key))
         except Exception:
             pass
-    payload["runtime_config"] = str(getattr(cfg, "runtime_config", "configs/runtime_g4.yaml"))
+    for label, rel in (
+        ("arch", getattr(cfg, "model_config", "configs/architecture_v2.yaml")),
+        ("stage", getattr(cfg, "train_config", "")),
+        ("runtime", getattr(cfg, "runtime_config", "configs/runtime_g4.yaml")),
+    ):
+        try:
+            path = Path(str(rel))
+            if path.exists():
+                payload[f"sha.{label}"] = _file_sha256(path)
+                payload[f"path.{label}"] = str(path)
+        except Exception:
+            pass
+    payload["provenance"] = (
+        "CLI args > stage YAML > architecture YAML; "
+        "attention: CLI > training.attention_implementation > arch model; "
+        "precision: environment-derived (cuda→bf16, else fp32); "
+        "geometry on resume: checkpoint config.json (verified by verify_checkpoint_compat)"
+    )
+    payload["code_commit"] = _git_commit()
+    payload["stop_counter"] = "legacy-honest (labels != -100 pre-shift); counter-v1 parallel only"
     out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return out
 
@@ -243,6 +293,19 @@ def run_rolling_stage(args: Any) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     ledger = RunLedger(run_dir)
     ceiling_gb = float(storage.get("disk_ceiling_gb", 400))
+    if stage == "d_en_ru_pilot":
+        # Stage D never inherits the synth generator and never ignores shares:
+        # the EN/RU corpus must be prebuilt+validated (data/data_v1/stage_d.py).
+        # Spec-only state is NOT runnable — this raises until bins exist.
+        from data.data_v1.stage_d import validate_stage_d_ready
+
+        validate_stage_d_ready(train_dir, heldout_dir)
+        _d_ckpt = resolve_checkpoint(output_dir, getattr(args, "resume_from", None))
+        if _d_ckpt is None:
+            raise DrumError("d_en_ru_pilot is BLOCKED: no verified C489 checkpoint (docs/C489_LINK.md)")
+        from evaluation.v2_gates import check_baseline_gate
+
+        check_baseline_gate(run_dir, _d_ckpt)
     delete_consumed = bool(getattr(args, "delete_consumed", True))
     stop_after_steps = getattr(args, "stop_after_steps", None)
     record_trace = bool(getattr(args, "record_consumed_trace", False))
@@ -257,7 +320,7 @@ def run_rolling_stage(args: Any) -> dict[str, Any]:
         encode = lambda text: encode_with_tokenizer(tok, text)
         bos_id, end_id, pad_id = resolve_pretrain_special_ids(tok)
 
-    if stage != "c" and not list_shard_bins(heldout_dir) and int(getattr(args, "heldout_records", 0) or 0) > 0:
+    if stage not in ("c", "d_en_ru_pilot") and not list_shard_bins(heldout_dir) and int(getattr(args, "heldout_records", 0) or 0) > 0:
         build_packed_shard(
             stage=stage,
             shard_index=0,
@@ -279,6 +342,14 @@ def run_rolling_stage(args: Any) -> dict[str, Any]:
     cursor = read_cursor(run_dir)
     shard_index = int(cursor.get("shard_index", 0))
     start_index = int(cursor.get("next_record_start", 0))
+    # Startup reconciliation: a crash after shard delete but before the need_shard
+    # cursor write leaves `pending_consume` set with no bins on disk. The shard is
+    # already trained+consumed — advance instead of re-producing it.
+    _pending = cursor.get("pending_consume") or {}
+    if _pending and not list_shard_bins(train_dir):
+        shard_index = int(cursor.get("next_shard_index", shard_index + 1))
+        start_index = int(cursor.get("next_record_start", start_index))
+        ledger.append({"event": "reconcile_pending_consume", **{k: _pending.get(k) for k in ("shard_id", "shard_sha256")}})
     produced = int(cursor.get("produced_tokens", 0))
     consumed = int(cursor.get("consumed_tokens", 0))
     step = int(cursor.get("step", 0))
@@ -314,6 +385,11 @@ def run_rolling_stage(args: Any) -> dict[str, Any]:
         if need_new:
             if stage == "c":
                 raise DrumError("stage c refuses synth produce; pack FineWeb JSONL first")
+            if stage == "d_en_ru_pilot":
+                raise DrumError(
+                    "d_en_ru_pilot never produces synth shards; prebuild EN/RU bins via "
+                    "data.data_v1.stage_d build (see data/specs/V2_UPGRADE_DATA_SPEC.md)"
+                )
             if shard_index >= max_shards:
                 raise DrumError(
                     f"max_shards={max_shards} reached with consumed_tokens={consumed} < target={target}"
@@ -422,6 +498,21 @@ def run_rolling_stage(args: Any) -> dict[str, Any]:
                 f"(step={step} consumed={consumed} target={target} max_steps={cfg.max_steps})"
             )
 
+        # Re-verify identity immediately before the destructive transition:
+        # the shard trained must be exactly the shard consumed.
+        verify_shard_identity(bin_path, active_id, active_sha)
+        # Crash-safe ordering: persist consume-intent BEFORE deleting bytes.
+        # A crash between delete and the need_shard cursor write below must not
+        # silently retrain the same shard range on restart (see startup
+        # reconciliation of `pending_consume`).
+        cursor_state.update(
+            {
+                "pending_consume": {"shard_id": active_id, "shard_sha256": active_sha},
+                "next_shard_index": shard_index + 1,
+                "next_record_start": start_index + records_per_shard,
+            }
+        )
+        write_cursor(run_dir, cursor_state)
         mark = update_shard_status(
             bin_path,
             "consumed",
@@ -450,6 +541,12 @@ def run_rolling_stage(args: Any) -> dict[str, Any]:
             break
 
     overshoot = max(0, consumed - target) if target > 0 else 0
+    if stage == "d_en_ru_pilot":
+        # Mid/final continuation eval must exist before the stage is marked done.
+        # evaluation/continuation_eval.py presence alone never satisfied this.
+        from evaluation.v2_gates import check_stage_gates
+
+        check_stage_gates(run_dir, resume_from)
     final = {
         "stage": stage,
         "status": "done",

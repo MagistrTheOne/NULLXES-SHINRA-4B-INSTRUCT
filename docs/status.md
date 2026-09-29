@@ -29,7 +29,7 @@ random ShinraForCausalLM (v2)
 ```
 
 ```bash
-python -m scripts.phase01_bringup --config configs/shinra_4b.yaml
+python -m scripts.phase01_bringup --config configs/architecture_v2.yaml
 ```
 
-Architecture YAML is `configs/shinra_4b.yaml`.
+Architecture YAML is `configs/architecture_v2.yaml` (legacy `configs/shinra_4b.yaml` removed).

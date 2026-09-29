@@ -68,7 +68,9 @@ def main() -> None:
         sys.executable,
         str(Path("scripts/v2_stage_run.py")),
         "--config",
-        "configs/shinra_4b.yaml",
+        # History note: S0 ran with the legacy mixed configs/shinra_4b.yaml
+        # (identical geometry to configs/architecture_v2.yaml; see docs/REVIEW_CONFIG_CHAIN.md).
+        "configs/architecture_v2.yaml",
         "--stage-config",
         "configs/stages/s0_bringup.yaml",
         "--storage-config",

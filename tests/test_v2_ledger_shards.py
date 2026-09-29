@@ -92,10 +92,13 @@ def test_stage_yaml_mix_is_synth_only():
         assert payload["hardware"]["flash_attention"] is False
 
 
-def test_pretrain_colab_100m_disables_flash():
-    payload = yaml.safe_load(Path("configs/pretrain_colab_100m.yaml").read_text(encoding="utf-8"))
-    assert payload["hardware"]["flash_attention"] is False
-    assert payload["hardware"]["attention_implementation"] == "sdpa"
+def test_g4_runtime_contract_disables_flash():
+    runtime = yaml.safe_load(Path("configs/runtime_g4.yaml").read_text(encoding="utf-8"))
+    assert runtime["model_execution"]["attention_implementation"] == "sdpa"
+    stage = yaml.safe_load(Path("configs/stages/d_en_ru_pilot.yaml").read_text(encoding="utf-8"))
+    assert stage["training"]["attention_implementation"] == "sdpa"
+    assert stage["hardware"]["flash_attention"] is False
+    assert Path("configs/storage_g4.yaml").is_file()
     payload = yaml.safe_load(Path("configs/colab.yaml").read_text(encoding="utf-8"))
     assert payload["training"]["max_tokens"] == 0
     assert payload["storage"]["disk_ceiling_gb"] == 400

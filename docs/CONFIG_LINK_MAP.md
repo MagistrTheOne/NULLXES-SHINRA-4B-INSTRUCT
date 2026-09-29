@@ -36,7 +36,15 @@ scripts/v2_stage_run.py
 
 ## Удаление — отдельным commit (не в этом diff)
 
-1. `configs/shinra_4b.yaml` — после перевода `train_*.sh`, `training/*.py defaults`, notebooks, docs, тестов на `architecture_v2.yaml`.
-2. `configs/sft_a100.yaml` (+ при решении `pretrain_a100/dpo_a100`) — после снятия defaults в `training/sft.py` и архивации `scripts/train_sft.sh`.
-3. Старые stages/пилоты — после проверки тестов-гардов (`test_v2_ledger_shards`, `test_data_v1_phase_*`).
+Удалены (миграция выше выполнена):
+1. `configs/shinra_4b.yaml` → `architecture_v2.yaml` + `runtime_g4.yaml` + stage
+   (геометрия идентична: `2560/9728/36/32Q/8KV/128/131072`, мертвые поля
+   `train_sequence_length/sliding_window/layer_types/use_cache` удалены как метадата).
+2. `configs/pretrain_a100.yaml`, `sft_a100.yaml`, `dpo_a100.yaml` →
+   архивные `training/pretrain.py/sft.py/dpo.py` (требуют явный `--train-config`).
+3. `configs/pretrain_colab_100m.yaml`, `data_mix.yaml`, `dataset_pilot.yaml`,
+   `tokenizer.yaml` → замены: V2 spec (§2/§4), `tokenizer/special_tokens.py`.
+4. `scripts/train_pretrain.sh`, `train_sft.sh`, `train_dpo.sh`,
+   `notebooks/SHINRA_COLAB.ipynb` → superseded by G4 drum (`v2_stage_run.py`,
+   `SHINRA_V2_S0.ipynb`).
 - Не удалять: untracked пользовательские файлы, веса, исходные данные, tokenizer-артефакты, receipts S0/C.

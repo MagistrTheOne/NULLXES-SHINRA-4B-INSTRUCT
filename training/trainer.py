@@ -62,6 +62,13 @@ def config_from_yaml(path: Path, attention_implementation: str) -> ShinraConfig:
         attention_implementation=attention_implementation,
         use_cache=False,
     )
+    # Explicit pass-through (no silent drops): these default to ShinraConfig
+    # defaults but are now provenance-visible when set in architecture YAML.
+    cfg.initializer_range = float(raw.get("initializer_range", cfg.initializer_range))
+    if raw.get("sliding_window", None) is not None:
+        cfg.sliding_window = raw.get("sliding_window")
+    if raw.get("layer_types", None) is not None:
+        cfg.layer_types = raw.get("layer_types")
     cfg._attn_implementation = attention_implementation
     cfg.auto_map = {
         "AutoConfig": "configuration_shinra.ShinraConfig",
@@ -71,6 +78,45 @@ def config_from_yaml(path: Path, attention_implementation: str) -> ShinraConfig:
     return cfg
 
 
+def verify_checkpoint_compat(checkpoint_dir: str | Path, arch_yaml: str | Path, tokenizer_dir: str | Path) -> dict:
+    """Static C489 compat contract — reads JSON only, never loads weights.
+
+    Checks: required files, geometry vs architecture YAML, special IDs vs
+    tokenizer config. Raises SystemExit with an explicit reason on mismatch.
+    config.json presence alone is NOT proof of C489.
+    """
+    import json as _json
+
+    ckpt = Path(checkpoint_dir)
+    required = ["config.json"]
+    missing = [name for name in required if not (ckpt / name).exists()]
+    if missing:
+        raise SystemExit(f"checkpoint {ckpt} missing files: {missing}")
+    weight_br = sorted(p.name for p in ckpt.glob("*.safetensors")) + sorted(p.name for p in ckpt.glob("*.bin"))
+    weight_br = [n for n in weight_br if not n.startswith("optimizer")]
+    if not weight_br:
+        raise SystemExit(f"checkpoint {ckpt} has no weight files (*.safetensors/*.bin)")
+    import yaml as _yaml
+
+    ckpt_cfg = _json.loads((ckpt / "config.json").read_text(encoding="utf-8"))
+    arch = (_yaml.safe_load(Path(arch_yaml).read_text(encoding="utf-8")) or {}).get("model", {})
+    for key in ("hidden_size", "intermediate_size", "num_hidden_layers",
+                "num_attention_heads", "num_key_value_heads", "vocab_size"):
+        if key in arch and ckpt_cfg.get(key) != arch[key]:
+            raise SystemExit(f"checkpoint geometry mismatch: {key} ckpt={ckpt_cfg.get(key)} arch={arch[key]}")
+    head_dim = ckpt_cfg.get("head_dim", arch.get("head_dim", 128))
+    if arch.get("num_attention_heads", 0) * head_dim != 4096:
+        raise SystemExit("checkpoint Q width != 4096: not the V2 geometry")
+    tok_cfg_path = Path(tokenizer_dir) / "tokenizer_config.json"
+    if tok_cfg_path.exists():
+        tok_cfg = _json.loads(tok_cfg_path.read_text(encoding="utf-8"))
+        blob = _json.dumps(tok_cfg, ensure_ascii=False)
+        for needle in ("<|bos|>", "<|eot|>", "<|end_of_text|>"):
+            if needle not in blob:
+                raise SystemExit(f"tokenizer at {tokenizer_dir} missing {needle}")
+    return {"checkpoint": str(ckpt), "weights": weight_br, "geometry": "v2-ok"}
+
+
 def load_model(cfg: TrainConfig) -> ShinraForCausalLM:
     if cfg.stage == "d_en_ru_pilot" and not cfg.resume_from:
         raise SystemExit(
@@ -78,6 +124,7 @@ def load_model(cfg: TrainConfig) -> ShinraForCausalLM:
             "(docs/C489_LINK.md). Silent random-init fallback is forbidden for this stage."
         )
     if cfg.resume_from and (Path(cfg.resume_from) / "config.json").exists():
+        verify_checkpoint_compat(cfg.resume_from, cfg.model_config, cfg.tokenizer_path)
         model = ShinraForCausalLM.from_pretrained(cfg.resume_from, torch_dtype=torch.bfloat16)
     elif cfg.base_from and cfg.stage in {"sft", "dpo"}:
         model = ShinraForCausalLM.from_pretrained(cfg.base_from, torch_dtype=torch.bfloat16)
@@ -185,6 +232,7 @@ def eval_heldout_ce(model, loader, max_batches: int = 32) -> dict:
     # Single-pass: forward WITHOUT labels (logits only, no internal CE), then one
     # compute_loss_parts(logits, labels). Forward's outputs.loss is ignored here
     # to avoid double CE/logsumexp on the same logits.
+    was_training = model.training
     model.eval()
     ce_weighted = 0.0
     z_weighted = 0.0
@@ -206,7 +254,8 @@ def eval_heldout_ce(model, loader, max_batches: int = 32) -> dict:
         ce_weighted += float(parts["train_ce"]) * n
         z_weighted += float(parts["z_loss"]) * n
         tokens += n
-    model.train()
+    if was_training:
+        model.train()
     if not tokens:
         return {"eval_loss": None, "heldout_ce": None, "z_loss": None, "eval_tokens": 0, "counter_version": COUNTER_VERSION}
     heldout_ce = ce_weighted / tokens
@@ -252,6 +301,11 @@ def _flush_leftover_accumulation(accelerator: Accelerator, model, optimizer, sch
 
 
 def run_lm_training(cfg: TrainConfig) -> dict:
+    if cfg.stage == "d_en_ru_pilot" and not (cfg.resume_from and (Path(cfg.resume_from) / "config.json").exists()):
+        raise SystemExit(
+            "d_en_ru_pilot is BLOCKED: C489 path/compat unverified "
+            "(docs/C489_LINK.md). No shards, no model load."
+        )
     enable_tf32()
     set_seed(cfg.seed)
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=False)
@@ -351,16 +405,46 @@ def run_lm_training(cfg: TrainConfig) -> dict:
         if resume_blob.get("optimizer") is not None:
             optimizer.load_state_dict(resume_blob["optimizer"])
         if not getattr(cfg, "fresh_stage_ledger", False):
+            # Resume-interrupted: same stage/dir → restore schedule position + RNG.
             if resume_blob.get("scheduler") is not None:
                 scheduler.load_state_dict(resume_blob["scheduler"])
             if resume_blob.get("rng") is not None:
                 torch.set_rng_state(resume_blob["rng"])
             if resume_blob.get("cuda_rng") is not None and use_cuda:
                 torch.cuda.set_rng_state_all(resume_blob["cuda_rng"])
+        # New-stage start (fresh_stage_ledger): optimizer state kept per policy
+        # (no unconditional Adam reset), scheduler fresh, RNG fresh.
+        # optimizer.load_state_dict restores saved param-group LRs; sync groups to
+        # the scheduler so the effective LR matches the chosen policy exactly.
+    try:
+        _sched_lrs = scheduler.get_last_lr()
+        for _g, _lr in zip(optimizer.param_groups, _sched_lrs):
+            _g["lr"] = float(_lr)
+    except Exception:
+        pass
 
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     cfg.run_dir.mkdir(parents=True, exist_ok=True)
     ledger = RunLedger(cfg.run_dir)
+    lr_start = None
+    try:
+        lr_start = float(scheduler.get_last_lr()[0])
+    except Exception:
+        pass
+    ledger.write_status(
+        {
+            "event": "train_start",
+            "stage": cfg.stage,
+            "step": step,
+            "consumed_tokens": consumed,
+            "stop_counter": "legacy-honest (labels != -100 pre-shift); 8M limit on this counter",
+            "lr_start": lr_start,
+            "scheduler_restored": bool(resume_blob and resume_blob.get("scheduler") is not None and not getattr(cfg, "fresh_stage_ledger", False)),
+            "optimizer_restored": bool(resume_blob and resume_blob.get("optimizer") is not None),
+            "fresh_stage_ledger": bool(getattr(cfg, "fresh_stage_ledger", False)),
+            "resume_from": str(cfg.resume_from) if cfg.resume_from else None,
+        }
+    )
     running = 0.0
     running_grad = 0.0
     t0 = time.time()
@@ -404,12 +488,16 @@ def run_lm_training(cfg: TrainConfig) -> dict:
                 use_cache=False,
             )
             loss = outputs.loss
-            accelerator.backward(loss)
+            # Window-mean semantics: sum of microbatch means / accum_steps, so the
+            # configured tokens_per_step/LR/schedule match the documented recipe.
+            # (History S0/C stepped every microbatch without scaling — see report.)
+            acc_steps = max(int(cfg.gradient_accumulation_steps), 1)
+            accelerator.backward(loss / acc_steps)
             if accelerator.sync_gradients:
                 grad_norm = accelerator.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-            optimizer.step()
-            scheduler.step()
-            optimizer.zero_grad(set_to_none=True)
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
         batch_tokens = count_label_tokens(batch["labels"])
         batch_targets_v1 = count_target_tokens_post_shift(batch["labels"])
         consumed += batch_tokens
@@ -443,9 +531,12 @@ def run_lm_training(cfg: TrainConfig) -> dict:
                 # Train split, computed from already-available logits (no extra forward;
                 # +1 CE/logsumexp on logging steps only, ~1/10 steps overhead).
                 # Stop-limit stays on legacy honest `consumed` (pre-shift); v1 is parallel.
+                # NOTE: last_token_entropy + parts run without retaining extra graph
+                # (detached floats only; same lifetime as `outputs`).
                 try:
                     base = accelerator.unwrap_model(model)
-                    _parts = base.compute_loss_parts(outputs.logits, batch["labels"])
+                    with torch.no_grad():
+                        _parts = base.compute_loss_parts(outputs.logits, batch["labels"])
                     train_ce_avg, z_avg = float(_parts["train_ce"]), float(_parts["z_loss"])
                 except Exception:
                     train_ce_avg, z_avg = avg, 0.0
@@ -457,6 +548,7 @@ def run_lm_training(cfg: TrainConfig) -> dict:
                     "train_ce": train_ce_avg,
                     "z_loss": z_avg,
                     "ppl": ppl,
+                    "ce_ppl": math.exp(min(train_ce_avg, 20)),
                     "lr": lr,
                     "consumed_tokens": consumed,
                     "consumed_targets_v1": consumed_targets_v1,

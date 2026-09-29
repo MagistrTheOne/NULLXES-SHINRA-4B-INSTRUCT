@@ -1,4 +1,4 @@
-"""Stage 3 — DPO / preference optimization on SHINRA-4B-INSTRUCT."""
+"""Stage 3 — DPO / preference optimization on SHINRA-4B-INSTRUCT. ARCHIVE (not the V2 drum)."""
 
 from __future__ import annotations
 
@@ -18,11 +18,13 @@ from .parallel import enable_tf32
 def main() -> None:
     import argparse
 
-    parser = argparse.ArgumentParser(description="DPO alignment for NULLXES SHINRA-4B-INSTRUCT")
+    parser = argparse.ArgumentParser(description="DPO alignment for NULLXES SHINRA-4B-INSTRUCT (ARCHIVE)")
     add_common_args(parser)
     parser.add_argument("--sft-from", required=True, help="Path to SHINRA-4B-INSTRUCT SFT checkpoint")
-    parser.set_defaults(train_config="configs/dpo_a100.yaml")
+    parser.set_defaults(train_config=None)
     args = parser.parse_args()
+    if not args.train_config:
+        raise SystemExit("ARCHIVE module: pass --train-config explicitly (A100 recipes removed from active tree)")
     cfg = build_train_config("dpo", args)
     enable_tf32()
     set_seed(cfg.seed)

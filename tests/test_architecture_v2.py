@@ -15,7 +15,7 @@ from model.modeling_shinra import ShinraForCausalLM
 
 ROOT = Path(__file__).resolve().parents[1]
 V2_PARAMS = 3_969_056_256
-YAML_PATH = ROOT / "configs" / "shinra_4b.yaml"
+YAML_PATH = ROOT / "configs" / "architecture_v2.yaml"
 
 
 def test_analytical_param_count_is_v2():

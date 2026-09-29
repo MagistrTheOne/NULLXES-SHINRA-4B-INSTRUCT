@@ -117,7 +117,7 @@ def test_s0_s2_sources_stay_pretrain_dna():
 
 
 def test_yaml_keeps_eos_and_document_end_split():
-    model = yaml.safe_load((ROOT / "configs" / "shinra_4b.yaml").read_text(encoding="utf-8"))["model"]
+    model = yaml.safe_load((ROOT / "configs" / "architecture_v2.yaml").read_text(encoding="utf-8"))["model"]
     assert model["eos_token_id"] == 2
     assert model["document_end_token_id"] == 18
     assert model["eos_token_id"] != model["document_end_token_id"]

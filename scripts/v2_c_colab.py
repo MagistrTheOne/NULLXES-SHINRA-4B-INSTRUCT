@@ -154,7 +154,9 @@ def main() -> None:
         sys.executable,
         str(Path("scripts/v2_stage_run.py")),
         "--config",
-        "configs/shinra_4b.yaml",
+        # History note: Phase C ran with the legacy mixed configs/shinra_4b.yaml
+        # (identical geometry to configs/architecture_v2.yaml; see docs/REVIEW_CONFIG_CHAIN.md).
+        "configs/architecture_v2.yaml",
         "--stage-config",
         "configs/stages/c_edu_en_pilot.yaml",
         "--storage-config",

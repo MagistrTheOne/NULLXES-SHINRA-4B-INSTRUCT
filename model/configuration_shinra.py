@@ -142,10 +142,8 @@ class ShinraConfig(PretrainedConfig):
     def from_yaml(cls, path: str | os.PathLike[str]) -> ShinraConfig:
         """Load architecture from YAML.
 
-        Train recipes (e.g. pretrain_colab_100m.yaml) have no `model:` block.
         Architecture always comes from that file's `model:` section or from
-        sibling `architecture_v2.yaml` (legacy fallback: `shinra_4b.yaml`).
-        Training hyperparams are ignored here.
+        sibling `architecture_v2.yaml`. Training hyperparams are ignored here.
         """
         from pathlib import Path
 
@@ -155,15 +153,16 @@ class ShinraConfig(PretrainedConfig):
         payload = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
         model_raw = payload.get("model")
         if not model_raw:
+            # Active V2 path: no silent legacy fallback. Architecture must come from
+            # architecture_v2.yaml in the same directory; anything else is an error.
             arch_path = yaml_path.parent / "architecture_v2.yaml"
-            legacy_path = yaml_path.parent / "shinra_4b.yaml"
-            if not arch_path.exists():
-                if not legacy_path.exists():
-                    raise FileNotFoundError(
-                        f"{yaml_path} has no model: section and {arch_path} is missing"
-                    )
-                arch_path = legacy_path
-            model_raw = (yaml.safe_load(arch_path.read_text(encoding="utf-8")) or {}).get("model")
+            if yaml_path.name != "architecture_v2.yaml" and arch_path.exists():
+                model_raw = (yaml.safe_load(arch_path.read_text(encoding="utf-8")) or {}).get("model")
+            if not model_raw:
+                raise FileNotFoundError(
+                    f"{yaml_path} has no model: section; expected architecture_v2.yaml "
+                    f"in {yaml_path.parent} (legacy shinra_4b.yaml is not consulted)"
+                )
         if not model_raw:
             raise ValueError(f"No model architecture in {yaml_path}")
         allowed = {

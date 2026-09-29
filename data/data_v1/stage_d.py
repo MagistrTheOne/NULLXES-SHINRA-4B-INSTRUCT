@@ -1,0 +1,324 @@
+"""Stage D EN/RU corpus builder + validator. No GPU. No network. No training.
+
+Builds packed train shards and a frozen held-out split from two verified local
+JSONL slices (EN tail after C, RU bounded slice). Shares are counted by OUR
+tokenizer (honest tokens, add_special_tokens=False) and mixed 75/25 EN/RU.
+
+RU without a frozen revision + receipt is a BLOCK (no silent EN fallback).
+Known C documents (content-hash exclusion list) are removed BEFORE packing;
+a missing exclusion list blocks the build unless explicitly waived in the manifest.
+
+Outputs (reproducible from manifests + sources):
+  train_dir/shard-00000.bin ... + shard-*.manifest.json + stage_d.build.json
+  heldout_dir/en.bin, ru.bin + heldout.manifest.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+from typing import Any
+
+from data.pack import PACKER_VERSION, wrap_pretrain_document
+from data.shards import sha256_file, write_shard_bin
+from tokenizer.special_tokens import PRETRAIN_BOS_ID, PRETRAIN_END_OF_TEXT_ID, PRETRAIN_PAD_ID
+
+STAGE = "d_en_ru_pilot"
+EN_RATIO = 0.75
+SEQUENCE_LENGTH = 2048
+TARGET_HONEST_TOKENS = 8_000_000
+HELDOUT_PERMILLE = 25  # ~2.5% of docs, deterministic by content hash, before packing
+HELDOUT_MIN_SEQ = 64
+HELDOUT_MAX_SEQ = 256
+# Per-language held-out reservation inside the 64–256 seq budget (75/25):
+HELDOUT_EN_MIN_SEQ = 48
+HELDOUT_RU_MIN_SEQ = 16
+
+
+class StageDError(ValueError):
+    pass
+
+
+def content_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def load_tokenizer(path: str | Path):
+    root = Path(path)
+    json_file = root / "tokenizer.json" if root.is_dir() else root
+    if not json_file.is_file():
+        raise StageDError("tokenizer.json not found on local path")
+    from tokenizers import Tokenizer
+
+    return Tokenizer.from_file(str(json_file))
+
+
+def encode_body(tokenizer, text: str) -> list[int]:
+    return list(tokenizer.encode(text, add_special_tokens=False).ids)
+
+
+def load_exclude_hashes(path: str | Path | None) -> set[str]:
+    if not path:
+        return set()
+    items = Path(path).read_text(encoding="utf-8").split()
+    return {s.strip().lower() for s in items if s.strip()}
+
+
+def read_slice_manifest(path: str | Path) -> dict[str, Any]:
+    doc = json.loads(Path(path).read_text(encoding="utf-8"))
+    for key in ("source_id", "content_sha256", "revision", "verified"):
+        if key not in doc:
+            raise StageDError(f"slice manifest {path} missing {key}")
+    if not doc.get("verified"):
+        raise StageDError(f"slice {doc.get('source_id')}: unverified (no revision/receipt) — blocked, no fallback")
+    return doc
+
+
+def verify_slice_bytes(jsonl_path: Path, manifest: dict[str, Any]) -> None:
+    actual = "sha256:" + sha256_file(jsonl_path)
+    if actual != manifest["content_sha256"]:
+        raise StageDError(f"slice bytes mismatch {jsonl_path.name}: {actual} != {manifest['content_sha256']}")
+
+
+def iter_slice_docs(jsonl_path: Path, start: int = 0, end: int | None = None):
+    n = 0
+    with jsonl_path.open("r", encoding="utf-8") as handle:
+        for line in handle:
+            if n < start:
+                n += 1
+                continue
+            if end is not None and n >= end:
+                break
+            n += 1
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            text = obj.get("text", "") if isinstance(obj, dict) else ""
+            if isinstance(text, str) and text.strip():
+                yield text
+
+
+def _heldout_bucket(content_sha: str) -> bool:
+    digest = hashlib.sha256(content_sha.encode("utf-8")).digest()
+    return int.from_bytes(digest[:2], "big") % 1000 < HELDOUT_PERMILLE
+
+
+def _pack_rows(wrapped: list[list[int]], sequence_length: int) -> tuple[list[dict], list[dict], int]:
+    """Pack wrapped docs; returns (full_rows, leftover_buf_as_rows_pending, honest_in_full)."""
+    buf: list[int] = []
+    rows: list[dict] = []
+    honest = 0
+    for piece in wrapped:
+        buf.extend(piece)
+        while len(buf) >= sequence_length:
+            seq = buf[:sequence_length]
+            buf = buf[sequence_length:]
+            rows.append({"input_ids": list(seq)})
+            honest += len(seq)
+    return rows, buf, honest
+
+
+def _finalize_rows(rows: list[dict], buf: list[int], sequence_length: int, pad_id: int) -> tuple[list[dict], int]:
+    honest = sum(len(r["input_ids"]) for r in rows)
+    if buf:
+        padded = list(buf)
+        while len(padded) < sequence_length:
+            padded.append(pad_id)
+        rows.append({"input_ids": padded})
+        honest += sum(1 for t in padded if t != pad_id)
+    return rows, honest
+
+
+def build_stage_d_corpus(
+    *,
+    en_jsonl: str | Path,
+    ru_jsonl: str | Path,
+    en_manifest: str | Path,
+    ru_manifest: str | Path,
+    c_exclude_hashes: str | Path | None,
+    tokenizer_path: str | Path,
+    output_train_dir: str | Path,
+    output_heldout_dir: str | Path,
+    sequence_length: int = SEQUENCE_LENGTH,
+    target_honest_tokens: int = TARGET_HONEST_TOKENS,
+    en_ratio: float = EN_RATIO,
+    seed: int = 42,
+) -> dict[str, Any]:
+    en_man = read_slice_manifest(en_manifest)
+    ru_man = read_slice_manifest(ru_manifest)
+    en_path, ru_path = Path(en_jsonl), Path(ru_jsonl)
+    verify_slice_bytes(en_path, en_man)
+    verify_slice_bytes(ru_path, ru_man)
+    excluded = load_exclude_hashes(c_exclude_hashes)
+    if not excluded and not en_man.get("c_exclusion_waived"):
+        raise StageDError("C exclusion list missing and not waived — blocked (held-out independence)")
+    tokenizer = load_tokenizer(tokenizer_path)
+
+    # Exact-dedup grouping + deterministic pre-packing held-out split per language.
+    pools: dict[str, list[list[int]]] = {"en": [], "ru": []}
+    heldout_pools: dict[str, list[list[int]]] = {"en": [], "ru": []}
+    seen: set[str] = set()
+    stats = {"en_docs": 0, "ru_docs": 0, "dups": 0, "c_excluded": 0, "heldout_docs": 0}
+    for lang, path in (("en", en_path), ("ru", ru_path)):
+        for text in iter_slice_docs(path):
+            chash = content_hash(text)
+            if chash in seen:
+                stats["dups"] += 1
+                continue
+            seen.add(chash)
+            if chash in excluded:
+                stats["c_excluded"] += 1
+                continue
+            body = encode_body(tokenizer, text)
+            if not body:
+                continue
+            try:
+                wrapped = wrap_pretrain_document(body, bos_id=PRETRAIN_BOS_ID, end_id=PRETRAIN_END_OF_TEXT_ID)
+            except Exception:
+                continue
+            stats[f"{lang}_docs"] += 1
+            if _heldout_bucket(chash):
+                heldout_pools[lang].append(wrapped)
+                stats["heldout_docs"] += 1
+            else:
+                pools[lang].append(wrapped)
+
+    # Mix 75/25 by honest tokens: always extend the language below its target share.
+    train_wrapped: list[list[int]] = []
+    honest_lang = {"en": 0, "ru": 0}
+    idx = {"en": 0, "ru": 0}
+    while sum(honest_lang.values()) < target_honest_tokens:
+        total = sum(honest_lang.values())
+        want_en = total == 0 or (honest_lang["en"] / max(total, 1)) < en_ratio
+        lang = "en" if want_en else "ru"
+        if idx[lang] >= len(pools[lang]):
+            lang = "ru" if lang == "en" else "en"
+            if idx[lang] >= len(pools[lang]):
+                break
+        piece = pools[lang][idx[lang]]
+        idx[lang] += 1
+        train_wrapped.append(piece)
+        honest_lang[lang] += len(piece)
+
+    out_train = Path(output_train_dir)
+    out_train.mkdir(parents=True, exist_ok=True)
+    rows, buf, _ = _pack_rows(train_wrapped, sequence_length)
+    rows, honest = _finalize_rows(rows, buf, sequence_length, PRETRAIN_PAD_ID)
+    if not rows:
+        raise StageDError("no train rows produced")
+    train_meta = write_shard_bin(
+        rows, out_train / "shard-00000.bin", stage=STAGE, shard_id="shard-00000",
+        pad_id=PRETRAIN_PAD_ID,
+        extra_meta={
+            "honest_tokens": honest,
+            "en_honest": honest_lang["en"],
+            "ru_honest": honest_lang["ru"],
+            "en_slice_sha256": en_man["content_sha256"],
+            "ru_slice_sha256": ru_man["content_sha256"],
+            "packer": PACKER_VERSION,
+            "counter": "legacy-honest pre-shift; counter-v1 parallel at train",
+            "rebuild": "sources + manifests + tokenizer + seed reproduce this shard",
+        },
+    )
+
+    out_held = Path(output_heldout_dir)
+    out_held.mkdir(parents=True, exist_ok=True)
+    held_manifest: dict[str, Any] = {"stage": STAGE, "langs": {}}
+    for lang in ("en", "ru"):
+        docs = heldout_pools[lang]
+        h_rows, h_buf, _ = _pack_rows(docs, sequence_length)
+        h_rows, h_honest = _finalize_rows(h_rows, h_buf, sequence_length, PRETRAIN_PAD_ID)
+        if not h_rows:
+            raise StageDError(f"no heldout rows for {lang}")
+        meta = write_shard_bin(
+            h_rows, out_held / f"{lang}.bin", stage=STAGE, shard_id=f"heldout-{lang}",
+            pad_id=PRETRAIN_PAD_ID,
+            extra_meta={"honest_tokens": h_honest, "n_docs": len(docs), "packer": PACKER_VERSION},
+        )
+        held_manifest["langs"][lang] = {
+            "n_sequences": meta["n_sequences"], "honest_tokens": h_honest, "sha256": meta["sha256"],
+        }
+    total_held_seq = sum(v["n_sequences"] for v in held_manifest["langs"].values())
+    if not (HELDOUT_MIN_SEQ <= total_held_seq <= HELDOUT_MAX_SEQ * 4):
+        raise StageDError(f"heldout budget violated: {total_held_seq} sequences")
+    if held_manifest["langs"]["en"]["n_sequences"] < HELDOUT_EN_MIN_SEQ:
+        raise StageDError("EN held-out below minimum 48 seq")
+    if held_manifest["langs"]["ru"]["n_sequences"] < HELDOUT_RU_MIN_SEQ:
+        raise StageDError("RU held-out below minimum 16 seq")
+    (out_held / "heldout.manifest.json").write_text(json.dumps(held_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    report = {
+        "stage": STAGE, "status": "built", "sequence_length": sequence_length,
+        "target_honest_tokens": target_honest_tokens, "honest_tokens": honest,
+        "en_honest": honest_lang["en"], "ru_honest": honest_lang["ru"],
+        "train_shard": {"path": train_meta["path"], "sha256": train_meta["sha256"], "n_sequences": train_meta["n_sequences"]},
+        "heldout": held_manifest, "dedup": {"exact_dups": stats["dups"]}, "c_excluded": stats["c_excluded"],
+        "tokenizer": str(tokenizer_path), "seed": seed, "packer": PACKER_VERSION,
+    }
+    (out_train / "stage_d.build.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return report
+
+
+def validate_stage_d_ready(train_dir: str | Path, heldout_dir: str | Path) -> dict[str, Any]:
+    """Pre-train gate for the drum: bins + manifests + budgets must exist. No building here."""
+    train_dir, heldout_dir = Path(train_dir), Path(heldout_dir)
+    build_path = train_dir / "stage_d.build.json"
+    held_path = heldout_dir / "heldout.manifest.json"
+    if not build_path.is_file():
+        raise StageDError(f"D train corpus not built: {build_path} missing (run stage_d build offline)")
+    if not held_path.is_file():
+        raise StageDError(f"D held-out missing: {held_path} missing")
+    if not list(train_dir.glob("shard-*.bin")):
+        raise StageDError("D train bins missing")
+    for lang in ("en", "ru"):
+        if not (heldout_dir / f"{lang}.bin").is_file():
+            raise StageDError(f"D held-out {lang}.bin missing (no EN fallback for RU)")
+    report = json.loads(build_path.read_text(encoding="utf-8"))
+    if report.get("status") != "built":
+        raise StageDError("stage_d.build.json status != built")
+    return report
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="SHINRA Stage D EN/RU corpus (build/validate only)")
+    sub = parser.add_subparsers(dest="cmd", required=True)
+    build_p = sub.add_parser("build")
+    build_p.add_argument("--en-jsonl", required=True)
+    build_p.add_argument("--ru-jsonl", required=True)
+    build_p.add_argument("--en-manifest", required=True)
+    build_p.add_argument("--ru-manifest", required=True)
+    build_p.add_argument("--c-exclude-hashes", default=None)
+    build_p.add_argument("--tokenizer", required=True)
+    build_p.add_argument("--output-train-dir", required=True)
+    build_p.add_argument("--output-heldout-dir", required=True)
+    build_p.add_argument("--sequence-length", type=int, default=SEQUENCE_LENGTH)
+    build_p.add_argument("--target", type=int, default=TARGET_HONEST_TOKENS)
+    build_p.add_argument("--seed", type=int, default=42)
+    val_p = sub.add_parser("validate")
+    val_p.add_argument("--train-dir", required=True)
+    val_p.add_argument("--heldout-dir", required=True)
+    args = parser.parse_args(argv)
+    try:
+        if args.cmd == "build":
+            report = build_stage_d_corpus(
+                en_jsonl=args.en_jsonl, ru_jsonl=args.ru_jsonl,
+                en_manifest=args.en_manifest, ru_manifest=args.ru_manifest,
+                c_exclude_hashes=args.c_exclude_hashes, tokenizer_path=args.tokenizer,
+                output_train_dir=args.output_train_dir, output_heldout_dir=args.output_heldout_dir,
+                sequence_length=args.sequence_length, target_honest_tokens=args.target, seed=args.seed,
+            )
+            print(json.dumps({"status": report["status"], "honest_tokens": report["honest_tokens"]}, sort_keys=True))
+        else:
+            validate_stage_d_ready(args.train_dir, args.heldout_dir)
+            print(json.dumps({"status": "ready"}, sort_keys=True))
+    except StageDError as exc:
+        print(str(exc))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

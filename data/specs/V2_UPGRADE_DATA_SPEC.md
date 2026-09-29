@@ -48,6 +48,9 @@
 До packing: `unk_rate`, `bytes/token`, fertility на EN/RU сэмплах +
 доля скипа по forbidden IDs. Инструменты: `tokenizer/analyze_tokenizer.py`,
 `tokenizer/special_tokens.py`. Результат — отчёт, не новый vocab.
+Acceptance-пороги (перенесены из удалённого `configs/tokenizer.yaml`;
+канон ID — `tokenizer/special_tokens.py`):
+`unk_rate_max 0.001`, `bytes_per_token_min 3.5`.
 
 ## 5. Receipt пилота
 
