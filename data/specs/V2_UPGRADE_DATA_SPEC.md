@@ -30,11 +30,14 @@
 
 ## 3. Порядок подготовки
 
-1. Группировка дублей (MinHash) до split.
+1. Группировка дублей до split: exact по canonical-хэшу + near-dup MinHash
+   (word-3-gram, Jaccard 0.80, seeded) — реализовано в `data/data_v1/stage_d.py`.
 2. Frozen held-out freeze до packing: всего 64–256 seq (~0.1–0.5M tok),
    из них EN 48–192 seq / RU 16–64 seq (пропорция пилота 75/25), EN+RU раздельно.
-3. Исключить из held-out совпадения с уже потреблёнными C-документами (граница —
-   `phase_c.pack.json` + ledger/cursor S0/C);
+3. Исключить из held-out совпадения с уже потреблёнными C-документами:
+   сравнение по canonical-хэшу (`stage_d.canonical_text`), списки — только
+   через `stage_d hashlist` (позиционные хэши JSONL несопоставимы);
+   граница EN-хвоста — `doc_start/doc_end` в манифесте слайса;
    если восстановление C-множества невозможно — явно зафиксировать ограничение
    независимости в receipt пилота.
 4. Очистка/нормализация без chat-ролей; токенизация `add_special_tokens=False`.

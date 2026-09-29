@@ -87,15 +87,62 @@ def _gate_artifact_path(run_dir: str | Path, kind: str, ckpt: str | Path) -> Pat
     return Path(run_dir) / "eval" / f"{kind}_{name}.json"
 
 
+def _validate_gate_artifact(path: Path, ckpt) -> dict:
+    """Content validation: existence never opens a gate. Checks identity,
+    evaluator version, contract fields, EN/RU coverage with non-zero
+    denominators, and finite metrics. Stale/empty/foreign JSON raises."""
+    import json as _json
+    import math as _math
+
+    try:
+        doc = _json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise GateFail(f"gate artifact unreadable: {path} ({exc})") from exc
+    if doc.get("evaluator_version") != "continuation-v1":
+        raise GateFail(f"gate artifact {path}: bad evaluator_version {doc.get('evaluator_version')!r}")
+    if str(doc.get("checkpoint", "")) != str(ckpt):
+        raise GateFail(f"gate artifact {path}: checkpoint {doc.get('checkpoint')!r} != {ckpt!r}")
+    contract = doc.get("contract", {})
+    if contract.get("use_cache") is not False or contract.get("eos_token_id") != 18 or contract.get("do_sample") is not False:
+        raise GateFail(f"gate artifact {path}: contract mismatch {contract!r}")
+    rows = doc.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise GateFail(f"gate artifact {path}: empty rows")
+    langs = {r.get("lang") for r in rows if isinstance(r, dict)}
+    if langs != {"en", "ru"}:
+        raise GateFail(f"gate artifact {path}: EN/RU coverage {sorted(str(x) for x in langs)}")
+    for row in rows:
+        if not isinstance(row, dict):
+            raise GateFail(f"gate artifact {path}: malformed row")
+        if row.get("eos_id") != 18 or row.get("use_cache") is not False or row.get("do_sample") is not False:
+            raise GateFail(f"gate artifact {path}: row contract mismatch")
+        unk_rate = row.get("unk_rate")
+        if not isinstance(unk_rate, (int, float)) or not _math.isfinite(unk_rate):
+            raise GateFail(f"gate artifact {path}: non-finite unk_rate")
+        gen = row.get("generated_ids")
+        if not isinstance(gen, list) or not gen:
+            raise GateFail(f"gate artifact {path}: empty generation")
+    per_lang = doc.get("per_lang", {})
+    for lang in ("en", "ru"):
+        entry = per_lang.get(lang, {})
+        if not entry.get("n", 0) > 0:
+            raise GateFail(f"gate artifact {path}: zero denominator for {lang}")
+    return doc
+
+
 def check_baseline_gate(run_dir, ckpt) -> dict:
     """Baseline continuation eval for the STARTING checkpoint must exist BEFORE
-    the first D update. Called by the drum, not by the training loop."""
+    the first D update. Called by the drum, not by the training loop.
+    No deadlock: the artifact is produced by manually running
+    evaluation/continuation_eval.py on the starting checkpoint (GPU + weights,
+    no trainer run required). Content-validated; stale/empty JSON is rejected."""
     path = _gate_artifact_path(run_dir, "baseline", ckpt)
     if not path.is_file():
         raise GateFail(
             f"D baseline missing for {ckpt}: run evaluation/continuation_eval.py first, "
             f"write {path} (use_cache=false, eos=18, do_sample=false)"
         )
+    _validate_gate_artifact(path, ckpt)
     return {"baseline": str(path)}
 
 
@@ -106,6 +153,10 @@ def check_stage_gates(run_dir, final_ckpt) -> dict:
     for kind, ckpt in (("mid", final_ckpt), ("final", final_ckpt)):
         path = _gate_artifact_path(run_dir, kind, ckpt)
         if path.is_file():
+            try:
+                _validate_gate_artifact(path, ckpt)
+            except GateFail as exc:
+                raise GateFail(f"D stage gate invalid ({kind}): {exc}") from exc
             found[kind] = str(path)
         else:
             missing.append(str(path))

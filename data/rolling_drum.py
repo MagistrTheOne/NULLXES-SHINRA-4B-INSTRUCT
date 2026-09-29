@@ -220,6 +220,35 @@ def _git_commit() -> str | None:
         return None
 
 
+def _assert_durable_progress(run_dir: Path, checkpoint_dir: Path | None, consumed: int, ledger: RunLedger) -> None:
+    """Pre-delete gate: the returned checkpoint must exist with a non-empty
+    trainer_state.pt, and ledger.jsonl must hold a matching train_done event.
+    Reads JSON lines only; never deserializes trainer state."""
+    if checkpoint_dir is None:
+        raise DrumError("no checkpoint to verify before shard consume")
+    state_file = Path(checkpoint_dir) / "trainer_state.pt"
+    if not state_file.is_file() or state_file.stat().st_size == 0:
+        raise DrumError(f"checkpoint {checkpoint_dir} has no usable trainer_state.pt before shard consume")
+    ledger_path = Path(run_dir) / "ledger.jsonl"
+    if not ledger_path.is_file():
+        raise DrumError("ledger.jsonl missing before shard consume")
+    matched = False
+    try:
+        lines = ledger_path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise DrumError(f"cannot read ledger before shard consume: {exc}") from exc
+    for line in reversed(lines[-2000:]):
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if event.get("event") == "train_done" and int(event.get("consumed_tokens", -1)) == int(consumed):
+            matched = True
+            break
+    if not matched:
+        raise DrumError(f"no train_done ledger event for consumed={consumed} before shard consume")
+
+
 def _save_resolved_config(cfg: Any, run_dir: Path, stage: str) -> Path:
     """Save full resolved config after all overrides next to the run ledger.
 
@@ -501,6 +530,10 @@ def run_rolling_stage(args: Any) -> dict[str, Any]:
         # Re-verify identity immediately before the destructive transition:
         # the shard trained must be exactly the shard consumed.
         verify_shard_identity(bin_path, active_id, active_sha)
+        # Durability before delete: SHA proves shard identity, not saved weights.
+        # Require the post-shard checkpoint (trainer_state.pt, non-empty) plus a
+        # matching train_done ledger event before destroying training bytes.
+        _assert_durable_progress(run_dir, resume_from, consumed, ledger)
         # Crash-safe ordering: persist consume-intent BEFORE deleting bytes.
         # A crash between delete and the need_shard cursor write below must not
         # silently retrain the same shard range on restart (see startup

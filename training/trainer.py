@@ -488,11 +488,18 @@ def run_lm_training(cfg: TrainConfig) -> dict:
                 use_cache=False,
             )
             loss = outputs.loss
-            # Window-mean semantics: sum of microbatch means / accum_steps, so the
-            # configured tokens_per_step/LR/schedule match the documented recipe.
-            # (History S0/C stepped every microbatch without scaling — see report.)
-            acc_steps = max(int(cfg.gradient_accumulation_steps), 1)
-            accelerator.backward(loss / acc_steps)
+            # Accelerate (pinned ==1.15.0) owns accumulation scaling: its
+            # Accelerator.backward() divides by gradient_accumulation_steps and its
+            # AcceleratedOptimizer/AcceleratedScheduler are no-ops off-sync windows
+            # (official accumulate() pattern: unconditional step calls in source).
+            # Do NOT pre-divide here — that would scale gradients twice.
+            # Partial windows (k<8 micros) therefore take proportionally smaller
+            # steps under the fixed divisor (documented policy: no renormalization,
+            # no carry, no drop; Adam moments/clipping/decay behave accordingly).
+            # Per-micro loss here is a mean over that micro's valid targets, so a
+            # window update is a mean of micro-means (tail pads make this differ
+            # negligibly from a token-weighted window mean).
+            accelerator.backward(loss)
             if accelerator.sync_gradients:
                 grad_norm = accelerator.clip_grad_norm_(model.parameters(), cfg.grad_clip)
                 optimizer.step()

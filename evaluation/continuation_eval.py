@@ -16,6 +16,8 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 
 CONTINUATION_EOS_ID = 18
 COUNTER_VERSION = "counter-v1"
+EVALUATOR_VERSION = "continuation-v1"
+EVAL_CONTRACT = {"use_cache": False, "eos_token_id": CONTINUATION_EOS_ID, "do_sample": False}
 
 
 @torch.no_grad()
@@ -70,7 +72,15 @@ def continuation_eval(model_path: str, prompts_path: str, output_path: str, max_
                 "unk_rate": sum(r["unk_rate"] for r in sub) / len(sub),
             }
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    Path(output_path).write_text(json.dumps({"rows": rows, "per_lang": per_lang}, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    payload = {
+        "checkpoint": str(model_path),
+        "evaluator_version": EVALUATOR_VERSION,
+        "contract": {**EVAL_CONTRACT, "counter_version": COUNTER_VERSION},
+        "max_new_tokens": max_new_tokens,
+        "rows": rows,
+        "per_lang": per_lang,
+    }
+    Path(output_path).write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return {"n": len(rows), "per_lang": per_lang, "output": output_path}
 
 
