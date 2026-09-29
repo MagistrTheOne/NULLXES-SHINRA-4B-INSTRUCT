@@ -10,6 +10,17 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+def unhide_cuda() -> None:
+    """Empty CUDA_VISIBLE_DEVICES hides every GPU from CUDA. nvidia-smi still works."""
+    val = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if val is None or str(val).strip() == "":
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        print("cuda_env: CUDA_VISIBLE_DEVICES was empty; set to 0", flush=True)
+
+
+unhide_cuda()
+
 import torch
 import yaml
 
@@ -26,7 +37,11 @@ SCRATCH = Path("/content/shinra_scratch")
 
 def assert_g4() -> str:
     if not torch.cuda.is_available():
-        raise SystemExit("Phase C train needs CUDA G4")
+        visible = repr(os.environ.get("CUDA_VISIBLE_DEVICES"))
+        raise SystemExit(
+            f"Phase C train needs CUDA G4 (CUDA_VISIBLE_DEVICES={visible}; "
+            f"empty string hides all GPUs)"
+        )
     name = torch.cuda.get_device_name(0)
     if "2080" in name:
         raise SystemExit("RTX 2080 is forbidden")

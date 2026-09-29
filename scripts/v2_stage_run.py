@@ -4,7 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
+
+
+def unhide_cuda() -> None:
+    val = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if val is None or str(val).strip() == "":
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
+
+unhide_cuda()
 
 from data.rolling_drum import run_rolling_stage
 

@@ -9,6 +9,16 @@ import subprocess
 import sys
 from pathlib import Path
 
+
+def unhide_cuda() -> None:
+    val = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if val is None or str(val).strip() == "":
+        os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+        print("cuda_env: CUDA_VISIBLE_DEVICES was empty; set to 0", flush=True)
+
+
+unhide_cuda()
+
 import torch
 import yaml
 
