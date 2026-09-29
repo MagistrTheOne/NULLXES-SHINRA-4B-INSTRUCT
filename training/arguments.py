@@ -62,7 +62,7 @@ def load_yaml(path: Path) -> dict:
 
 
 def add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--config", default="configs/shinra_4b.yaml")
+    parser.add_argument("--config", default="configs/architecture_v2.yaml")
     parser.add_argument("--train-config", default=None)
     parser.add_argument("--data-dir", required=True)
     parser.add_argument("--tokenizer", default="tokenizer/artifacts")

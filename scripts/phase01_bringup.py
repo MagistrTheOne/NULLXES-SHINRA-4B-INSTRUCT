@@ -66,7 +66,7 @@ def tokenizer_dna_report() -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="SHINRA v2 Colab G4 random-init bring-up")
-    parser.add_argument("--config", default="configs/shinra_4b.yaml")
+    parser.add_argument("--config", default="configs/architecture_v2.yaml")
     parser.add_argument("--seq", type=int, default=2048)
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--lr", type=float, default=3.0e-4)

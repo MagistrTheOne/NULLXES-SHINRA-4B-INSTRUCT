@@ -366,6 +366,22 @@ class ShinraForCausalLM(ShinraPreTrainedModel, GenerationMixin):
                 loss = loss + z_coeff * (log_z**2).mean()
         return loss
 
+    def compute_loss_parts(self, logits: torch.Tensor, labels: torch.Tensor) -> dict[str, float]:
+        """Split train_ce / z_loss for V2 UPGRADE logging. No behavior change to _compute_loss."""
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+        shift_logits = shift_logits.view(-1, self.config.vocab_size)
+        shift_labels = shift_labels.view(-1).to(shift_logits.device)
+        ce = F.cross_entropy(shift_logits.float(), shift_labels, ignore_index=-100)
+        z = torch.zeros((), dtype=torch.float32, device=shift_logits.device)
+        z_coeff = getattr(self.config, "z_loss_coefficient", 0.0) or 0.0
+        if z_coeff > 0:
+            valid = shift_labels != -100
+            if torch.any(valid):
+                log_z = torch.logsumexp(shift_logits[valid].float(), dim=-1)
+                z = z_coeff * (log_z**2).mean()
+        return {"train_ce": float(ce.detach().cpu()), "z_loss": float(z.detach().cpu())}
+
     def prepare_inputs_for_generation(
         self,
         input_ids: torch.LongTensor,

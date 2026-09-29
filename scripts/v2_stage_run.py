@@ -21,8 +21,9 @@ from data.rolling_drum import run_rolling_stage
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="SHINRA v2 S0–S2 rolling shard drum")
-    parser.add_argument("--config", default="configs/shinra_4b.yaml")
+    parser.add_argument("--config", default="configs/architecture_v2.yaml")
     parser.add_argument("--stage-config", required=True)
+    parser.add_argument("--runtime-config", default="configs/runtime_g4.yaml")
     parser.add_argument("--storage-config", default="configs/storage_g4.yaml")
     parser.add_argument("--corpus-dir", type=Path, required=True)
     parser.add_argument("--tokenizer", default="tokenizer/artifacts")

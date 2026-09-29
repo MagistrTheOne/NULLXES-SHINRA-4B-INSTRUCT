@@ -45,8 +45,10 @@ def evaluate_perplexity(model_path: str, data_dir: str, batch_size: int, max_bat
     mean_nll = nll_sum / max(token_count, 1)
     return {
         "nll": mean_nll,
+        "heldout_ce": mean_nll,
         "perplexity": math.exp(min(mean_nll, 20)),
         "tokens": token_count,
+        "counter_version": "counter-v1",
         "model": model_path,
         "data": data_dir,
         "vocab_size": tokenizer.vocab_size,

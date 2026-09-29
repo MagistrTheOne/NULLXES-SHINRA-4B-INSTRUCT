@@ -1,0 +1,38 @@
+# G4 runtime ONLY. Not a train recipe. Not architecture. max_tokens stays 0.
+# Init node: Google Colab G4 (RTX PRO 6000 Blackwell). SDPA only. torch from machine image.
+
+runtime: google-colab
+gpu: NVIDIA RTX PRO 6000 Blackwell
+gpu_class: G4
+compute_capability: sm_120
+local_gpu: forbidden
+
+model_execution:
+  attention_implementation: sdpa
+  expected_parameters: 3969056256
+
+precision:
+  dtype: bfloat16
+  tf32: true
+
+execution:
+  gradient_checkpointing: true
+  dataloader_num_workers: 2
+
+tokenizer:
+  vocab_size: 131072
+  output_dir: tokenizer/artifacts
+  hub_repo: MagistrTheOne/NULLXES-SHINRA-4B-INSTRUCT
+  hub_allow:
+    - tokenizer.json
+    - tokenizer_config.json
+    - special_tokens_map.json
+    - tokenizer.model
+    - tokenizer.vocab
+
+storage:
+  cache_dir: /content/shinra_cache
+  scratch_dir: /content/shinra_scratch
+  disk_ceiling_gb: 400
+  working_cap_gb: 150
+  max_disk_gb: 150

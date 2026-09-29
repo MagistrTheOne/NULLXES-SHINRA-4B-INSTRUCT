@@ -143,6 +143,7 @@ def _train_ns(
         record_consumed_trace=record_consumed_trace,
         force_cpu=bool(getattr(args, "force_cpu", False)),
         fresh_stage_ledger=bool(getattr(args, "fresh_stage_ledger", False)),
+        runtime_config=str(getattr(args, "runtime_config", "configs/runtime_g4.yaml")),
     )
 
 
@@ -192,10 +193,42 @@ def _produce_shard(
     return meta
 
 
+def _save_resolved_config(cfg: Any, run_dir: Path, stage: str) -> Path:
+    """Save full resolved config after all overrides next to the run ledger."""
+    out = Path(run_dir) / f"resolved_{stage}.json"
+    payload = {}
+    for key in getattr(cfg, "__dict__", {}):
+        try:
+            payload[key] = str(getattr(cfg, key))
+        except Exception:
+            pass
+    payload["runtime_config"] = str(getattr(cfg, "runtime_config", "configs/runtime_g4.yaml"))
+    out.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return out
+
+
 def run_rolling_stage(args: Any) -> dict[str, Any]:
     stage_cfg = load_yaml(Path(args.stage_config))
     storage = load_yaml(Path(args.storage_config)).get("storage", {})
     stage = stage_cfg["stage"]
+    if stage == "d_en_ru_pilot":
+        resume_arg = getattr(args, "resume_from", None)
+        if not resume_arg or not (Path(str(resume_arg)) / "config.json").exists():
+            raise DrumError(
+                "d_en_ru_pilot is BLOCKED: C489 path/compat unverified. "
+                "Fill --resume-from with the verified C489 checkpoint (docs/C489_LINK.md)."
+            )
+    # Runtime consistency: architecture_v2 + runtime_g4 + stage must agree on attention.
+    runtime_cfg_path = getattr(args, "runtime_config", None)
+    if runtime_cfg_path:
+        runtime_cfg = load_yaml(Path(runtime_cfg_path))
+        runtime_attn = (
+            runtime_cfg.get("model_execution", {}).get("attention_implementation")
+            or runtime_cfg.get("model", {}).get("attention_implementation")
+        )
+        stage_attn = stage_cfg.get("training", {}).get("attention_implementation")
+        if runtime_attn and stage_attn and runtime_attn != stage_attn:
+            raise DrumError(f"runtime/stage attention mismatch: {runtime_attn} != {stage_attn}")
     seq_len = args.sequence_length or int(stage_cfg.get("batch", {}).get("sequence_length", 2048))
     target = args.max_tokens if args.max_tokens is not None else int(
         stage_cfg.get("new_tokens", stage_cfg.get("max_tokens", 0))
@@ -357,6 +390,7 @@ def run_rolling_stage(args: Any) -> dict[str, Any]:
         cfg = build_train_config(stage, ns)
         cfg.allow_replay = False
         cfg.dataloader_num_workers = int(stage_cfg.get("training", {}).get("dataloader_num_workers", cfg.dataloader_num_workers))
+        _save_resolved_config(cfg, run_dir, stage)
         result = run_lm_training(cfg)
         consumed = int(result["consumed_tokens"])
         step = int(result["step"])

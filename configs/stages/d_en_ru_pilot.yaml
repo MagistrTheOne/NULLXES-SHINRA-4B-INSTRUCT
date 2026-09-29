@@ -1,0 +1,71 @@
+# Stage D pilot EN/RU от C489. ЗАБЛОКИРОВАН до подтверждения пути/совместимости.
+# Review-only. Запусков нет. enabled:false сохраняется.
+#
+# Реально читаемые загрузчиком поля (training/arguments.py::build_train_config,
+# training/trainer.py::config_from_yaml/load_model, data/rolling_drum.py):
+# stage, new_tokens/max_tokens/max_steps, optimizer.*, scheduler.*,
+# batch.*, training.* (seed/logging/eval/save/gradient_checkpointing/workers/max_tokens/
+# attention_implementation/allow_replay), resume_from, attention_implementation.
+# Остальное (mix/sources/eval-правила) — комментарии/доки, не флаги без обработки.
+#
+# Блокировка без декларативных флагов: resume_from указывает на НЕСУЩЕСТВУЮЩИЙ
+# placeholder; data/rolling_drum.py::run_rolling_stage и training/trainer.py::load_model
+# отказываются стартовать stage d_en_ru_pilot без существующего совместимого checkpoint
+# (см. docs/C489_LINK.md). Silent random-init fallback для этого stage запрещён кодом.
+
+stage: d_en_ru_pilot
+# Mix-цель по honest-токенам (документально, не читается trainer): EN 75% / RU 25%. Code/math позже.
+# mix: {en: 0.75, ru: 0.25}
+# sources (документально): en=fineweb-edu-en-tail-after-C, ru=fineweb2-ru-bounded-slice (см. data/specs/V2_UPGRADE_DATA_SPEC.md)
+new_tokens: 8000000
+max_tokens: 8000000
+max_steps: 489
+
+# Стартовый checkpoint: заполнить точным путём C489 ПОСЛЕ docs/C489_LINK.md.
+# Пока путь не существует/не совместим — запуск заблокирован кодом.
+resume_from: null
+
+optimizer:
+  name: adamw_torch_fused
+  learning_rate: 3.0e-4
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.1
+  grad_clip: 1.0
+
+scheduler:
+  name: wsd
+  warmup_steps: 40
+  stable_ratio: 0.80
+  min_lr_ratio: 0.10
+
+batch:
+  sequence_length: 2048
+  micro_batch_size: 1
+  gradient_accumulation_steps: 8
+  num_processes: 1
+  tokens_per_step: 16384
+
+training:
+  seed: 42
+  logging_steps: 10
+  eval_steps: 50
+  save_steps: 100
+  gradient_checkpointing: true
+  dataloader_num_workers: 2
+  max_tokens: 8000000
+  attention_implementation: sdpa
+  allow_replay: false
+
+# Стоп-счётчик лимита 8M: legacy honest (labels != -100 до shift), историю S0/C не переписывать.
+# counter-v1 (post-shift) логируется параллельно (consumed_targets_v1), лимит на него НЕ переведён.
+# Eval-правила (документально): baseline до первого update, mid/final eval,
+# continuation use_cache=false eos=18, EN не хуже baseline. См. evaluation/continuation_eval.py.
+
+hardware:
+  gpu: NVIDIA RTX PRO 6000 Blackwell
+  gpu_class: G4
+  node_gpus: 1
+  precision: bf16
+  flash_attention: false
+  fsdp: false

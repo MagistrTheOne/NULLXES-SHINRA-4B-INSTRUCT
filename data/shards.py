@@ -165,3 +165,15 @@ class PackedBinDataset(Dataset):
 
 def count_label_tokens(labels: torch.Tensor) -> int:
     return int((labels != -100).sum().item())
+
+
+# V2 UPGRADE counter-v1: фактические цели loss после shift.
+# Packer shinra-v2-pack.v1 не меняется; версионируется способ подсчёта.
+# На полной seq 2048 завышение legacy-счётчика ≈ 1/2048 ≈ 0.0488%.
+COUNTER_VERSION = "counter-v1"
+
+
+def count_target_tokens_post_shift(labels: torch.Tensor) -> int:
+    if labels.dim() == 1:
+        return int((labels[1:] != -100).sum().item())
+    return int((labels[:, 1:] != -100).sum().item())

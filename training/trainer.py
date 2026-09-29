@@ -19,7 +19,7 @@ from transformers import AutoTokenizer
 
 from data.ledger import RunLedger
 from data.shard_lifecycle import assert_under_ceiling
-from data.shards import ShardIdentityError, assert_single_shard, count_label_tokens, verify_shard_identity
+from data.shards import ShardIdentityError, assert_single_shard, count_label_tokens, count_target_tokens_post_shift, COUNTER_VERSION, verify_shard_identity
 from model.configuration_shinra import ShinraConfig
 from model.modeling_shinra import ShinraForCausalLM
 from .arguments import TrainConfig
@@ -72,6 +72,11 @@ def config_from_yaml(path: Path, attention_implementation: str) -> ShinraConfig:
 
 
 def load_model(cfg: TrainConfig) -> ShinraForCausalLM:
+    if cfg.stage == "d_en_ru_pilot" and not cfg.resume_from:
+        raise SystemExit(
+            "d_en_ru_pilot is BLOCKED: set resume_from to the verified C489 path "
+            "(docs/C489_LINK.md). Silent random-init fallback is forbidden for this stage."
+        )
     if cfg.resume_from and (Path(cfg.resume_from) / "config.json").exists():
         model = ShinraForCausalLM.from_pretrained(cfg.resume_from, torch_dtype=torch.bfloat16)
     elif cfg.base_from and cfg.stage in {"sft", "dpo"}:
@@ -176,25 +181,38 @@ def save_checkpoint(
 
 @torch.no_grad()
 def eval_heldout_ce(model, loader, max_batches: int = 32) -> dict:
+    # Token-weighted heldout_ce = sum(CE_i * n_i) / sum(n_i), n_i = post-shift targets.
+    # Single-pass: forward WITHOUT labels (logits only, no internal CE), then one
+    # compute_loss_parts(logits, labels). Forward's outputs.loss is ignored here
+    # to avoid double CE/logsumexp on the same logits.
     model.eval()
-    losses: list[float] = []
+    ce_weighted = 0.0
+    z_weighted = 0.0
     tokens = 0
     for i, batch in enumerate(loader):
         if i >= max_batches:
             break
+        labels = batch["labels"]
+        n = count_target_tokens_post_shift(labels)
+        if n <= 0:
+            continue
         outputs = model(
             input_ids=batch["input_ids"],
             attention_mask=batch["attention_mask"],
-            labels=batch["labels"],
             use_cache=False,
         )
-        losses.append(float(outputs.loss.detach().cpu()))
-        tokens += count_label_tokens(batch["labels"])
+        base = model.module if hasattr(model, "module") else model
+        parts = base.compute_loss_parts(outputs.logits, labels)
+        ce_weighted += float(parts["train_ce"]) * n
+        z_weighted += float(parts["z_loss"]) * n
+        tokens += n
     model.train()
-    if not losses:
-        return {"eval_loss": None, "eval_tokens": 0}
-    avg = sum(losses) / len(losses)
-    return {"eval_loss": avg, "eval_ppl": math.exp(min(avg, 20)), "eval_tokens": tokens}
+    if not tokens:
+        return {"eval_loss": None, "heldout_ce": None, "z_loss": None, "eval_tokens": 0, "counter_version": COUNTER_VERSION}
+    heldout_ce = ce_weighted / tokens
+    z_loss = z_weighted / tokens
+    total = heldout_ce + z_loss
+    return {"eval_loss": total, "heldout_ce": heldout_ce, "z_loss": z_loss, "eval_ppl": math.exp(min(heldout_ce, 20)), "eval_tokens": tokens, "counter_version": COUNTER_VERSION}
 
 
 def _shard_ckpt_extra(
@@ -357,6 +375,7 @@ def run_lm_training(cfg: TrainConfig) -> dict:
     exhausted = dataset_index >= n_sequences
     killed = False
     consumed_trace: list[int] = []
+    consumed_targets_v1 = 0
     microbatches_in_group = 0
     overshoot_tokens = 0
 
@@ -392,7 +411,9 @@ def run_lm_training(cfg: TrainConfig) -> dict:
             scheduler.step()
             optimizer.zero_grad(set_to_none=True)
         batch_tokens = count_label_tokens(batch["labels"])
+        batch_targets_v1 = count_target_tokens_post_shift(batch["labels"])
         consumed += batch_tokens
+        consumed_targets_v1 += batch_targets_v1
         if cfg.record_consumed_trace:
             consumed_trace.append(consumed)
         microbatches_in_group += 1
@@ -419,14 +440,27 @@ def run_lm_training(cfg: TrainConfig) -> dict:
                 lr = scheduler.get_last_lr()[0]
                 nan_flag = not math.isfinite(avg)
                 entropy = last_token_entropy(outputs.logits)
+                # Train split, computed from already-available logits (no extra forward;
+                # +1 CE/logsumexp on logging steps only, ~1/10 steps overhead).
+                # Stop-limit stays on legacy honest `consumed` (pre-shift); v1 is parallel.
+                try:
+                    base = accelerator.unwrap_model(model)
+                    _parts = base.compute_loss_parts(outputs.logits, batch["labels"])
+                    train_ce_avg, z_avg = float(_parts["train_ce"]), float(_parts["z_loss"])
+                except Exception:
+                    train_ce_avg, z_avg = avg, 0.0
                 remaining = None
                 if cfg.max_tokens > 0:
                     remaining = max(cfg.max_tokens - consumed, 0)
                 metrics = {
                     "loss": avg,
+                    "train_ce": train_ce_avg,
+                    "z_loss": z_avg,
                     "ppl": ppl,
                     "lr": lr,
                     "consumed_tokens": consumed,
+                    "consumed_targets_v1": consumed_targets_v1,
+                    "counter_version": COUNTER_VERSION,
                     "tokens_per_sec": tps,
                     "step": step,
                     "nan": int(nan_flag),
