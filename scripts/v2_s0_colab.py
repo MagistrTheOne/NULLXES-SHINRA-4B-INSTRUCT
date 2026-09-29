@@ -31,6 +31,7 @@ def main() -> None:
     parser.add_argument("--records-per-shard", type=int, default=8192)
     parser.add_argument("--max-shards", type=int, default=1024)
     parser.add_argument("--max-tokens", type=int, default=None)
+    parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--fake-tokenizer", action="store_true")
     parser.add_argument("--dry-hardware", action="store_true")
     args = parser.parse_args()
@@ -77,6 +78,8 @@ def main() -> None:
     ]
     if args.max_tokens is not None:
         cmd.extend(["--max-tokens", str(args.max_tokens)])
+    if args.max_steps is not None:
+        cmd.extend(["--max-steps", str(args.max_steps)])
     if args.fake_tokenizer:
         cmd.append("--fake-tokenizer")
     env = os.environ.copy()

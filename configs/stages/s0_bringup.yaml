@@ -3,7 +3,7 @@ stage: s0
 cumulative_tokens: 20000000
 new_tokens: 20000000
 max_tokens: 20000000
-max_steps: 1221
+max_steps: 1400
 mix:
   synth: 1.0
   natural: 0.0

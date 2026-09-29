@@ -104,7 +104,7 @@ python -m data.data_v1.phase_b --mode fixture --input tests/fixtures/data_v1/pha
 | structured | 3% |
 | EN/RU balance buffer | 2% |
 
-`max_steps` must use honest-token pad slack ≥15% (S0: 1221 steps ≈ 18.0M honest vs 20M target).
+`max_steps` must cover **honest** tokens, not packed. 1221 packed steps ≈ 18.0M honest; 20M honest needs ~1358. S0 yaml `max_steps: 1400`.
 
 ---
 
