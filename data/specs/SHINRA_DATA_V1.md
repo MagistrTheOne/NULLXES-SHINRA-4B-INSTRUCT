@@ -82,6 +82,9 @@ Allowlist: [`SHINRA_DATA_V1_SOURCES.md`](SHINRA_DATA_V1_SOURCES.md) + [`sources.
 python -m data.data_v1.phase_b --mode fixture --input tests/fixtures/data_v1/phase_b/ok
 # real canary (later, after local slices + content_sha256):
 # python -m data.data_v1.phase_b --mode canary --tokenizer tokenizer/artifacts/tokenizer.json --input <local>
+# Phase C pack (train closed):
+# python -m data.data_v1.phase_c pack --input <jsonl> --output /tmp/phase_c --tokenizer tokenizer/artifacts/tokenizer.json
+# python -m data.data_v1.phase_c train   # exits 2; not authorized
 ```
 
 `scripts/validate_data_v1_phase_a.py` is a **second invocation path** of the Phase A contract, not an independent auditor.
@@ -113,9 +116,15 @@ python -m data.data_v1.phase_b --mode fixture --input tests/fixtures/data_v1/pha
 ```text
 A  CONTRACT        0 GPU   taxonomy/schema/probes/SHA/validators
 B  DATA CANARY     no train ≤20M ingest + contamination + distribution
-C  LEARNING PILOT  20–50M from frozen S0 ckpt, same PROBE V1
+C  LEARNING PILOT  8M target / 10M ceiling, FineWeb-Edu EN, resume S0 1358
 D  S1              +230M after explicit authorization
 ```
+
+Phase C is a learning-pilot, not a language stage. Target 8,000,000 honest
+consumed tokens; 10,000,000 is a hard ceiling. Resume only from
+`s0/final/step-00001358`. Pack `[BOS=1] + body + [END_OF_TEXT=18]`. Frozen
+PROBE V1 before/after; compare delta. `s1_language.yaml` closed. Hub closed.
+Train not authorized until the next GPU session.
 
 Phase C delta: same instrument, two JSON score files. Not impressions.
 
@@ -134,4 +143,6 @@ Colab: `/content` scratch only. Do not Drive-mount the hot path.
 - [x] Source governance: `fineweb-edu-en` + `fineweb2-ru` listed, acquisition still closed
 - [x] FineWeb-Edu EN frozen revision + `single_frozen_file` shard plan
 - [ ] Local bounded slices + `content_sha256` (receipt on scratch; git allowlist stays unresolved)
-- [ ] Phase C/D authorization
+- [x] Phase C packer CPU contract (`data/data_v1/phase_c.py`); train still closed
+- [ ] Phase C GPU train (October; 8M honest from S0 1358)
+- [ ] Phase D authorization
