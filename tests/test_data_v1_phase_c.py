@@ -1,4 +1,4 @@
-"""Phase C packer CPU contract. Train stays closed."""
+"""Phase C packer CPU contract."""
 
 from __future__ import annotations
 
@@ -64,15 +64,16 @@ def test_frozen_pilot_numbers():
     assert SOURCE_ID == "fineweb-edu-en"
     assert RESUME_RELATIVE == "s0/final/step-00001358"
     assert RESUME_STEP == 1358
-    assert TRAIN_AUTHORIZED is False
+    assert TRAIN_AUTHORIZED is True
     assert S1_STATUS == "closed"
     assert HUB_STATUS == "closed"
 
 
-def test_train_refuses():
-    with pytest.raises(PhaseCError, match="not authorized"):
+def test_train_cli_is_colab_runner_not_this_module():
+    with pytest.raises(PhaseCError, match="v2_c_colab"):
         run_train()
     assert main(["train"]) == 2
+    assert (ROOT / "scripts" / "v2_c_colab.py").is_file()
 
 
 def test_s1_yaml_untouched_and_not_referenced():
@@ -103,7 +104,7 @@ def test_pack_hits_target_and_writes_bin(tmp_path: Path):
     ids = report["shard"]
     assert ids is not None
     receipt = json.loads((out / "phase_c.pack.json").read_text(encoding="utf-8"))
-    assert receipt["train_authorized"] is False
+    assert receipt["train_authorized"] is True
     assert receipt["s1"] == "closed"
 
 

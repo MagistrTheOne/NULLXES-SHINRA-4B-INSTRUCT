@@ -149,3 +149,48 @@ def test_resume_rejects_shard_sha_mismatch(tmp_path: Path):
     write_cursor(out / "run", cursor)
     with pytest.raises(ShardIdentityError):
         run_rolling_stage(_args(tmp_path, output=out, max_tokens=192, records_per_shard=20))
+
+
+def test_stage_c_refuses_synth_produce(tmp_path: Path):
+    with pytest.raises(DrumError, match="refuses synth"):
+        run_rolling_stage(
+            _args(
+                tmp_path,
+                output=tmp_path / "out",
+                stage_config="tests/fixtures/tiny_c.yaml",
+                max_tokens=64,
+                records_per_shard=8,
+            )
+        )
+
+
+def test_stage_c_trains_prepacked_jsonl(tmp_path: Path):
+    from data.data_v1.phase_c import pack_corpus
+
+    jsonl = tmp_path / "docs.jsonl"
+    lines = []
+    for i in range(20):
+        text = " ".join(f"tok{i}-{j}" for j in range(12))
+        lines.append(json.dumps({"text": text, "source_id": "fineweb-edu-en"}))
+    jsonl.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    pack_corpus(
+        input_path=jsonl,
+        output_dir=tmp_path / "corpus" / "c",
+        encode=fake_encode,
+        sequence_length=32,
+        target_honest_tokens=64,
+        ceiling_honest_tokens=256,
+    )
+    result = run_rolling_stage(
+        _args(
+            tmp_path,
+            output=tmp_path / "out",
+            stage_config="tests/fixtures/tiny_c.yaml",
+            max_tokens=64,
+            records_per_shard=8,
+            max_shards=1,
+        )
+    )
+    assert result["done"] is True
+    assert result["consumed_tokens"] >= 64
+    assert result["stage"] == "c"

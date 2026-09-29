@@ -1,0 +1,50 @@
+# Phase C learning-pilot: 8M honest FineWeb-Edu EN from S0 step-00001358.
+# Not s1_language.yaml. Hub weights closed.
+stage: c
+cumulative_tokens: 28000000
+new_tokens: 8000000
+max_tokens: 8000000
+max_steps: 650
+mix:
+  synth: 0.0
+  natural: 1.0
+
+optimizer:
+  name: adamw_torch_fused
+  learning_rate: 3.0e-4
+  betas: [0.9, 0.95]
+  eps: 1.0e-8
+  weight_decay: 0.1
+  grad_clip: 1.0
+
+scheduler:
+  name: wsd
+  warmup_steps: 40
+  stable_ratio: 0.80
+  min_lr_ratio: 0.10
+
+batch:
+  sequence_length: 2048
+  micro_batch_size: 1
+  gradient_accumulation_steps: 8
+  num_processes: 1
+  tokens_per_step: 16384
+
+training:
+  seed: 42
+  logging_steps: 10
+  eval_steps: 50
+  save_steps: 100
+  gradient_checkpointing: true
+  dataloader_num_workers: 2
+  max_tokens: 8000000
+  attention_implementation: sdpa
+  allow_replay: false
+
+hardware:
+  gpu: NVIDIA RTX PRO 6000 Blackwell
+  gpu_class: G4
+  node_gpus: 1
+  precision: bf16
+  flash_attention: false
+  fsdp: false

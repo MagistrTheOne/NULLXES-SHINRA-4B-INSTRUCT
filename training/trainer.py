@@ -282,16 +282,21 @@ def run_lm_training(cfg: TrainConfig) -> dict:
         state_file = Path(cfg.resume_from) / "trainer_state.pt"
         if state_file.exists():
             resume_blob = load_trainer_state(state_file)
-            consumed = int(resume_blob.get("consumed_tokens", 0))
-            step = int(resume_blob.get("step", 0))
-            if cfg.active_shard_id:
-                same_shard = (
-                    resume_blob.get("shard_id") == cfg.active_shard_id
-                    and resume_blob.get("shard_sha256") == cfg.active_shard_sha256
-                )
-                dataset_index = int(resume_blob.get("dataset_index", 0)) if same_shard else 0
+            if getattr(cfg, "fresh_stage_ledger", False):
+                consumed = 0
+                step = 0
+                dataset_index = 0
             else:
-                dataset_index = int(resume_blob.get("dataset_index", 0))
+                consumed = int(resume_blob.get("consumed_tokens", 0))
+                step = int(resume_blob.get("step", 0))
+                if cfg.active_shard_id:
+                    same_shard = (
+                        resume_blob.get("shard_id") == cfg.active_shard_id
+                        and resume_blob.get("shard_sha256") == cfg.active_shard_sha256
+                    )
+                    dataset_index = int(resume_blob.get("dataset_index", 0)) if same_shard else 0
+                else:
+                    dataset_index = int(resume_blob.get("dataset_index", 0))
     if dataset_index > n_sequences:
         raise ShardIdentityError(f"dataset_index {dataset_index} > n_sequences {n_sequences}")
     if dataset_index > 0:
@@ -327,12 +332,13 @@ def run_lm_training(cfg: TrainConfig) -> dict:
     if resume_blob is not None:
         if resume_blob.get("optimizer") is not None:
             optimizer.load_state_dict(resume_blob["optimizer"])
-        if resume_blob.get("scheduler") is not None:
-            scheduler.load_state_dict(resume_blob["scheduler"])
-        if resume_blob.get("rng") is not None:
-            torch.set_rng_state(resume_blob["rng"])
-        if resume_blob.get("cuda_rng") is not None and use_cuda:
-            torch.cuda.set_rng_state_all(resume_blob["cuda_rng"])
+        if not getattr(cfg, "fresh_stage_ledger", False):
+            if resume_blob.get("scheduler") is not None:
+                scheduler.load_state_dict(resume_blob["scheduler"])
+            if resume_blob.get("rng") is not None:
+                torch.set_rng_state(resume_blob["rng"])
+            if resume_blob.get("cuda_rng") is not None and use_cuda:
+                torch.cuda.set_rng_state_all(resume_blob["cuda_rng"])
 
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     cfg.run_dir.mkdir(parents=True, exist_ok=True)

@@ -1,8 +1,9 @@
-"""Phase C learning-pilot packer. CPU contract only. Train is closed.
+"""Phase C learning-pilot packer. GPU train is `scripts/v2_c_colab.py`.
 
 Resume identity is S0 `s0/final/step-00001358`. Source is FineWeb-Edu EN JSONL.
 Pack DNA is `[BOS=1] + body + [END_OF_TEXT=18]`. Honest tokens are labels != -100.
-This module does not train, does not load Hub weights, and does not touch S1.
+This module packs FineWeb-Edu EN JSONL. GPU train is `scripts/v2_c_colab.py`.
+Does not load Hub weights and does not touch S1.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ CEILING_HONEST_TOKENS = 10_000_000
 SEQUENCE_LENGTH = 2048
 RESUME_RELATIVE = "s0/final/step-00001358"
 RESUME_STEP = 1358
-TRAIN_AUTHORIZED = False
+TRAIN_AUTHORIZED = True
 S1_STATUS = "closed"
 HUB_STATUS = "closed"
 
@@ -48,7 +49,7 @@ class PhaseCError(ValueError):
 
 
 def assert_train_closed() -> None:
-    raise PhaseCError("Phase C train is not authorized")
+    raise PhaseCError("Phase C train runs via scripts/v2_c_colab.py")
 
 
 def resolve_corpus_jsonl(path: str | Path) -> Path:
@@ -363,7 +364,7 @@ def run_train(*_args: Any, **_kwargs: Any) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="SHINRA DATA V1 Phase C packer (train closed)")
+    parser = argparse.ArgumentParser(description="SHINRA DATA V1 Phase C packer")
     sub = parser.add_subparsers(dest="cmd", required=True)
     pack_p = sub.add_parser("pack", help="Deterministic rolling pack from local FineWeb-Edu JSONL")
     pack_p.add_argument("--input", required=True)
@@ -372,10 +373,10 @@ def main(argv: list[str] | None = None) -> int:
     pack_p.add_argument("--sequence-length", type=int, default=SEQUENCE_LENGTH)
     pack_p.add_argument("--target", type=int, default=TARGET_HONEST_TOKENS)
     pack_p.add_argument("--ceiling", type=int, default=CEILING_HONEST_TOKENS)
-    sub.add_parser("train", help="Refuses. Phase C train is not authorized.")
+    sub.add_parser("train", help="Refuses here. GPU entry is scripts/v2_c_colab.py")
     args = parser.parse_args(argv)
     if args.cmd == "train":
-        print("Phase C train is not authorized", file=sys.stderr)
+        print("Phase C GPU train is scripts/v2_c_colab.py", file=sys.stderr)
         return 2
     try:
         report = pack_from_tokenizer(

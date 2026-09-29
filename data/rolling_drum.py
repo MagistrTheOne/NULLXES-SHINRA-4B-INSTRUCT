@@ -62,11 +62,15 @@ def read_cursor(run_dir: Path) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def resolve_checkpoint(output_dir: Path, resume_from: str | Path | None) -> Path | None:
-    if resume_from:
-        path = Path(resume_from)
-        if (path / "trainer_state.pt").exists():
-            return path
+def _checkpoint_under(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def local_checkpoint(output_dir: Path) -> Path | None:
     cursor = read_cursor(Path(output_dir) / "run")
     listed = cursor.get("checkpoint_dir")
     if listed and (Path(listed) / "trainer_state.pt").exists():
@@ -79,6 +83,17 @@ def resolve_checkpoint(output_dir: Path, resume_from: str | Path | None) -> Path
     steps = sorted(p for p in Path(output_dir).glob("step-*") if p.is_dir() and (p / "trainer_state.pt").exists())
     if steps:
         return steps[-1]
+    return None
+
+
+def resolve_checkpoint(output_dir: Path, resume_from: str | Path | None) -> Path | None:
+    local = local_checkpoint(output_dir)
+    if local:
+        return local
+    if resume_from:
+        path = Path(resume_from)
+        if (path / "trainer_state.pt").exists():
+            return path
     return None
 
 
@@ -127,6 +142,7 @@ def _train_ns(
         stop_after_steps=stop_after_steps,
         record_consumed_trace=record_consumed_trace,
         force_cpu=bool(getattr(args, "force_cpu", False)),
+        fresh_stage_ledger=bool(getattr(args, "fresh_stage_ledger", False)),
     )
 
 
@@ -208,7 +224,7 @@ def run_rolling_stage(args: Any) -> dict[str, Any]:
         encode = lambda text: encode_with_tokenizer(tok, text)
         bos_id, end_id, pad_id = resolve_pretrain_special_ids(tok)
 
-    if not list_shard_bins(heldout_dir) and int(getattr(args, "heldout_records", 0) or 0) > 0:
+    if stage != "c" and not list_shard_bins(heldout_dir) and int(getattr(args, "heldout_records", 0) or 0) > 0:
         build_packed_shard(
             stage=stage,
             shard_index=0,
@@ -225,6 +241,8 @@ def run_rolling_stage(args: Any) -> dict[str, Any]:
         )
 
     checkpoint = resolve_checkpoint(output_dir, getattr(args, "resume_from", None))
+    fresh_stage_ledger = bool(checkpoint) and not _checkpoint_under(Path(checkpoint), Path(output_dir))
+    args.fresh_stage_ledger = fresh_stage_ledger
     cursor = read_cursor(run_dir)
     shard_index = int(cursor.get("shard_index", 0))
     start_index = int(cursor.get("next_record_start", 0))
@@ -261,6 +279,8 @@ def run_rolling_stage(args: Any) -> dict[str, Any]:
                 active_sha = meta["sha256"]
                 shard_index = int(meta["shard_id"].split("-")[1])
         if need_new:
+            if stage == "c":
+                raise DrumError("stage c refuses synth produce; pack FineWeb JSONL first")
             if shard_index >= max_shards:
                 raise DrumError(
                     f"max_shards={max_shards} reached with consumed_tokens={consumed} < target={target}"
@@ -289,6 +309,8 @@ def run_rolling_stage(args: Any) -> dict[str, Any]:
             meta = verify_shard(assert_single_shard(train_dir))
             active_id = meta["shard_id"]
             active_sha = meta["sha256"]
+            if produced == 0:
+                produced += int(meta.get("produced_tokens") or 0)
 
         bin_path = train_dir / f"{active_id}.bin"
         update_shard_status(bin_path, "active", ledger=ledger)

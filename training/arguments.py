@@ -53,6 +53,7 @@ class TrainConfig:
     stop_after_steps: int | None
     record_consumed_trace: bool
     force_cpu: bool
+    fresh_stage_ledger: bool = False
 
 
 def load_yaml(path: Path) -> dict:
@@ -157,4 +158,5 @@ def build_train_config(stage: str, args: argparse.Namespace) -> TrainConfig:
         stop_after_steps=getattr(args, "stop_after_steps", None),
         record_consumed_trace=bool(getattr(args, "record_consumed_trace", False)),
         force_cpu=bool(getattr(args, "force_cpu", False)),
+        fresh_stage_ledger=bool(getattr(args, "fresh_stage_ledger", False)),
     )

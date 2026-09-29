@@ -115,3 +115,66 @@ def test_token_budget_does_not_cut_mid_accumulation(tmp_path: Path):
     assert result["consumed_tokens"] >= 20
     assert result["overshoot_tokens"] == result["consumed_tokens"] - 20
     assert len(result["consumed_trace"]) == 2
+
+
+def test_fresh_stage_ledger_resets_consumed_from_prior_ckpt(tmp_path: Path):
+    data = tmp_path / "data"
+    build_packed_shard(
+        stage="s0",
+        shard_index=0,
+        seed=0,
+        record_count=40,
+        encode=_encode,
+        output_dir=data,
+        sequence_length=32,
+    )
+
+    def _ns(out: Path, **over):
+        ns = SimpleNamespace(
+            config="tests/fixtures/tiny_shinra.yaml",
+            train_config="tests/fixtures/tiny_s0.yaml",
+            data_dir=str(data),
+            tokenizer=str(tmp_path / "missing-tok"),
+            output_dir=str(out),
+            resume_from=None,
+            micro_batch_size=1,
+            gradient_accumulation_steps=1,
+            learning_rate=3e-4,
+            max_steps=1000,
+            max_tokens=64,
+            sequence_length=32,
+            attention_implementation="eager",
+            wandb_project=None,
+            wandb_run_name=None,
+            seed=0,
+            run_dir=str(out / "run"),
+            heldout_dir=None,
+            allow_replay=False,
+            force_cpu=True,
+        )
+        for key, value in over.items():
+            setattr(ns, key, value)
+        return ns
+
+    first_out = tmp_path / "first"
+    cfg = build_train_config("s0", _ns(first_out))
+    cfg.allow_replay = False
+    cfg.dataloader_num_workers = 0
+    cfg.eval_steps = 0
+    cfg.save_steps = 0
+    first = run_lm_training(cfg)
+    assert first["consumed_tokens"] >= 64
+
+    second_out = tmp_path / "second"
+    ns = _ns(second_out, resume_from=first["checkpoint_dir"], max_tokens=32)
+    cfg2 = build_train_config("c", ns)
+    cfg2.allow_replay = False
+    cfg2.dataloader_num_workers = 0
+    cfg2.eval_steps = 0
+    cfg2.save_steps = 0
+    cfg2.fresh_stage_ledger = True
+    cfg2.force_cpu = True
+    second = run_lm_training(cfg2)
+    assert second["consumed_tokens"] >= 32
+    assert second["consumed_tokens"] < first["consumed_tokens"]
+    assert second["step"] < first["step"] or second["consumed_tokens"] <= 64

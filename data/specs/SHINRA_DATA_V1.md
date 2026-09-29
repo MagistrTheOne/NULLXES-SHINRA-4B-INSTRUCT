@@ -124,7 +124,7 @@ Phase C is a learning-pilot, not a language stage. Target 8,000,000 honest
 consumed tokens; 10,000,000 is a hard ceiling. Resume only from
 `s0/final/step-00001358`. Pack `[BOS=1] + body + [END_OF_TEXT=18]`. Frozen
 PROBE V1 before/after; compare delta. `s1_language.yaml` closed. Hub closed.
-Train not authorized until the next GPU session.
+GPU entry: `python scripts/v2_c_colab.py`.
 
 Phase C delta: same instrument, two JSON score files. Not impressions.
 
@@ -143,6 +143,6 @@ Colab: `/content` scratch only. Do not Drive-mount the hot path.
 - [x] Source governance: `fineweb-edu-en` + `fineweb2-ru` listed, acquisition still closed
 - [x] FineWeb-Edu EN frozen revision + `single_frozen_file` shard plan
 - [ ] Local bounded slices + `content_sha256` (receipt on scratch; git allowlist stays unresolved)
-- [x] Phase C packer CPU contract (`data/data_v1/phase_c.py`); train still closed
-- [ ] Phase C GPU train (October; 8M honest from S0 1358)
+- [x] Phase C packer CPU contract (`data/data_v1/phase_c.py`)
+- [x] Phase C GPU runner (`scripts/v2_c_colab.py`); 8M honest from S0 1358
 - [ ] Phase D authorization
