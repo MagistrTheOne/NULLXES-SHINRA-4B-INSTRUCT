@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Mapping
+from pathlib import Path
 
 import torch
 import torch.nn.functional as F
@@ -81,11 +82,9 @@ EVAL_GATE_CONTRACT = {
 }
 
 
-def _gate_artifact_path(run_dir, kind: str, ckpt) -> "object":
-    from pathlib import Path as _Path
-
+def _gate_artifact_path(run_dir: str | Path, kind: str, ckpt: str | Path) -> Path:
     name = str(ckpt).replace("/", "_").replace("\\", "_").strip("_")
-    return _Path(run_dir) / "eval" / f"{kind}_{name}.json"
+    return Path(run_dir) / "eval" / f"{kind}_{name}.json"
 
 
 def check_baseline_gate(run_dir, ckpt) -> dict:

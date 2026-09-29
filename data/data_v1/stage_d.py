@@ -161,9 +161,12 @@ def build_stage_d_corpus(
     pools: dict[str, list[list[int]]] = {"en": [], "ru": []}
     heldout_pools: dict[str, list[list[int]]] = {"en": [], "ru": []}
     seen: set[str] = set()
-    stats = {"en_docs": 0, "ru_docs": 0, "dups": 0, "c_excluded": 0, "heldout_docs": 0}
-    for lang, path in (("en", en_path), ("ru", ru_path)):
-        for text in iter_slice_docs(path):
+    stats = {"en_docs": 0, "ru_docs": 0, "dups": 0, "c_excluded": 0, "heldout_docs": 0, "wrap_skipped": 0}
+    for lang, (manifest, path) in (("en", (en_man, en_path)), ("ru", (ru_man, ru_path))):
+        doc_start = int(manifest.get("doc_start", 0) or 0)
+        doc_end = manifest.get("doc_end")
+        doc_end = int(doc_end) if doc_end is not None else None
+        for text in iter_slice_docs(path, start=doc_start, end=doc_end):
             chash = content_hash(text)
             if chash in seen:
                 stats["dups"] += 1
@@ -178,6 +181,7 @@ def build_stage_d_corpus(
             try:
                 wrapped = wrap_pretrain_document(body, bos_id=PRETRAIN_BOS_ID, end_id=PRETRAIN_END_OF_TEXT_ID)
             except Exception:
+                stats["wrap_skipped"] += 1
                 continue
             stats[f"{lang}_docs"] += 1
             if _heldout_bucket(chash):
@@ -185,6 +189,13 @@ def build_stage_d_corpus(
                 stats["heldout_docs"] += 1
             else:
                 pools[lang].append(wrapped)
+
+    # De-correlate source-file order deterministically; seed is real provenance.
+    import random as _random
+
+    _rng = _random.Random(seed)
+    _rng.shuffle(pools["en"])
+    _rng.shuffle(pools["ru"])
 
     # Mix 75/25 by honest tokens: always extend the language below its target share.
     train_wrapped: list[list[int]] = []
@@ -242,8 +253,8 @@ def build_stage_d_corpus(
             "n_sequences": meta["n_sequences"], "honest_tokens": h_honest, "sha256": meta["sha256"],
         }
     total_held_seq = sum(v["n_sequences"] for v in held_manifest["langs"].values())
-    if not (HELDOUT_MIN_SEQ <= total_held_seq <= HELDOUT_MAX_SEQ * 4):
-        raise StageDError(f"heldout budget violated: {total_held_seq} sequences")
+    if not (HELDOUT_MIN_SEQ <= total_held_seq <= HELDOUT_MAX_SEQ):
+        raise StageDError(f"heldout budget violated: {total_held_seq} sequences (budget {HELDOUT_MIN_SEQ}-{HELDOUT_MAX_SEQ})")
     if held_manifest["langs"]["en"]["n_sequences"] < HELDOUT_EN_MIN_SEQ:
         raise StageDError("EN held-out below minimum 48 seq")
     if held_manifest["langs"]["ru"]["n_sequences"] < HELDOUT_RU_MIN_SEQ:
@@ -256,6 +267,7 @@ def build_stage_d_corpus(
         "en_honest": honest_lang["en"], "ru_honest": honest_lang["ru"],
         "train_shard": {"path": train_meta["path"], "sha256": train_meta["sha256"], "n_sequences": train_meta["n_sequences"]},
         "heldout": held_manifest, "dedup": {"exact_dups": stats["dups"]}, "c_excluded": stats["c_excluded"],
+        "wrap_skipped": stats["wrap_skipped"],
         "tokenizer": str(tokenizer_path), "seed": seed, "packer": PACKER_VERSION,
     }
     (out_train / "stage_d.build.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -271,14 +283,27 @@ def validate_stage_d_ready(train_dir: str | Path, heldout_dir: str | Path) -> di
         raise StageDError(f"D train corpus not built: {build_path} missing (run stage_d build offline)")
     if not held_path.is_file():
         raise StageDError(f"D held-out missing: {held_path} missing")
-    if not list(train_dir.glob("shard-*.bin")):
-        raise StageDError("D train bins missing")
-    for lang in ("en", "ru"):
-        if not (heldout_dir / f"{lang}.bin").is_file():
-            raise StageDError(f"D held-out {lang}.bin missing (no EN fallback for RU)")
     report = json.loads(build_path.read_text(encoding="utf-8"))
     if report.get("status") != "built":
         raise StageDError("stage_d.build.json status != built")
+    # Bins must match the manifests: a swapped bin after build is a hard block.
+    # (write_shard_bin stores raw hex in meta["sha256"].)
+    train_bins = sorted(train_dir.glob("shard-*.bin"))
+    if not train_bins:
+        raise StageDError("D train bins missing")
+    expected_train = (report.get("train_shard") or {}).get("sha256")
+    for bin_path in train_bins:
+        if expected_train and bin_path.name == (report.get("train_shard") or {}).get("path"):
+            if sha256_file(bin_path) != expected_train:
+                raise StageDError(f"D train bin swapped post-build: {bin_path.name}")
+    held_manifest = json.loads(held_path.read_text(encoding="utf-8"))
+    for lang in ("en", "ru"):
+        bin_path = heldout_dir / f"{lang}.bin"
+        if not bin_path.is_file():
+            raise StageDError(f"D held-out {lang}.bin missing (no EN fallback for RU)")
+        expected = ((held_manifest.get("langs") or {}).get(lang) or {}).get("sha256")
+        if expected and sha256_file(bin_path) != expected:
+            raise StageDError(f"D held-out {lang}.bin swapped post-build")
     return report
 
 

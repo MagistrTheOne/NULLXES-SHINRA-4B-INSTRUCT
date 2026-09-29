@@ -8,7 +8,6 @@ from .trainer import run_lm_training
 
 def main() -> None:
     import argparse
-    import sys
 
     parser = argparse.ArgumentParser(description="Pretrain NULLXES SHINRA-4B-BASE (ARCHIVE)")
     add_common_args(parser)
