@@ -46,7 +46,7 @@ python -m tokenizer.analyze_tokenizer --corpus tokenizer/corpus --parquet-dir da
 
 Исключено: TinyStories, third-party instruction dumps, FineWeb-Edu 1.3T, abstract-only arXiv.
 
-Веса: `configs/data_mix.yaml`, `data/sources.py`.
+Веса (v1-архив, файл удалён из активного дерева): `data/sources.py`, см. `data/specs/V2_UPGRADE_DATA_SPEC.md`.
 
 ## SFT v1 — ядро, не «ещё один чатик»
 

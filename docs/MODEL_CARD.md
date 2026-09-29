@@ -94,7 +94,7 @@ SHINRA_PRETRAIN_V1: 40% FineWeb-Edu, 20% code (python-edu + licensed Stack), 15%
 **DPO**  
 40% UltraFeedback, 30% Python code preference, 20% instruction/tool mix, 10% format (Orca), β = 0.10.
 
-Exact mix weights live in `configs/data_mix.yaml`. Tokenizer trained on a ≥10B-character representative sample of the same mix.
+Exact mix weights lived in `configs/data_mix.yaml` (removed from active tree; see `data/specs/V2_UPGRADE_DATA_SPEC.md`).
 
 ## Intended use
 

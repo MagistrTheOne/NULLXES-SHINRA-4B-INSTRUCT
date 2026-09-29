@@ -11,8 +11,9 @@
 
 Нужен `main` ≥ **`90c5e9a`** (`data/rolling_drum.py`).
 
-Ноутбук барабана: [`notebooks/SHINRA_V2_S0.ipynb`](../notebooks/SHINRA_V2_S0.ipynb)  
-Init-only (не S0): [`notebooks/SHINRA_COLAB.ipynb`](../notebooks/SHINRA_COLAB.ipynb)
+Ноутбук барабана: [`notebooks/SHINRA_V2_S0.ipynb`](../notebooks/SHINRA_V2_S0.ipynb)
+Init-only (не S0): `python -m scripts.phase01_bringup --config configs/architecture_v2.yaml`
+(старый `notebooks/SHINRA_COLAB.ipynb` удалён из активного дерева).
 
 ```bash
 pip install -e .

@@ -15,7 +15,7 @@ scripts/v2_c_colab.py
 
 Приоритет: CLI (`--max-tokens`, `--max-steps`, `--sequence-length`, `--attention-implementation`, …)
 > stage YAML (`configs/stages/*.yaml`)
-> root YAML (`--config`, сейчас `configs/shinra_4b.yaml`).
+> root YAML (`--config`, теперь `configs/architecture_v2.yaml`; legacy `shinra_4b.yaml` удалён).
 
 ## 2. Что реально доходит до модели и trainer (по коду)
 

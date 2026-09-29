@@ -118,7 +118,7 @@ docs/             invariant, colab, architecture
 notebooks/        SHINRA_V2_S0.ipynb
 ```
 
-Кластерные `scripts/train_pretrain.sh`, pack 8192, extra `flash` — не этот цикл. Не запускать их вместо барабана G4.
+Кластерная A100-цепочка (архив, удалена из активного дерева), pack 8192, extra `flash` — не этот цикл. Активный путь — барабан G4.
 
 ---
 
