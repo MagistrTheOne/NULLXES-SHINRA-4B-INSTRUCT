@@ -79,7 +79,7 @@ Materialize a **bounded local jsonl slice** outside this engine. Sidecar must no
 |---|---|---|
 | fixture dry-run | whitespace **allowed** | engine tests only |
 | real corpus canary | **tokenizer required** | `encode(text, add_special_tokens=False)` |
-| canary cap | 20_000_000 | tokenizer tokens of the **body** |
+| canary cap | 20_000_000 | tokenizer tokens of the **body**; stop at cap, unread tail is not a fail |
 
 `--mode canary` fails while `materialization.status != materialized` or `content_sha256` is null.
 

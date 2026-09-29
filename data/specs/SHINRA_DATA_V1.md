@@ -70,7 +70,7 @@ RAW (local path)
  → body tokens:
       fixture dry-run: whitespace allowed
       real canary: tokenizer required, `add_special_tokens=False`, ids 2/4–17 rejected
- → hard cap ≤ 20_000_000 **tokenizer** tokens (canary)
+ → hard cap ≤ 20_000_000 **tokenizer** tokens (canary); stop at cap, do not tokenize the unread tail
  → JSON report
 ```
 

@@ -121,8 +121,42 @@ def test_token_cap_cannot_be_raised():
 def test_token_cap_hard_gate():
     report = run_canary(FIXTURES / "ok" / "ok.jsonl", max_tokens=5)
     assert report["tokens_kept"] <= 5
+    assert report["over_budget"] == 0
+    assert report["documents_kept"] == 0
     assert report["status"] == "fail"
-    assert report["over_budget"] >= 1 or report["documents_kept"] == 0
+
+
+def test_token_cap_stops_without_scanning_rest(tmp_path: Path):
+    path = tmp_path / "many.jsonl"
+    rec = {
+        "text": "The clay path dried before noon and the archivist closed the grey ledger.",
+        "source_id": "fixture-canary-en",
+        "source_type": "natural",
+        "domain": "general",
+        "language": "en",
+        "split": "train",
+        "license": {"id": "fixture-local", "redistribution": True},
+        "provenance": {
+            "uri_hash": "sha256:" + "a" * 64,
+            "snapshot": "phase-b-fixture",
+        },
+    }
+    lines = []
+    for i in range(40):
+        item = dict(rec)
+        item["text"] = (
+            "one two three four five six seven"
+            if i == 0
+            else f"Unique canary row {i} copper filings stayed labelled drawer clerk drank water."
+        )
+        lines.append(json.dumps(item, ensure_ascii=False))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    report = run_canary(path, max_tokens=7)
+    assert report["tokens_kept"] == 7
+    assert report["over_budget"] == 0
+    assert report["documents_kept"] == 1
+    assert report["documents_seen"] == 1
+    assert report["status"] == "pass"
 
 
 def test_refuses_remote_source():

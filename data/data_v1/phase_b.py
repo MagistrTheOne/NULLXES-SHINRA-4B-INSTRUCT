@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -210,7 +211,16 @@ def run_canary(
     fingerprints = frozen_probe_fingerprints()
     dedup = CanaryDedup()
     for record in iter_records(root):
+        if report["tokens_kept"] >= max_tokens:
+            break
         report["documents_seen"] += 1
+        if mode == "canary" and report["documents_seen"] % 500 == 0:
+            print(
+                f"canary docs={report['documents_seen']} kept={report['documents_kept']} "
+                f"tokens={report['tokens_kept']}/{max_tokens}",
+                file=sys.stderr,
+                flush=True,
+            )
         try:
             raw = record.get("text", "")
             text = normalize_document(raw if isinstance(raw, str) else "")
@@ -246,9 +256,15 @@ def run_canary(
                 add_reject(report, "near_duplicate")
                 continue
             if report["tokens_kept"] + n_tokens > max_tokens:
-                report["over_budget"] += 1
-                add_reject(report, "over_budget")
-                continue
+                # Cap is a stop, not a full-file scan. Unread tail is not over_budget.
+                if mode == "canary":
+                    print(
+                        f"canary stop at cap tokens={report['tokens_kept']}/{max_tokens} "
+                        f"seen={report['documents_seen']}",
+                        file=sys.stderr,
+                        flush=True,
+                    )
+                break
             bump(report["domains"], sidecar["domain"])
             bump(report["languages"], sidecar["language"])
             bump(report["sources"], sidecar["source_id"])
