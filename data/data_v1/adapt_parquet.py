@@ -9,6 +9,7 @@ from typing import Any
 
 from data.data_v1 import PhaseBError
 from data.data_v1.normalize import contains_raw_url
+from data.data_v1.phase_a import DOMAINS
 from data.data_v1.sources import SOURCE_MAX_MATERIALIZED_BYTES
 
 
@@ -41,6 +42,7 @@ def adapt_parquet_to_jsonl(
     *,
     source_id: str,
     snapshot: str,
+    domain: str = "general",
     max_bytes: int = SOURCE_MAX_MATERIALIZED_BYTES,
 ) -> dict[str, Any]:
     """Write local JSONL. Drops FineWeb `url`; hashes it. Body text may contain http(s)."""
@@ -63,6 +65,8 @@ def adapt_parquet_to_jsonl(
     names = set(pf.schema_arrow.names)
     if "text" not in names:
         raise AdapterError("parquet missing text column")
+    if domain not in DOMAINS:
+        raise AdapterError("adapter domain not in frozen enum")
     try:
         with tmp.open("w", encoding="utf-8", newline="\n") as fh:
             for batch in pf.iter_batches():
@@ -75,6 +79,7 @@ def adapt_parquet_to_jsonl(
                         "text": text,
                         "source_id": source_id,
                         "source_type": "natural",
+                        "domain": domain,
                         "language": "en",
                         "split": "train",
                         "license": {"id": "ODC-By-1.0", "redistribution": True},

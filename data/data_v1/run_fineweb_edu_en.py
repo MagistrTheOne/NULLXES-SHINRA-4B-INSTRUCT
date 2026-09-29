@@ -10,7 +10,7 @@ from typing import Any
 from data.data_v1.acquire_hf import acquire_fineweb_edu_en
 from data.data_v1.adapt_parquet import adapt_parquet_to_jsonl
 from data.data_v1.materialize import PRODUCTION_SCRATCH, materialize
-from data.data_v1.plan_fineweb_edu_en import REVISION, SOURCE_ID
+from data.data_v1.plan_fineweb_edu_en import DOMAIN, REVISION, SOURCE_ID
 from data.data_v1.acquisition import PRODUCTION_ACQUISITION_ROOT
 from data.data_v1.sources import load_allowlist
 
@@ -41,6 +41,7 @@ def run_fineweb_edu_en_slice(
         adapter_jsonl,
         source_id=SOURCE_ID,
         snapshot=REVISION,
+        domain=DOMAIN,
     )
     materialized = materialize(
         adapted["path"],

@@ -74,7 +74,30 @@ def _source_id(record: dict[str, Any]) -> str:
     return raw
 
 
-def build_sidecar(text: str, record: dict[str, Any], *, tokens: int) -> dict[str, Any]:
+def _domain_for_record(
+    text: str,
+    record: dict[str, Any],
+    allowed: dict[str, dict[str, Any]] | None,
+) -> str:
+    declared = record.get("domain")
+    if declared is not None:
+        return resolve_domain(text, declared)
+    if allowed is not None:
+        spec = allowed.get(_source_id(record))
+        if spec:
+            ads = spec["allowed_domains"]
+            fallback = "general" if "general" in ads else ads[0]
+            return resolve_domain(text, fallback)
+    return resolve_domain(text, None)
+
+
+def build_sidecar(
+    text: str,
+    record: dict[str, Any],
+    *,
+    tokens: int,
+    allowed: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     source_id = _source_id(record)
     snapshot = "phase-b-local"
     prov_in = record.get("provenance") if isinstance(record.get("provenance"), dict) else {}
@@ -88,7 +111,7 @@ def build_sidecar(text: str, record: dict[str, Any], *, tokens: int) -> dict[str
         "document_id": doc_id,
         "source_id": source_id,
         "source_type": resolve_source_type(record.get("source_type")),
-        "domain": resolve_domain(text, record.get("domain")),
+        "domain": _domain_for_record(text, record, allowed),
         "language": resolve_language(text, record.get("language")),
         "split": resolve_split(record.get("split")),
         "license": {"id": str(license_doc.get("id") or "fixture-local"), "redistribution": bool(license_doc.get("redistribution", True))},
@@ -234,7 +257,7 @@ def run_canary(
                 continue
             assert_no_v0_generator(record)
             assert_no_probe_overlap(text, fingerprints)
-            sidecar = build_sidecar(text, record, tokens=0)
+            sidecar = build_sidecar(text, record, tokens=0, allowed=allowed)
             assert_sidecar_offline(sidecar)
             if allowed is not None:
                 assert_allowed_sidecar(sidecar, allowed)

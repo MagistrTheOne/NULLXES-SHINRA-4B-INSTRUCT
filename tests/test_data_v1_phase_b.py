@@ -461,3 +461,39 @@ def test_canary_accepts_scratch_receipt(tmp_path):
     assert report["status"] == "pass"
     assert report["run_mode"] == "canary"
     assert report["token_count_mode"] == "tokenizer"
+
+
+def test_canary_governed_source_ignores_code_heuristic(tmp_path):
+    from data.data_v1.materialize import materialize
+    from data.data_v1.sources import load_allowlist
+
+    jsonl = tmp_path / "in.jsonl"
+    jsonl.write_text(
+        json.dumps(
+            {
+                "text": "The lecture notes import a function and define class examples before the clay path dried.",
+                "source_id": "fineweb-edu-en",
+                "source_type": "natural",
+                "language": "en",
+                "split": "train",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    allow = load_allowlist()
+    allow["disk"] = dict(allow["disk"], min_free_gb=0)
+    allow_path = tmp_path / "allow.json"
+    allow_path.write_text(json.dumps(allow), encoding="utf-8")
+    state = materialize(
+        jsonl,
+        "fineweb-edu-en",
+        scratch_root=tmp_path / "data_v1",
+        allowlist=allow,
+        free_bytes=50 * 1024**3,
+    )
+    report = run_canary(state["path"], mode="canary", tokenizer=_FakeTokenizer(), allowlist_path=allow_path)
+    assert report["status"] == "pass"
+    assert report["allowlist_misses"] == 0
+    assert report["domains"] == {"general": 1}

@@ -15,6 +15,7 @@ from data.data_v1.adapt_parquet import AdapterError, _assert_metadata_offline, a
 from data.data_v1.acquisition import AcquisitionError, validate_manifest_document
 from data.data_v1.plan_fineweb_edu_en import (
     BOUND_BYTES,
+    DOMAIN,
     EXPECTED_RAW_SHA256,
     FILENAME,
     REVISION,
@@ -48,6 +49,7 @@ def test_frozen_plan_identity():
     assert plan["revision"] == REVISION == "87f09149ef4734204d70ed1d046ddc9ca3f2b8f9"
     assert plan["path"] == UPSTREAM_PATH == "sample/10BT/013_00000.parquet"
     assert plan["strategy"] == STRATEGY == "single_frozen_file"
+    assert plan["domain"] == DOMAIN == "general"
     assert plan["bound_bytes"] == BOUND_BYTES == 4294967296
     assert plan["expected_raw_sha256"] == EXPECTED_RAW_SHA256
     assert EXPECTED_RAW_SHA256.startswith("sha256:")
@@ -94,6 +96,7 @@ def test_adapter_drops_url_and_writes_jsonl(tmp_path: Path):
         assert "text" in rec
         assert rec["source_id"] == SOURCE_ID
         assert rec["language"] == "en"
+        assert rec["domain"] == "general"
         assert "url" not in rec
         meta = json.dumps({k: v for k, v in rec.items() if k != "text"}).casefold()
         assert "http://" not in meta and "https://" not in meta

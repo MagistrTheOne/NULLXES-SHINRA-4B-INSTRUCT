@@ -14,6 +14,7 @@ RAW_FORMAT = "parquet"
 STRATEGY = "single_frozen_file"
 BOUND_BYTES = 4_294_967_296
 EXPECTED_RAW_SHA256 = "sha256:b393f51fefab26cd6f4c8f65707c1924f6666c4961a0ebebe04bb57f7ec832de"
+DOMAIN = "general"
 
 
 def frozen_plan() -> dict[str, Any]:
@@ -28,4 +29,5 @@ def frozen_plan() -> dict[str, Any]:
         "strategy": STRATEGY,
         "bound_bytes": BOUND_BYTES,
         "expected_raw_sha256": EXPECTED_RAW_SHA256,
+        "domain": DOMAIN,
     }
