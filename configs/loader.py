@@ -12,6 +12,7 @@ CONFIG_PATH = Path(__file__).with_name("shinra.yaml")
 REQUIRED_SECTIONS = {
     "schema_version", "status", "identity", "model", "tokenizer", "data",
     "training", "precision", "checkpoint", "evaluation", "runtime",
+    "inference",
 }
 
 
@@ -73,11 +74,11 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         raise ConfigError("special token strings must be unique")
     for offset, key in enumerate(("system", "user", "assistant", "reasoning", "code", "language", "fim_prefix",
                                   "fim_suffix", "fim_middle", "repo", "file", "tool_call", "tool_response",
-                                  "document", "end_of_document"), start=5):
+                                  "document"), start=5):
         if tokenizer.get("special_token_ids", {}).get(key) != offset:
             raise ConfigError(f"tokenizer.special_token_ids.{key} must be {offset}")
-    if model["document_end_token_id"] != tokenizer["special_token_ids"]["end_of_document"]:
-        raise ConfigError("model document_end_token_id must match special_token_ids.end_of_document")
+    if model["document_end_token_id"] != tokenizer["end_of_document_id"]:
+        raise ConfigError("model document_end_token_id must match tokenizer.end_of_document_id")
     if tokenizer["special_tokens"]["end_of_document"] not in {"<|end_of_text|>", "<|document_end|>"}:
         raise ConfigError("document termination token must remain a dedicated end-of-document control")
     if config["data"].get("training_enabled") and config["training"].get("enabled"):
@@ -106,13 +107,20 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         raise ConfigError("global_tokens_per_update does not match sequence x micro batch x accumulation")
     if config["training"].get("diagnostic_tokens", 0) != 20_000_000:
         raise ConfigError("the initial diagnostic budget is fixed at 20M tokens")
+    if config["data"].get("splits") != {"train": 0.98, "validation": 0.01, "blind": 0.01}:
+        raise ConfigError("document split fractions must be frozen at train=0.98, validation=0.01, blind=0.01")
+    cleaning = config["data"].get("cleaning", {})
+    if not 0.0 < float(cleaning.get("near_dedup_threshold", 0)) <= 1.0:
+        raise ConfigError("near-deduplication threshold must be in (0, 1]")
+    if int(cleaning.get("near_dedup_num_perm", 0)) <= 0:
+        raise ConfigError("near-deduplication num_perm must be positive")
     excluded = {str(source).casefold() for source in config["data"].get("excluded_sources", [])}
     for source in config["data"].get("sources", []):
         source_id = source.get("id", "").casefold()
         if any(term.casefold() in source_id for term in excluded):
             raise ConfigError(f"excluded source appears in source list: {source['id']}")
-    if config["runtime"].get("colab_launch_allowed"):
-        raise ConfigError("Colab launch must remain blocked until review acceptance")
+    if config["runtime"].get("colab_launch_allowed") and config.get("status") != "ready_for_training":
+        raise ConfigError("Colab launch cannot be enabled before the configuration is ready")
     if config["training"].get("enabled") != config["data"].get("training_enabled"):
         raise ConfigError("training and data gates must be enabled or disabled together")
     if require_ready:
@@ -120,6 +128,8 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
             raise ConfigError(f"configuration status is {config.get('status')!r}, not ready_for_training")
         if not config["training"].get("enabled") or not config["data"].get("training_enabled"):
             raise ConfigError("training/data gates are disabled")
+        if not config["runtime"].get("colab_launch_allowed"):
+            raise ConfigError("Colab launch is not approved in configs/shinra.yaml")
         if not config["tokenizer"].get("artifact_sha256") or not config["data"].get("manifest_sha256"):
             raise ConfigError("tokenizer and data manifests must be frozen before training")
 

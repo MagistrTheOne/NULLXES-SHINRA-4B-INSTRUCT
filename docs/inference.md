@@ -1,32 +1,13 @@
-# Инференс SHINRA
+# Inference
 
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
+Inference accepts only a local checkpoint directory produced by this repository. The loader checks tokenizer size and core IDs, document-end ID, model type, and model vocabulary against `configs/shinra.yaml`; it does not fetch arbitrary Hub checkpoints. There is no default system prompt, so base inference does not precondition the model on an identity statement.
 
-model_id = "outputs/shinra-4b-instruct/final/step-00008000"
-model = AutoModelForCausalLM.from_pretrained(
-    model_id, torch_dtype="bfloat16", trust_remote_code=True, device_map="auto"
-)
-tok = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+```powershell
+python -m inference.generate --model <local-checkpoint> --prompt "Explain grouped-query attention."
+python -m inference.chat --model <local-checkpoint>
+python -m inference.server --model <local-checkpoint> --port 8000
 ```
 
-CLI:
+The server exposes `POST /v1/chat/completions`, `GET /v1/models`, and `GET /health`. It reports an empty model list until a checkpoint loads. `stream: true` returns HTTP 501 because token-by-token streaming is not implemented. Usage counters are omitted instead of returning fabricated zeros.
 
-```bash
-python -m inference.generate --model $CKPT --prompt "Write RMSNorm in PyTorch."
-python -m inference.chat --model $CKPT
-python -m inference.server --model $CKPT --port 8000
-```
-
-HTTP: OpenAI-совместимый `POST /v1/chat/completions`, `GET /v1/models`, `GET /health`.
-
-KV cache включён (`use_cache=True`). Для 32k контекста выставить в конфиге:
-
-```yaml
-rope_scaling:
-  rope_type: yarn
-  factor: 4.0
-  original_max_position_embeddings: 8192
-```
-
-и прогнать `python -m evaluation.needle --model $CKPT`.
+There is no trained checkpoint in the approved lineage yet, so successful generation is not currently available or claimed. Instruction tuning is a later phase in this codebase.

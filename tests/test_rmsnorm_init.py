@@ -68,3 +68,15 @@ def test_inner_model_does_not_call_post_init_itself():
     source = ShinraModel.__init__.__code__.co_names
     assert "post_init" not in source
     assert "_scaled_residual_init" not in source
+
+
+def test_tiny_causal_model_runs_real_forward_backward():
+    torch.manual_seed(2)
+    model = ShinraForCausalLM(_tiny())
+    input_ids = torch.tensor([[1, 7, 8, 9, 4]])
+    output = model(input_ids=input_ids, labels=input_ids, use_cache=False)
+    assert torch.isfinite(output.loss)
+    output.loss.backward()
+    gradients = [parameter.grad for parameter in model.parameters() if parameter.grad is not None]
+    assert gradients
+    assert all(torch.isfinite(gradient).all() for gradient in gradients)

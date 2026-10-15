@@ -1,30 +1,5 @@
-# SHINRA v2 pretrain tokenizer contract
+# Pretraining token stream
 
-Vocab DNA is frozen: Unigram 131072. This file is the **encode path**, not a retokenize.
+The active packer is `data.pack`. It reads the strict cleaned JSONL split and the root corpus manifest, verifies both hashes, encodes records with `add_special_tokens=False`, wraps each document as `[BOS] + body + [END_OF_TEXT]`, and writes fixed-length Parquet token shards with per-shard SHA256 entries.
 
-## Pretrain wrap
-
-Authoritative packer: `data/pack.py` version `shinra-v2-pack.v1`.
-
-```
-encode(text, add_special_tokens=False)
-→ [BOS] + ids + [END_OF_TEXT]
-```
-
-| token | id | pretrain |
-|---|---:|---|
-| `<\|bos\|>` | 1 | sequence/document start |
-| `<\|end_of_text\|>` | 18 | document stop |
-| `<\|pad\|>` | 3 | pad; labels `-100` |
-| `<\|eot\|>` | 2 | **forbidden** in packed pretrain |
-| chat/code/tool/`<\|document\|>` | 4–17 | **forbidden** in packed pretrain |
-
-`eos_token` stays `<|eot|>` for later generation. Pretrain document stop is **not** eos.
-
-Pack never uses `add_special_tokens=True`. Chat `TemplateProcessing` BOS is for SFT later, not this packer.
-
-If `END_OF_TEXT` is missing, unk, or equal to `eos_token_id`, pack raises. No fallback onto EOT. Training code must use `document_end_token_id` (18), never `config.eos_token_id` (2), as the document terminator.
-
-## Concatenation
-
-Documents are concatenated into fixed-length causal streams. Cross-document attention is allowed. Isolated-document masks are not the v2 default.
+ID assignments come from `configs/shinra.yaml`: BOS=1, EOT=2, PAD=3, document end=4. EOT and all chat/control tokens are rejected inside document bodies. Padding is masked from loss; document end remains an ordinary causal target. Cross-document attention is currently allowed after packing. No alternate binary shard format is supported.

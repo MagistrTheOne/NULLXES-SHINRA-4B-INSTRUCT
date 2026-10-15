@@ -23,7 +23,7 @@ def test_unicode_normalization_cannot_rewrite_numeric_values():
 
 def test_corpus_requires_real_provenance_and_separates_splits(tmp_path):
     raw = "The year is 2026 and temperature is -4.5 C."
-    row = {"text": raw, "source_id": "fixture-source", "revision": "immutable-1", "license": "CC0",
+    row = {"text": raw, "source_id": "fixture-source", "revision": "immutable-1", "license": "CC0", "language": "en",
            "raw_sha256": hashlib.sha256(raw.encode()).hexdigest()}
     source = tmp_path / "source.jsonl"
     source.write_text(json.dumps(row) + "\n", encoding="utf-8")
@@ -41,3 +41,19 @@ def test_bad_record_is_never_silently_skipped(tmp_path):
     source.write_text("{not json}\n", encoding="utf-8")
     with pytest.raises(DataIntegrityError, match="malformed JSON"):
         prepare_local_corpus([source], tmp_path / "out", split_salt="audit-frozen-salt")
+
+
+def test_near_duplicates_are_removed_and_recorded(tmp_path):
+    base = " ".join(f"researchword{i}" for i in range(80))
+    changed = base.replace("researchword40", "measurement40")
+    source = tmp_path / "near.jsonl"
+    rows = []
+    for index, text in enumerate((base, changed)):
+        rows.append({"text": text, "source_id": "fixture", "revision": "immutable-1", "license": "CC0", "language": "en",
+                     "document_id": f"doc-{index}", "raw_sha256": hashlib.sha256(text.encode()).hexdigest()})
+    source.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+    manifest = prepare_local_corpus([source], tmp_path / "out", split_salt="audit-frozen-salt")
+    assert manifest["counts"]["near_duplicates"] == 1
+    duplicate = json.loads((tmp_path / "out" / "duplicates.jsonl").read_text(encoding="utf-8"))
+    assert duplicate["type"] == "near"
+    assert manifest["files"]["train.jsonl"] == manifest["train_hash"]

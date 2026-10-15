@@ -6,37 +6,32 @@ import argparse
 import json
 from pathlib import Path
 
-
-DEFAULT_TASKS = [
-    "arc_challenge",
-    "hellaswag",
-    "mmlu",
-    "gsm8k",
-    "humaneval",
-    "mbpp",
-    "winogrande",
-    "truthfulqa_mc2",
-]
+from configs.loader import load_config
 
 
 def main() -> None:
+    approved = load_config()
+    eval_config = approved["evaluation"]
+    default_tasks = [task for group in eval_config["benchmark_tasks"].values() for task in group]
     parser = argparse.ArgumentParser(description="Run lm-eval on a SHINRA checkpoint")
     parser.add_argument("--model", required=True)
-    parser.add_argument("--tasks", nargs="+", default=DEFAULT_TASKS)
+    parser.add_argument("--tasks", nargs="+", default=default_tasks)
     parser.add_argument("--batch-size", default="auto")
-    parser.add_argument("--output", default="evaluation/results/harness.json")
+    parser.add_argument("--output", default=f"{eval_config['report_dir']}/harness.json")
     parser.add_argument("--limit", type=int, default=None)
     args = parser.parse_args()
+    if not Path(args.model).is_dir():
+        raise FileNotFoundError("evaluation requires a local SHINRA checkpoint directory")
 
     from lm_eval import evaluator
     from lm_eval.models.huggingface import HFLM
 
     lm = HFLM(
         pretrained=args.model,
-        dtype="bfloat16",
-        trust_remote_code=True,
+        dtype=approved["precision"]["preferred"],
+        trust_remote_code=False,
         batch_size=args.batch_size,
-        max_length=8192,
+        max_length=int(eval_config["benchmark_max_length"]),
     )
     results = evaluator.simple_evaluate(
         model=lm,

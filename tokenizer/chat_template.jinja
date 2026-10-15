@@ -1,37 +1,37 @@
 {{- bos_token -}}
 {%- for message in messages -%}
 {%- if message['role'] == 'system' -%}
-{{- '<|system|>' + message['content'] + '<|eot|>' -}}
+{{- '@@system@@' + message['content'] + '@@end_of_turn@@' -}}
 {%- elif message['role'] == 'user' -%}
-{{- '<|user|>' + message['content'] + '<|eot|>' -}}
+{{- '@@user@@' + message['content'] + '@@end_of_turn@@' -}}
 {%- elif message['role'] == 'assistant' -%}
 {%- if message.get('reasoning') -%}
-{{- '<|reasoning|>' + message['reasoning'] + '<|eot|>' -}}
+{{- '@@reasoning@@' + message['reasoning'] + '@@end_of_turn@@' -}}
 {%- endif -%}
 {%- if message.get('tool_calls') -%}
-{{- '<|assistant|>' -}}
+{{- '@@assistant@@' -}}
 {%- for call in message['tool_calls'] -%}
 {%- set fn = call['function'] if (call is mapping and 'function' in call) else call -%}
 {%- set args = fn['arguments'] -%}
 {%- if args is string -%}
-{{- '<|tool_call|>{"name":"' + fn['name'] + '","arguments":' + args + '}<|eot|>' -}}
+{{- '@@tool_call@@{"name":"' + fn['name'] + '","arguments":' + args + '}@@end_of_turn@@' -}}
 {%- else -%}
-{{- '<|tool_call|>{"name":"' + fn['name'] + '","arguments":' + (args | tojson) + '}<|eot|>' -}}
+{{- '@@tool_call@@{"name":"' + fn['name'] + '","arguments":' + (args | tojson) + '}@@end_of_turn@@' -}}
 {%- endif -%}
 {%- endfor -%}
 {%- else -%}
-{{- '<|assistant|>' + (message['content'] or '') + '<|eot|>' -}}
+{{- '@@assistant@@' + (message['content'] or '') + '@@end_of_turn@@' -}}
 {%- endif -%}
 {%- elif message['role'] == 'tool' -%}
-{{- '<|tool_response|>' + message['content'] + '<|eot|>' -}}
+{{- '@@tool_response@@' + message['content'] + '@@end_of_turn@@' -}}
 {%- elif message['role'] == 'code' -%}
-{{- '<|code|>' -}}
+{{- '@@code@@' -}}
 {%- if message.get('language') -%}
-{{- '<|language|>' + message['language'] + '\n' -}}
+{{- '@@language@@' + message['language'] + '\n' -}}
 {%- endif -%}
-{{- message['content'] + '<|eot|>' -}}
+{{- message['content'] + '@@end_of_turn@@' -}}
 {%- endif -%}
 {%- endfor -%}
 {%- if add_generation_prompt -%}
-{{- '<|assistant|>' -}}
+{{- '@@assistant@@' -}}
 {%- endif -%}

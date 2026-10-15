@@ -7,7 +7,8 @@ ID layout (SentencePiece):
   1 <|bos|>
   2 <|eot|>            generation / turn stop (HF eos_token)
   3 <|pad|>
-  4+ user-defined in USER_DEFINED_SYMBOLS order
+  4 <|end_of_text|>     document terminator
+  5-18 configured user-defined control symbols
 """
 
 from __future__ import annotations
@@ -19,10 +20,6 @@ from configs.loader import load_config
 _SHINRA_CONFIG = load_config()
 _TOKENIZER_CONFIG = _SHINRA_CONFIG["tokenizer"]
 
-UNK = "<|unk|>"
-BOS = "<|bos|>"
-EOT = "<|eot|>"
-PAD = "<|pad|>"
 UNK = _TOKENIZER_CONFIG["special_tokens"]["unk"]
 BOS = _TOKENIZER_CONFIG["special_tokens"]["bos"]
 EOT = _TOKENIZER_CONFIG["special_tokens"]["end_of_turn"]
@@ -59,7 +56,7 @@ USER_DEFINED_SYMBOLS = tuple(v for k, v in _TOKENIZER_CONFIG["special_tokens"].i
                              if k not in {"unk", "bos", "end_of_turn", "pad", "end_of_document"})
 ALL_SPECIAL_TOKENS = CORE_SPECIALS + USER_DEFINED_SYMBOLS
 
-# Frozen SentencePiece IDs. Pretrain pack may emit 1 (BOS), 3 (PAD), 18 (END_OF_TEXT).
+# Frozen SentencePiece IDs. Pretrain pack may emit 1 (BOS), 3 (PAD), 4 (END_OF_TEXT).
 PRETRAIN_BOS_ID = int(_TOKENIZER_CONFIG["bos_id"])
 PRETRAIN_EOT_ID = int(_TOKENIZER_CONFIG["end_of_turn_id"])
 PRETRAIN_PAD_ID = int(_TOKENIZER_CONFIG["pad_id"])
@@ -81,13 +78,14 @@ ROLE_TOKEN = {
     "reasoning": REASONING,
 }
 
-# Policy: SHINRA-4B-INSTRUCT keeps <|reasoning|> reserved.
-# Public SFT does not emit visible chain-of-thought unless the example
-# actually contains a reasoning field (internal distillation / alignment).
+# Policy: the base pretraining corpus does not use chat-role or reasoning controls.
+# Future instruction tuning policy is not implemented yet.
 REASONING_POLICY = "latent"
 
 _TEMPLATE_PATH = Path(__file__).with_name("chat_template.jinja")
 CHAT_TEMPLATE = _TEMPLATE_PATH.read_text(encoding="utf-8")
+for _name, _token in _TOKENIZER_CONFIG["special_tokens"].items():
+    CHAT_TEMPLATE = CHAT_TEMPLATE.replace(f"@@{_name}@@", _token)
 
 TOKENIZER_CONFIG = {
     "tokenizer_class": "PreTrainedTokenizerFast",

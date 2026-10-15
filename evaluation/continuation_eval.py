@@ -1,8 +1,6 @@
-"""V2 UPGRADE single continuation-eval path (review-only, no auto-run side effects).
+"""Deterministic continuation evaluation over a caller-supplied held-out prompt set.
 
-Contract: use_cache=false, document stop eos_token_id=18 (END_OF_TEXT),
-wrap [BOS=1] + encode(prompt, add_special_tokens=False) + [END=18] is done by caller pack.
-HF generate() KV-mask path is NOT used here (known-broken path exclusion).
+Document termination uses the configured end-of-document token; generation turn-stop remains EOT.
 """
 
 from __future__ import annotations
@@ -12,21 +10,22 @@ import json
 from pathlib import Path
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from configs.loader import load_config
+from inference.generate import load_generate_stack
 
-CONTINUATION_EOS_ID = 18
+_APPROVED = load_config()
+CONTINUATION_EOS_ID = int(_APPROVED["tokenizer"]["end_of_document_id"])
 COUNTER_VERSION = "counter-v1"
 EVALUATOR_VERSION = "continuation-v1"
 EVAL_CONTRACT = {"use_cache": False, "eos_token_id": CONTINUATION_EOS_ID, "do_sample": False}
 
 
 @torch.no_grad()
-def continuation_eval(model_path: str, prompts_path: str, output_path: str, max_new_tokens: int = 128) -> dict:
-    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path, torch_dtype=torch.bfloat16, trust_remote_code=True, device_map="auto"
-    )
-    model.eval()
+def continuation_eval(model_path: str, prompts_path: str, output_path: str,
+                      max_new_tokens: int | None = None) -> dict:
+    max_new_tokens = int(_APPROVED["evaluation"]["continuation_max_new_tokens"] if max_new_tokens is None
+                          else max_new_tokens)
+    tokenizer, model = load_generate_stack(model_path)
     prompts = json.loads(Path(prompts_path).read_text(encoding="utf-8"))
     rows = []
     per_lang: dict[str, dict[str, float]] = {}
@@ -37,9 +36,14 @@ def continuation_eval(model_path: str, prompts_path: str, output_path: str, max_
         if item["lang"] not in ("en", "ru"):
             raise ValueError(f"bad lang {item['lang']!r}: expected en|ru")
         prompt = item["prompt"]
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise ValueError("prompt must be a non-empty string")
+        if not 0 < max_new_tokens < int(model.config.max_position_embeddings):
+            raise ValueError("max_new_tokens must be positive and below the model context limit")
         # Single BOS, no chat template (pretrain-eval): encode adds no specials.
         body = tokenizer.encode(prompt, add_special_tokens=False)
-        input_ids = torch.tensor([[1, *body]], dtype=torch.long, device=model.device)
+        input_device = model.get_input_embeddings().weight.device
+        input_ids = torch.tensor([[int(tokenizer.bos_token_id), *body]], dtype=torch.long, device=input_device)
         out = model.generate(
             input_ids,
             max_new_tokens=max_new_tokens,
@@ -89,7 +93,7 @@ def main() -> None:
     parser.add_argument("--model", required=True)
     parser.add_argument("--prompts", required=True)
     parser.add_argument("--output", default="evaluation/results/continuation.json")
-    parser.add_argument("--max-new-tokens", type=int, default=128)
+    parser.add_argument("--max-new-tokens", type=int, default=_APPROVED["evaluation"]["continuation_max_new_tokens"])
     args = parser.parse_args()
     print(json.dumps(continuation_eval(args.model, args.prompts, args.output, args.max_new_tokens), indent=2))
 

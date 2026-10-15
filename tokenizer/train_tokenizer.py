@@ -79,50 +79,54 @@ def _extract_line(raw: str) -> str:
 
 
 def build_spm_corpus(inputs: list[Path], corpus_path: Path, max_chars: int) -> dict:
+    if max_chars <= 0:
+        raise ValueError("max_chars must be positive")
     files = _iter_text_files(inputs)
-    written = 0
+    rejected_short = 0
     docs = 0
     chars = 0
     bytes_ = 0
     lang_scripts: Counter[str] = Counter()
+    normalization = load_config()["tokenizer"]["normalization"]
     with corpus_path.open("w", encoding="utf-8") as out:
         for file in files:
-            with file.open("r", encoding="utf-8", errors="replace") as handle:
+            with file.open("r", encoding="utf-8", errors="strict") as handle:
                 for line in handle:
-            text = _extract_line(line)
-            if text:
-                text = clean_text(text, normalization=load_config()["tokenizer"]["normalization"])
-                    if text:
-                        try:
-                            text = clean_text(text, normalization=load_config()["tokenizer"]["normalization"])
-                        except DataIntegrityError as exc:
-                            raise ValueError(f"{file}: numeric-preserving corpus cleanup failed: {exc}") from exc
+                    text = _extract_line(line)
+                    if not text:
+                        continue
+                    try:
+                        text = clean_text(text, normalization=normalization)
+                    except DataIntegrityError as exc:
+                        raise ValueError(f"{file}: numeric-preserving corpus cleanup failed: {exc}") from exc
                     if len(text) < 32:
+                        rejected_short += 1
+                        continue
+                    remaining = max_chars - chars
+                    if remaining <= 0:
+                        return {
+                            "documents": docs, "chars": chars, "bytes": bytes_, "files": len(files),
+                            "rejected_short_records": rejected_short, "scripts": dict(lang_scripts),
+                        }
+                    if len(text) > remaining:
+                        # Do not truncate text: that could silently damage a number or split a document.
                         continue
                     out.write(text + "\n")
                     docs += 1
                     chars += len(text)
                     bytes_ += len(text.encode("utf-8"))
-                    written += 1
                     if "\u0400" <= text[:80] <= "\u04ff" or any("\u0400" <= ch <= "\u04ff" for ch in text[:400]):
                         lang_scripts["cyrillic"] += 1
                     if any("\u4e00" <= ch <= "\u9fff" for ch in text[:400]):
                         lang_scripts["cjk"] += 1
                     if any(ch.isascii() and ch.isalpha() for ch in text[:400]):
                         lang_scripts["latin"] += 1
-                    if chars >= max_chars:
-                        return {
-                            "documents": docs,
-                            "chars": chars,
-                            "bytes": bytes_,
-                            "files": len(files),
-                            "scripts": dict(lang_scripts),
-                        }
     return {
         "documents": docs,
         "chars": chars,
         "bytes": bytes_,
         "files": len(files),
+        "rejected_short_records": rejected_short,
         "scripts": dict(lang_scripts),
     }
 
@@ -164,7 +168,9 @@ def train_sentencepiece(
         bos_piece=specials["bos"],
         eos_piece=specials["end_of_turn"],
         pad_piece=specials["pad"],
-        user_defined_symbols=[specials[k] for k, _ in sorted(tok["special_token_ids"].items(), key=lambda pair: pair[1])],
+        user_defined_symbols=[specials["end_of_document"], *[
+            specials[k] for k, _ in sorted(tok["special_token_ids"].items(), key=lambda pair: pair[1])
+        ]],
         train_extremely_large_corpus=True,
         num_threads=num_threads,
         input_sentence_size=input_sentence_size,
@@ -189,6 +195,11 @@ def convert_spm_to_hf(model_file: Path, output_dir: Path) -> None:
     token_cfg = approved["tokenizer"]
     expected_ids = {token_cfg["special_tokens"][key]: int(value)
                     for key, value in token_cfg["special_token_ids"].items()}
+    expected_ids[token_cfg["special_tokens"]["end_of_document"]] = int(token_cfg["end_of_document_id"])
+    expected_ids[token_cfg["special_tokens"]["unk"]] = int(token_cfg["unk_id"])
+    expected_ids[token_cfg["special_tokens"]["bos"]] = int(token_cfg["bos_id"])
+    expected_ids[token_cfg["special_tokens"]["end_of_turn"]] = int(token_cfg["end_of_turn_id"])
+    expected_ids[token_cfg["special_tokens"]["pad"]] = int(token_cfg["pad_id"])
     if any(sp.piece_to_id(token) != token_id for token, token_id in expected_ids.items()):
         raise ValueError("SentencePiece special token IDs do not match configs/shinra.yaml")
     vocab: list[tuple[str, float]] = []
@@ -271,10 +282,10 @@ def convert_spm_to_hf(model_file: Path, output_dir: Path) -> None:
 def evaluate_tokenizer(output_dir: Path, sample_files: list[Path], report_path: Path) -> dict:
     from transformers import AutoTokenizer
 
-    tok = AutoTokenizer.from_pretrained(str(output_dir), use_fast=True, trust_remote_code=True)
+    tok = AutoTokenizer.from_pretrained(str(output_dir), use_fast=True, local_files_only=True)
     samples: list[str] = []
     for file in sample_files[:32]:
-        with file.open("r", encoding="utf-8", errors="replace") as handle:
+        with file.open("r", encoding="utf-8", errors="strict") as handle:
             for line in handle:
                 text = _extract_line(line)
                 if len(text) >= 64:
@@ -311,7 +322,7 @@ def evaluate_tokenizer(output_dir: Path, sample_files: list[Path], report_path: 
 
     probes = {
         "system_user_roundtrip": tok.decode(
-            tok.encode(f"{SYSTEM}You are SHINRA.{EOT}{USER}Write a kernel.{EOT}{ASSISTANT}", add_special_tokens=False),
+            tok.encode(f"{SYSTEM}Answer directly.{EOT}{USER}Explain a kernel.{EOT}{ASSISTANT}", add_special_tokens=False),
             skip_special_tokens=False,
         ),
         "code_probe_tokens": tok.encode(
@@ -365,7 +376,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     config = load_config()
     parser = argparse.ArgumentParser(description="Train NULLXES SHINRA SentencePiece Unigram tokenizer")
     parser.add_argument("--input", nargs="+", required=True, help="Text / JSONL files or directories")
-    parser.add_argument("--output-dir", default="tokenizer/artifacts")
+    parser.add_argument("--output-dir", default=config["tokenizer"]["artifact_dir"])
     parser.add_argument("--config", default="configs/shinra.yaml")
     parser.add_argument("--vocab-size", type=int, default=config["tokenizer"]["vocab_size"])
     parser.add_argument("--character-coverage", type=float, default=config["tokenizer"]["character_coverage"])
@@ -414,12 +425,13 @@ def main(argv: list[str] | None = None) -> None:
     tokenizer_sha = __import__("hashlib").sha256((output_dir / "tokenizer.json").read_bytes()).hexdigest()
     tok_cfg = config["tokenizer"]
     ids = {tok_cfg["special_tokens"][key]: int(value) for key, value in tok_cfg["special_token_ids"].items()}
+    ids[tok_cfg["special_tokens"]["end_of_document"]] = int(tok_cfg["end_of_document_id"])
     for key in ("unk", "bos", "end_of_turn", "pad"):
         ids[tok_cfg["special_tokens"][key]] = int(tok_cfg[f"{key}_id"] if key != "end_of_turn" else tok_cfg["end_of_turn_id"])
     actual = {token: stats["probes"]["special_ids"].get(token) for token in ids}
     if actual != ids:
         raise SystemExit(f"special token IDs failed contract: {actual}")
-    if stats["probes"]["system_user_roundtrip"] != f"{SYSTEM}You are SHINRA.{EOT}{USER}Write a kernel.{EOT}{ASSISTANT}":
+    if stats["probes"]["system_user_roundtrip"] != f"{SYSTEM}Answer directly.{EOT}{USER}Explain a kernel.{EOT}{ASSISTANT}":
         raise SystemExit("chat control token roundtrip failed")
     if tok_cfg["require_zero_unk_on_probes"] and stats["unk_rate"] != 0:
         raise SystemExit(f"tokenizer probe unk rate is not zero: {stats['unk_rate']}")

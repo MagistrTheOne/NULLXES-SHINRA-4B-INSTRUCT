@@ -1,14 +1,7 @@
-# Архитектура SHINRA CORE
+# SHINRA architecture
 
-Полная спецификация: [`architecture/design.md`](../architecture/design.md).
+The approved geometry and token IDs live in [`configs/shinra.yaml`](../configs/shinra.yaml). `model/configuration_shinra.py` consumes that configuration; there is no parallel architecture YAML.
 
-**v2 contract:** dense decoder-only **3,969,056,256** params, residual 2560, Q width 4096, GQA 32/8, 36 layers, SwiGLU 9728, RoPE θ=1e6, QK-norm, Z-loss, vocab 131072, HF `ShinraForCausalLM`. Tokenizer DNA — SHINRA Unigram 131072.
+Current design values: decoder-only causal model, hidden size 2560, 36 layers, 32 query heads, 8 KV heads, head dimension 128, SwiGLU intermediate size 9728, tied embeddings, 32,768-token maximum position window, and 65,536 provisional vocabulary entries. Initialization is random. No previous experimental checkpoint is a foundation weight source.
 
-v1 (32 × 3072, GQA 24/8) закрыта. Веса не наследуются.
-
-Проверка счёта параметров (meta-device, без аллокации 4B весов):
-
-```bash
-PYTHONPATH=. python -m scripts.verify_architecture
-PYTHONPATH=. python -m architecture.param_count
-```
+The vocabulary size and tokenizer remain provisional until English/Russian corpus audits and tokenizer round-trip checks are complete. There is no accepted parameter-count or hardware-capacity result in this repository yet.

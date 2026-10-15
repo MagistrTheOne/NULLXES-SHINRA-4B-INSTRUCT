@@ -1,26 +1,5 @@
-# Публикация на Hugging Face Hub
+# Hugging Face Hub publishing
 
-Чекпоинт уже содержит `config.json` с `auto_map`, веса safetensors, токенизатор и исходники `configuration_shinra.py` / `modeling_*.py` (копируются при save).
+Publishing is not currently approved. There is no trained checkpoint or reviewed model card to publish. Once the training and held-out evaluation gates pass, the local checkpoint can be bundled and uploaded with `scripts.publish_hub` using an `HF_TOKEN` kept outside the repository.
 
-```bash
-export HF_TOKEN=hf_xxx
-python -m scripts.export_hf_bundle --checkpoint outputs/shinra-4b-instruct/final/step-00008000
-python -m scripts.publish_hub \
-  --checkpoint outputs/shinra-4b-instruct/final/step-00008000 \
-  --repo-id NULLXES/SHINRA-4B-INSTRUCT \
-  --private
-```
-
-После публикации:
-
-```python
-from transformers import AutoModelForCausalLM
-
-model = AutoModelForCausalLM.from_pretrained(
-    "NULLXES/SHINRA-4B-INSTRUCT",
-    trust_remote_code=True,
-    torch_dtype="bfloat16",
-)
-```
-
-Model card: `docs/MODEL_CARD.md` копируется в `README.md` репозитория модели.
+The publisher must only receive the reviewed checkpoint directory for the current random-init lineage. Do not publish historical experiment checkpoints as SHINRA foundation weights. Hub upload has not been executed or verified.

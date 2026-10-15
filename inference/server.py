@@ -1,34 +1,37 @@
-"""OpenAI-compatible HTTP server for SHINRA-4B-INSTRUCT."""
+"""OpenAI-compatible HTTP interface for a local SHINRA checkpoint."""
 
 from __future__ import annotations
 
 import argparse
-import json
 import time
 import uuid
-from typing import Any
+from pathlib import Path
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
+from configs.loader import load_config
 from .generate import generate_chat, load_generate_stack
 
+_APPROVED = load_config()
+_MODEL_ID = _APPROVED["identity"]["release"]
+_GENERATION_DEFAULTS = _APPROVED["inference"]
 app = FastAPI(title="NULLXES SHINRA", version="1.0.0")
 _STATE: dict[str, Any] = {}
 
 
 class ChatMessage(BaseModel):
-    role: str
+    role: Literal["system", "user", "assistant", "tool", "code"]
     content: str
 
 
 class ChatRequest(BaseModel):
-    model: str = "NULLXES-SHINRA-4B-INSTRUCT"
+    model: str = _MODEL_ID
     messages: list[ChatMessage]
-    max_tokens: int = 512
-    temperature: float = 0.7
-    top_p: float = 0.9
+    max_tokens: int = _GENERATION_DEFAULTS["default_max_new_tokens"]
+    temperature: float = _GENERATION_DEFAULTS["default_temperature"]
+    top_p: float = _GENERATION_DEFAULTS["default_top_p"]
     stream: bool = False
 
 
@@ -44,87 +47,53 @@ def _startup() -> None:
 
 @app.get("/v1/models")
 def list_models() -> dict:
-    return {
-        "object": "list",
-        "data": [{"id": "NULLXES-SHINRA-4B-INSTRUCT", "object": "model", "owned_by": "nullxes"}],
-    }
+    models = ([{"id": _MODEL_ID, "object": "model", "owned_by": "nullxes"}]
+              if "model" in _STATE else [])
+    return {"object": "list", "data": models}
 
 
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "model_loaded": "model" in _STATE}
+    loaded = "model" in _STATE
+    return {"status": "ok" if loaded else "unavailable", "model_loaded": loaded}
 
 
 @app.post("/v1/chat/completions")
-def chat_completions(req: ChatRequest):
+def chat_completions(req: ChatRequest) -> dict:
     if "model" not in _STATE:
         raise HTTPException(status_code=503, detail="Model is not loaded")
-    messages = [m.model_dump() for m in req.messages]
+    if req.model != _MODEL_ID:
+        raise HTTPException(status_code=404, detail="Requested model is not served")
     if req.stream:
-        return StreamingResponse(_stream(req, messages), media_type="text/event-stream")
+        raise HTTPException(status_code=501, detail="Token streaming is not implemented")
+    if req.max_tokens <= 0:
+        raise HTTPException(status_code=422, detail="max_tokens must be positive")
+    if req.temperature < 0 or not 0 < req.top_p <= 1:
+        raise HTTPException(status_code=422, detail="temperature or top_p is outside the supported range")
+    if req.temperature == 0 and req.top_p != 1:
+        raise HTTPException(status_code=422, detail="top_p is only applied when temperature is greater than zero")
+    messages = [message.model_dump() for message in req.messages]
     text = generate_chat(
-        _STATE["model_path"],
-        messages,
-        max_new_tokens=req.max_tokens,
-        temperature=req.temperature,
-        top_p=req.top_p,
-        tokenizer=_STATE["tokenizer"],
-        model=_STATE["model"],
+        _STATE["model_path"], messages, max_new_tokens=req.max_tokens, temperature=req.temperature,
+        top_p=req.top_p, tokenizer=_STATE["tokenizer"], model=_STATE["model"],
     )
-    created = int(time.time())
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
-        "created": created,
-        "model": req.model,
-        "choices": [
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": text},
-                "finish_reason": "stop",
-            }
-        ],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        "created": int(time.time()),
+        "model": _MODEL_ID,
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
     }
-
-
-def _stream(req: ChatRequest, messages: list[dict[str, str]]):
-    text = generate_chat(
-        _STATE["model_path"],
-        messages,
-        max_new_tokens=req.max_tokens,
-        temperature=req.temperature,
-        top_p=req.top_p,
-        tokenizer=_STATE["tokenizer"],
-        model=_STATE["model"],
-    )
-    cid = f"chatcmpl-{uuid.uuid4().hex[:12]}"
-    created = int(time.time())
-    chunk = {
-        "id": cid,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": req.model,
-        "choices": [{"index": 0, "delta": {"role": "assistant", "content": text}, "finish_reason": None}],
-    }
-    yield f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-    final = {
-        "id": cid,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": req.model,
-        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
-    }
-    yield f"data: {json.dumps(final)}\n\n"
-    yield "data: [DONE]\n\n"
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Serve SHINRA over HTTP")
+    parser = argparse.ArgumentParser(description="Serve a local SHINRA checkpoint")
     parser.add_argument("--model", required=True)
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
+    if not Path(args.model).is_dir():
+        raise SystemExit("server requires a local SHINRA checkpoint directory")
     _STATE["model_path"] = args.model
     import uvicorn
 

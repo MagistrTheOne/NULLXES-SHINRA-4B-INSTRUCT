@@ -1,10 +1,5 @@
-torch>=2.6.0
-transformers==5.16.1
-accelerate==1.15.0
-tokenizers==0.23.1
-sentencepiece==0.2.2
-safetensors==0.8.0
 pyyaml>=6.0.1
 tqdm>=4.66.0
 numpy>=1.26.0
-pyarrow==25.0.1
+pyarrow>=20.0.0
+datasketch>=1.6.5

@@ -1,76 +1,22 @@
-# Токенизатор NULLXES SHINRA
+# Tokenizer contract
 
-Собственный SentencePiece Unigram, vocab **131072**, NFKC, byte fallback, split digits.
+Tokenizer algorithm, provisional vocabulary size, normalization, numeric rewrite policy, special-token strings, and every token ID are defined in `configs/shinra.yaml`. Current vocabulary size is 65,536 and remains provisional until audited EN/RU corpus slices are available.
 
-**Заморожен до претрейна.** Переименование control-токенов после обучения BASE невозможно без порчи DNA.
+| ID | Token | Purpose |
+|---:|---|---|
+| 0 | `<|unk|>` | Unknown piece; byte fallback should prevent ordinary text from requiring it |
+| 1 | `<|bos|>` | Sequence/document start |
+| 2 | `<|eot|>` | Generation end-of-turn (`eos_token_id`) |
+| 3 | `<|pad|>` | Padding; masked from loss |
+| 4 | `<|end_of_text|>` | Pretraining document terminator |
+| 5–18 | Configured control tokens | Chat, code, tool, and document metadata; excluded from base pretraining bodies |
 
-## Control plane
+`<|eot|>` and `<|end_of_text|>` are distinct. The packer emits `[BOS] + encoded document + [end_of_text]`; it never uses EOT as a document terminator. Ordinary text is encoded without automatic special tokens. Numeric spans must remain byte-for-byte semantically intact through cleanup and decode/encode audit.
 
-| ID | Токен | Роль |
-|----|--------|------|
-| 0 | `<\|unk\|>` | unknown (минимум, byte fallback) |
-| 1 | `<\|bos\|>` | start of sequence, всегда в chat template |
-| 2 | `<\|eot\|>` | **end of turn** = HF `eos_token`, стоп генерации |
-| 3 | `<\|pad\|>` | padding |
-| 4+ | user-defined | ниже |
+Build only from audited local source records:
 
-`<|end_of_text|>` — конец **документа** в претрейне. Это не turn-stop.
-
-`<|tool|>` **нет**. Вызов и ответ инструмента — разные токены.
-
-```
-<|unk|> <|bos|> <|eot|> <|pad|>
-<|system|> <|user|> <|assistant|> <|reasoning|>
-<|code|> <|language|>
-<|fim_prefix|> <|fim_suffix|> <|fim_middle|>
-<|repo|> <|file|>
-<|tool_call|> <|tool_response|>
-<|document|> <|end_of_text|>
+```powershell
+python -m tokenizer.train_tokenizer --input <audited-corpus> --output-dir tokenizer/artifacts --max-chars <approved-cap> --input-sentence-size <approved-sample-size>
 ```
 
-Chat template: `tokenizer/chat_template.jinja` (BOS + JSON `tool_call` + language на code).
-
-## Reasoning policy: latent
-
-`<|reasoning|>` зарезервирован. SHINRA-4B-INSTRUCT **не** учится публичному chain-of-thought по умолчанию. Поле `reasoning` в SFT попадает в шаблон только если оно реально есть в distillation / alignment данных.
-
-## Tool calls
-
-```
-<|assistant|>
-<|tool_call|>{"name":"search","arguments":{"q":"..."}}<|eot|>
-<|tool_response|>...json...<|eot|>
-```
-
-## Pretrain packing
-
-```
-<|bos|><|document|> ... text ... <|end_of_text|>
-```
-
-## Обучение
-
-Корпус ≥ 10B символов, пропорциональный претрейн-миксу.
-
-```bash
-bash scripts/train_tokenizer.sh /data/tokmix
-```
-
-Артефакты в `tokenizer/artifacts/`:
-
-- `tokenizer.model` — SentencePiece
-- `tokenizer.json` — Hugging Face fast
-- `tokenizer_config.json`, `special_tokens_map.json`
-- `chat_template.jinja`
-- `corpus_stats.json`, `tokenizer_stats.json`
-
-Критерии приёмки: `unk_rate < 0.1%` на holdout, `bytes/token ≳ 3.5`, все control-токены с id ≠ unk.
-
-Дружба корпуса с DNA **до** обучения Unigram:
-
-```bash
-python -m tokenizer.analyze_tokenizer
-python -m tokenizer.analyze_tokenizer --corpus tokenizer/corpus --parquet-dir data/clean/pilot
-```
-
-Отчёт: `tokenizer_friendship.json` — скрипты, утечки `<|...|>`, code/math/JSON density, и fertility только если `tokenizer/artifacts` уже существует.
+The tokenizer build fails on invalid UTF-8, numeric-span changes, ID drift, missing control tokens, failed exact-roundtrip probes, or unknown tokens in the holdout sample. It prints an artifact SHA; that value must be reviewed and frozen manually in the single YAML after evaluation. No tokenizer has yet been approved.

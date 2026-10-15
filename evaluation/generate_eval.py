@@ -7,25 +7,25 @@ import json
 from pathlib import Path
 
 from inference.generate import generate_chat
+from configs.loader import load_config
 
 PROBES = [
-    [{"role": "system", "content": "You are SHINRA, the NULLXES language intelligence layer."},
-     {"role": "user", "content": "Explain grouped-query attention in one paragraph."}],
+    [{"role": "user", "content": "Explain grouped-query attention in one paragraph."}],
     [{"role": "user", "content": "Write a Python function that computes RMSNorm."}],
     [{"role": "user", "content": "Реши: x^2 - 5x + 6 = 0. Покажи шаги."}],
     [{"role": "user", "content": "Return JSON with keys name, hidden_size, layers for SHINRA-4B."}],
-    [{"role": "user", "content": "Call a tool to list files. Respond with a tool_call for listdir with path=/workspace."}],
 ]
 
 
 def main() -> None:
+    eval_config = load_config()["evaluation"]
     parser = argparse.ArgumentParser()
     parser.add_argument("--model", required=True)
-    parser.add_argument("--output", default="evaluation/results/qualitative.json")
+    parser.add_argument("--output", default=f"{eval_config['report_dir']}/qualitative.json")
     args = parser.parse_args()
     rows = []
     for messages in PROBES:
-        text = generate_chat(args.model, messages, max_new_tokens=256, temperature=0.0)
+        text = generate_chat(args.model, messages, max_new_tokens=eval_config["qualitative_max_new_tokens"], temperature=0.0)
         rows.append({"messages": messages, "output": text})
     path = Path(args.output)
     path.parent.mkdir(parents=True, exist_ok=True)

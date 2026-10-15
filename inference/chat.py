@@ -5,23 +5,21 @@ from __future__ import annotations
 import argparse
 
 from .generate import generate_chat, load_generate_stack
+from configs.loader import load_config
 
 
 def main() -> None:
+    inference_cfg = load_config()["inference"]
     parser = argparse.ArgumentParser(description="Interactive SHINRA chat")
     parser.add_argument("--model", required=True)
-    parser.add_argument(
-        "--system",
-        default="You are SHINRA, a language model developed by NULLXES.",
-    )
-    parser.add_argument("--max-new-tokens", type=int, default=512)
-    parser.add_argument("--temperature", type=float, default=0.7)
-    parser.add_argument("--top-p", type=float, default=0.9)
-    parser.add_argument("--dtype", default="bfloat16")
+    parser.add_argument("--system", default=None, help="Optional caller supplied system message")
+    parser.add_argument("--max-new-tokens", type=int, default=inference_cfg["default_max_new_tokens"])
+    parser.add_argument("--temperature", type=float, default=inference_cfg["default_temperature"])
+    parser.add_argument("--top-p", type=float, default=inference_cfg["default_top_p"])
     args = parser.parse_args()
 
-    tokenizer, model = load_generate_stack(args.model, dtype=args.dtype)
-    messages = [{"role": "system", "content": args.system}]
+    tokenizer, model = load_generate_stack(args.model)
+    messages = [{"role": "system", "content": args.system}] if args.system else []
 
     print("SHINRA chat. Ctrl+C to exit.")
     while True:

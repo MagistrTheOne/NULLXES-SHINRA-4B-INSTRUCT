@@ -1,32 +1,5 @@
-# Google Colab G4 — SHINRA v2 S0–S2
+# Google Colab launch gate
 
-Локальная RTX 2080 **не является** целью.
+No Colab notebook or launcher is active. Google Colab G4 or a verified A100 is a future runtime target; the actual device, available memory, BF16 support, free disk, and model preflight estimate must be recorded before training.
 
-| Среда | Назначение |
-|-------|------------|
-| Google Colab **G4** (RTX PRO 6000 Blackwell) | барабан S0–S2, BF16, SDPA, tokenizer DNA |
-| Production cluster | не этот цикл |
-
-`configs/colab.yaml` — **железо** (`disk_ceiling_gb: 400`, `max_tokens: 0`). Train recipe: `configs/stages/s0_bringup.yaml`.
-
-Нужен `main` ≥ **`90c5e9a`** (`data/rolling_drum.py`).
-
-Ноутбук барабана: [`notebooks/SHINRA_V2_S0.ipynb`](../notebooks/SHINRA_V2_S0.ipynb)
-Init-only (не S0): `python -m scripts.phase01_bringup --config configs/architecture_v2.yaml`
-(старый `notebooks/SHINRA_COLAB.ipynb` удалён из активного дерева).
-
-```bash
-pip install -e .
-export PYTHONPATH=.
-python scripts/fetch_tokenizer.py --dest tokenizer/artifacts
-python scripts/v2_s0_colab.py --fetch-tokenizer \
-  --corpus-dir /content/shinra_scratch/corpus \
-  --output-dir /content/shinra_scratch/s0
-```
-
-Барабан: produce shard N → SHA → train once → consume/delete → N+1.  
-Crash: не трогать `/content/shinra_scratch/s0`; та же команда читает `run/cursor.json` + checkpoint SHA.
-
-Не `from_pretrained` весов. Не S0.4.1. Не P0. Не identity. Не `chat_template.jinja`. Attention: SDPA, не FA2/FA3. Не `pip install ".[train,flash]"`.
-
-Статус: `run/status.json` + `run/cursor.json` + `run/ledger.jsonl` + `run/metrics.jsonl`.
+The single configuration currently has `status: data_tokenizer_and_runtime_audit_required`, both training gates disabled, and `colab_launch_allowed: false`. `training.pretrain` rejects that state. Do not launch a machine until data and tokenizer audits are complete, the configuration is frozen, automated validation passes, and the review explicitly accepts readiness.

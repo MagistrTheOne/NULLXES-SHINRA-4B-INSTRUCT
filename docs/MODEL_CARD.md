@@ -1,145 +1,20 @@
----
-language:
-  - en
-  - ru
-  - de
-  - fr
-  - es
-  - zh
-  - ja
-  - ko
-  - ar
-license: other
-license_name: nullxes-research
-license_link: LICENSE
-tags:
-  - nullxes
-  - shinra
-  - causal-lm
-  - decoder-only
-  - instruction-tuned
-library_name: transformers
-pipeline_tag: text-generation
----
-
 # NULLXES SHINRA-4B-INSTRUCT
 
-SHINRA. Created by NULLXES. Compatibility with other model families is not SHINRA's identity or lineage. Hugging Face compatibility is an interface property, not model ancestry.
+**Identity:** SHINRA is SHINRA. Created by NULLXES.
 
-This card describes a future INSTRUCT checkpoint. S0–S2 pretrain must not use chat roles or identity lines.
+This repository is preparing a random-initialized decoder-only language model. It is not a trained or usable instruction checkpoint. The `INSTRUCT` release name is retained for project continuity; instruction tuning has not been performed.
 
-**NULLXES SHINRA-4B-INSTRUCT** is the Language Intelligence Layer of the NULLXES system.
+## Design
 
-| Layer | Role |
-| **SHINRA** | **Language Intelligence** |
- 
+Architecture and tokenizer IDs are defined only in [`configs/shinra.yaml`](../configs/shinra.yaml). Current provisional design: hidden size 2560, 36 layers, 32 query heads, 8 KV heads, head dimension 128, intermediate size 9728, 32,768 position window, and 65,536 vocabulary entries. Vocabulary and tokenizer remain subject to corpus audit.
 
-SHINRA is responsible for multilingual understanding, coding intelligence, instruction following, structured outputs, and agent preparation. This checkpoint is the instruction-tuned (and optionally DPO-aligned) 4B-class dense decoder.
+Initialization is random. No previous experiment weights are used. The 20M-token initial budget is a diagnostic run and is not a foundation training claim. FineWeb, FineWeb-Edu, FineWeb-2, and SmolLM-Corpus are excluded.
 
-## Architecture
+## Status and limitations
 
-Proprietary `ShinraForCausalLM` (NULLXES implementation, not a wrapper around foreign weights).
+- Training gates are disabled pending corpus, tokenizer, and runtime review.
+- There is no trained checkpoint, evaluation score, or demonstrated language capability to report.
+- Instruction following, identity behavior, long-context retrieval, safety, and deployment performance are unmeasured.
+- No Google Colab or GPU run has been performed.
 
-| | |
-|---|---|
-| Type | Decoder-only Transformer |
-| Parameters | 3,969,056,256 (tied embeddings) |
-| Hidden size | 2560 residual; Q width 4096 |
-| Layers | 36 |
-| Attention | GQA 32 query / 8 KV heads, head dim 128 |
-| MLP | SwiGLU, intermediate 9728 |
-| Norm | RMSNorm, pre-norm + QK-norm |
-| Position | RoPE, θ = 1e6, YaRN-ready |
-| Context | 8192 train / 32768 native window |
-| Vocab | 131072 SentencePiece Unigram + byte fallback |
-| Precision | BF16 |
-| Attention kernels | PyTorch SDPA Flash / FlashAttention-2 |
-
-Block:
-
-`RMSNorm → GQA+RoPE → residual → RMSNorm → SwiGLU → residual` then final RMSNorm and tied LM head.
-
-Load:
-
-```python
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
-model = AutoModelForCausalLM.from_pretrained(
-    "NULLXES/SHINRA-4B-INSTRUCT",
-    torch_dtype="bfloat16",
-    trust_remote_code=True,
-    device_map="auto",
-)
-tok = AutoTokenizer.from_pretrained("NULLXES/SHINRA-4B-INSTRUCT", trust_remote_code=True)
-messages = [
-    {"role": "system", "content": "You are SHINRA, the NULLXES language intelligence layer."},
-    {"role": "user", "content": "Explain grouped-query attention."},
-]
-prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-out = model.generate(**tok(prompt, return_tensors="pt").to(model.device), max_new_tokens=256)
-```
-
-Special tokens: `<|bos|>` `<|eot|>` `<|system|>` `<|user|>` `<|assistant|>` `<|reasoning|>` `<|code|>` `<|language|>` `<|tool_call|>` `<|tool_response|>` `<|document|>` `<|end_of_text|>`. Generation stop is `<|eot|>`. Document stop is `<|end_of_text|>`.
-
-## Training data
-
-Three stages.
-
-**Pretrain → NULLXES SHINRA-4B-BASE**  
-SHINRA_PRETRAIN_V1: 40% FineWeb-Edu, 20% code (python-edu + licensed Stack), 15% math/science (OpenWebMath, ProofPile-2, peS2o, **full** arXiv bodies), 10% books (PG19 + Gutenberg; no TinyStories), 10% Wikipedia ru/de/fr, 5% NULLXES engineering (robotics/CUDA/docs slice). Language quotas en 75 / ru 15 / other 10. Documents pass ftfy, Gopher/FineWeb quality, script/language ID, toxicity heuristics, code AST/minified filters, and MinHash-LSH (Jaccard 0.80).
-
-**SFT → NULLXES SHINRA-4B-INSTRUCT**  
-30% conversation (Tulu + SmolTalk), 25% code, 20% math, 15% tools/JSON (Hermes function-calling), 10% general (OpenHermes). Packed to 8192 with loss on assistant tokens only.
-
-**DPO**  
-40% UltraFeedback, 30% Python code preference, 20% instruction/tool mix, 10% format (Orca), β = 0.10.
-
-Exact mix weights lived in `configs/data_mix.yaml` (removed from active tree; see `data/specs/V2_UPGRADE_DATA_SPEC.md`).
-
-## Intended use
-
-- Research and internal NULLXES product integration (language layer behind RAIDEN / AION agents).
-- Instruction following, coding assistance, multilingual generation, structured JSON/tool drafts.
-- Further domain adaptation by NULLXES.
-
-Out of scope without additional alignment and policy layers: autonomous high-stakes decisions, medical/legal advice, open internet agents with unconstrained tools.
-
-## Limitations
-
-- 4B-class dense capacity: weaker than 70B-class models on multi-hop reasoning and rare languages.
-- Pretrain budget 200B tokens is overtrained vs Chinchilla-80B but far below frontier token counts.
-- Toxicity and safety filters are heuristic plus optional classifiers; residual harmful content is possible.
-- Long context above 8192 uses RoPE extrapolation (YaRN). Always re-run needle-in-haystack after extension.
-- Custom architecture requires `trust_remote_code=True` on Hugging Face loaders.
-
-## Evaluation
-
-Run:
-
-```bash
-python -m evaluation.perplexity --model $CKPT --data-dir data/packed/pretrain
-python -m evaluation.harness --model $CKPT
-python -m evaluation.needle --model $CKPT
-```
-
-Suite: ARC-Challenge, HellaSwag, WinoGrande, TruthfulQA, MMLU, GSM8K, HumanEval, MBPP, needle-in-haystack at 2k–32k.
-
-## Hardware
-
-Init target is Google Colab G4 (RTX PRO 6000 Blackwell), BF16. Cluster FSDP recipe is not part of architecture v2 freeze.
-
-## License
-
-Source code: NULLXES Research License (see `LICENSE`).  
-Weights: proprietary NULLXES asset. Redistribution of checkpoints requires a written grant.
-
-## Citation
-
-```
-@misc{nullxes-shinra-4b-instruct,
-  title  = {NULLXES SHINRA-4B-INSTRUCT},
-  author = {NULLXES Research},
-  year   = {2026},
-  note   = {Language Intelligence Layer of the NULLXES system}
-}
-```
+Do not present this repository as a completed model release until training, held-out evaluation, and review are complete.

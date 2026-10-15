@@ -10,9 +10,8 @@ from transformers.configuration_utils import PretrainedConfig
 class ShinraConfig(PretrainedConfig):
     """Decoder-only SHINRA Transformer configuration.
 
-    Parameter target (tied embeddings): 3,969,056,256
-      SHINRA v2 geometry:
-      - vocab 131072 × hidden 2560
+    Parameter count depends on the approved vocabulary in configs/shinra.yaml.
+      - vocab size is configured in the single approved YAML
       - 36 layers, GQA 32/8, head_dim 128 (Q width 4096 != residual 2560)
       - SwiGLU intermediate 9728
     eos_token_id is <|eot|> (generation). document_end_token_id is <|end_of_text|>.
@@ -23,7 +22,7 @@ class ShinraConfig(PretrainedConfig):
 
     def __init__(
         self,
-        vocab_size: int = 131072,
+        vocab_size: int = 65536,
         hidden_size: int = 2560,
         intermediate_size: int = 9728,
         num_hidden_layers: int = 36,
@@ -52,7 +51,7 @@ class ShinraConfig(PretrainedConfig):
         attention_implementation: str = "sdpa",
         z_loss_coefficient: float = 1e-5,
         attention_multiplier: float | None = None,
-        document_end_token_id: int = 19,
+        document_end_token_id: int = 4,
         **kwargs: Any,
     ) -> None:
         self.vocab_size = vocab_size

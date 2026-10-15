@@ -18,10 +18,22 @@ def test_single_config_is_complete_and_training_is_gated():
     assert config["identity"]["invariant"] == "SHINRA is SHINRA. Created by NULLXES."
 
 
+def test_ready_configuration_can_enable_colab_only_after_all_review_gates():
+    config = load_config()
+    config["status"] = "ready_for_training"
+    config["training"]["enabled"] = True
+    config["data"]["training_enabled"] = True
+    config["runtime"]["colab_launch_allowed"] = True
+    config["data"]["sources"] = [{"id": "audited/source", "revision": "immutable", "status": "approved"}]
+    config["tokenizer"]["artifact_sha256"] = "a" * 64
+    config["data"]["manifest_sha256"] = "b" * 64
+    validate_config(config, require_ready=True)
+
+
 def test_model_config_uses_separate_eot_and_document_end():
     config = ShinraConfig.from_yaml(str(CONFIG_PATH))
     assert config.eos_token_id == 2
-    assert config.document_end_token_id == 19
+    assert config.document_end_token_id == 4
 
 
 def test_excluded_corpora_cannot_be_reintroduced():

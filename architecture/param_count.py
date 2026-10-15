@@ -6,6 +6,8 @@ import argparse
 import json
 from dataclasses import dataclass
 
+from architecture import count_parameters, from_config
+
 
 @dataclass(frozen=True)
 class ShinraSpec:
@@ -15,7 +17,7 @@ class ShinraSpec:
     num_attention_heads: int = 32
     num_key_value_heads: int = 8
     head_dim: int = 128
-    vocab_size: int = 131072
+    vocab_size: int = 65536
     tie_word_embeddings: bool = True
     qk_norm: bool = True
 
@@ -50,9 +52,12 @@ def count_parameters(spec: ShinraSpec) -> dict[str, int]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="NULLXES SHINRA parameter accounting")
+    parser.add_argument("--config", default="configs/shinra.yaml")
     parser.add_argument("--untied", action="store_true")
     args = parser.parse_args()
-    spec = ShinraSpec(tie_word_embeddings=not args.untied)
+    spec = from_config(args.config)
+    if args.untied:
+        spec = ShinraSpec(**{**spec.__dict__, "tie_word_embeddings": False})
     counts = count_parameters(spec)
     print(json.dumps({"spec": spec.__dict__, "counts": counts, "billions": counts["total"] / 1e9}, indent=2))
 

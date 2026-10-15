@@ -44,9 +44,10 @@ model:
 
 tokenizer:
   status: provisional_until_corpus_audit
+  artifact_dir: tokenizer/artifacts
   algorithm: unigram
   vocab_size: 65536
-  vocab_candidates: [32000, 48000, 64000, 96000]
+  vocab_candidates: [32768, 49152, 65536, 98304]
   byte_fallback: true
   character_coverage: 0.99995
   normalization: NFC
@@ -71,8 +72,6 @@ tokenizer:
     tool_call: 16
     tool_response: 17
     document: 18
-    end_of_document: 19
-  document_end_id: 19
   artifact_sha256: null
   special_tokens:
     unk: "<|unk|>"
@@ -109,6 +108,7 @@ data:
   split_salt: "NULLXES-SHINRA-AUDIT-2026-10-16-v1"
   splits: {train: 0.98, validation: 0.01, blind: 0.01}
   split_unit: source_document_or_work_before_chunking
+  packed_shard_tokens: 100000000
   sources:
     - id: Wikimedia/wikipedia
       subsets: [20231101.en, 20231101.ru]
@@ -145,6 +145,8 @@ data:
     silent_skip: false
     exact_deduplication: true
     near_deduplication: true
+    near_dedup_threshold: 0.80
+    near_dedup_num_perm: 128
     preserve_duplicate_provenance: true
     source_aware_markup_removal: true
     retain_table_context_or_quarantine: true
@@ -174,7 +176,7 @@ training:
   gradient_accumulation_steps: 8
   global_tokens_per_update: 32768
   seed: 42
-  dataloader_num_workers: 2
+  dataloader_num_workers: 0
   gradient_checkpointing: true
   max_grad_norm: 1.0
   max_steps: null
@@ -223,18 +225,34 @@ checkpoint:
     - data_manifest_sha256
     - objective
     - stage
+    - training_config_sha256
   retain_full_checkpoints: 2
   never_delete_unconsumed_data: true
 
 evaluation:
   heldout_required: true
+  perplexity_batch_size: 1
+  continuation_max_new_tokens: 128
+  qualitative_max_new_tokens: 256
+  benchmark_tasks:
+    general: [arc_challenge, hellaswag, winogrande, truthfulqa_mc2]
+    knowledge: [mmlu]
+    math: [gsm8k, minerva_math]
+    code: [humaneval, mbpp]
+  benchmark_max_length: 8192
+  report_dir: evaluation/results
   report_loss_by: [language, numeric_stratum, source, domain]
   report: [processed_tokens, optimizer_steps, tokens_per_second, peak_gpu_memory, train_loss, heldout_loss]
   blind_manifest_frozen_before_training: true
   identity_in_base_pretraining: false
 
+inference:
+  default_max_new_tokens: 512
+  default_temperature: 0.7
+  default_top_p: 0.9
+
 runtime:
-  allowed_gpu_families: [NVIDIA_RTX_PRO_6000_Blackwell_G4, NVIDIA_A100]
+  allowed_gpu_families: [RTX PRO 6000 Blackwell, A100]
   actual_device_query_required: true
   allowed_a100_memory_gb: [40, 80]
   minimum_free_disk_gb: 80

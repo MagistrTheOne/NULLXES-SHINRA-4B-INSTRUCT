@@ -8,7 +8,7 @@ import pyarrow.parquet as pq
 import torch
 from torch.utils.data import Dataset
 
-from data.packed_data import PackedBinDataset
+from data.packed_data import ShardError
 from configs.loader import load_config
 
 
@@ -27,7 +27,17 @@ class PackedParquetDataset(Dataset):
         expected_packed_sha = hashlib.sha256(__import__("json").dumps(packed_manifest, sort_keys=True).encode()).hexdigest()
         if packed_manifest_sha != expected_packed_sha:
             raise ValueError(f"{data_dir}: packed manifest self-hash mismatch")
-        aggregate = hashlib.sha256()
+        declared = packed_manifest.get("shard_files")
+        shard_hashes = packed_manifest.get("shard_sha256")
+        if not isinstance(declared, list) or sorted(declared) != [p.name for p in self.files]:
+            raise ShardError(f"{data_dir}: packed shard set differs from manifest")
+        if not isinstance(shard_hashes, dict) or set(shard_hashes) != set(declared):
+            raise ShardError(f"{data_dir}: packed shard hashes are incomplete")
+        for file in self.files:
+            digest = hashlib.sha256(file.read_bytes()).hexdigest()
+            if shard_hashes[file.name] != digest:
+                raise ShardError(f"{file}: SHA256 differs from packed manifest")
+        source_manifest_hashes = set()
         for file in self.files:
             table = pq.read_table(file)
             if "source_manifest_sha256" not in table.column_names:
@@ -35,12 +45,12 @@ class PackedParquetDataset(Dataset):
             hashes = set(table.column("source_manifest_sha256").to_pylist())
             if len(hashes) != 1:
                 raise ValueError(f"{file}: mixed corpus manifests")
-            aggregate.update(next(iter(hashes)).encode("ascii"))
-        self.source_manifest_sha256 = aggregate.hexdigest()
+            source_manifest_hashes.update(hashes)
+        if len(source_manifest_hashes) != 1:
+            raise ValueError(f"{data_dir}: parquet shards have inconsistent corpus manifests")
+        self.source_manifest_sha256 = next(iter(source_manifest_hashes))
         if self.source_manifest_sha256 != packed_manifest.get("source_manifest_sha256"):
             raise ValueError(f"{data_dir}: parquet shards do not match corpus manifest")
-        if packed_manifest.get("source_manifest_sha256") != self.source_manifest_sha256:
-            raise ValueError(f"{data_dir}: packed manifest source hash mismatch")
         self._offsets: list[tuple[int, int, int]] = []
         total = 0
         for file_idx, file in enumerate(self.files):
@@ -84,9 +94,7 @@ def collate_lm(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
 
 
 def load_packed_dataset(data_dir: str | Path, pad_id: int | None = None):
-    if pad_id is None:
-        pad_id = int(load_config()["tokenizer"]["pad_id"])
-    root = Path(data_dir)
-    if any(root.glob("*.bin")):
-        return PackedBinDataset(root, pad_id=pad_id)
-    return PackedParquetDataset(root)
+    configured_pad = int(load_config()["tokenizer"]["pad_id"])
+    if pad_id is not None and pad_id != configured_pad:
+        raise ShardError("loader pad ID differs from configs/shinra.yaml")
+    return PackedParquetDataset(data_dir)

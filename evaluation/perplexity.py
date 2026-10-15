@@ -10,21 +10,15 @@ from pathlib import Path
 import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from configs.loader import load_config
+from inference.generate import load_generate_stack
 
 from training.collator import PackedParquetDataset, collate_lm
 
 
 @torch.no_grad()
 def evaluate_perplexity(model_path: str, data_dir: str, batch_size: int, max_batches: int | None) -> dict:
-    tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=True, trust_remote_code=True)
-    model = AutoModelForCausalLM.from_pretrained(
-        model_path,
-        torch_dtype=torch.bfloat16,
-        trust_remote_code=True,
-        device_map="auto",
-    )
-    model.eval()
+    tokenizer, model = load_generate_stack(model_path)
     loader = DataLoader(
         PackedParquetDataset(data_dir),
         batch_size=batch_size,
@@ -43,6 +37,8 @@ def evaluate_perplexity(model_path: str, data_dir: str, batch_size: int, max_bat
         nll_sum += float(out.loss.item()) * valid
         token_count += valid
     mean_nll = nll_sum / max(token_count, 1)
+    if token_count == 0:
+        raise ValueError("held-out dataset produced zero scored next-token targets")
     return {
         "nll": mean_nll,
         "heldout_ce": mean_nll,
@@ -59,9 +55,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="SHINRA held-out perplexity")
     parser.add_argument("--model", required=True)
     parser.add_argument("--data-dir", required=True)
-    parser.add_argument("--batch-size", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=load_config()["evaluation"]["perplexity_batch_size"])
     parser.add_argument("--max-batches", type=int, default=None)
-    parser.add_argument("--output", default="evaluation/results/perplexity.json")
+    parser.add_argument("--output", default=f"{load_config()['evaluation']['report_dir']}/perplexity.json")
     args = parser.parse_args()
     result = evaluate_perplexity(args.model, args.data_dir, args.batch_size, args.max_batches)
     path = Path(args.output)

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from evaluation.harness import main as harness_main
+from configs.loader import load_config
 
-CODE_TASKS = ["humaneval", "mbpp"]
+CODE_TASKS = load_config()["evaluation"]["benchmark_tasks"]["code"]
 
 
 def main() -> None:

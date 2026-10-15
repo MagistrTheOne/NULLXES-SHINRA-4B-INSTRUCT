@@ -2,16 +2,7 @@
 
 from __future__ import annotations
 
-from functools import partial
-
 import torch
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-
-from model.modeling_shinra import ShinraDecoderLayer
-
-
-def shinra_auto_wrap_policy():
-    return partial(transformer_auto_wrap_policy, transformer_layer_cls={ShinraDecoderLayer})
 
 
 def enable_tf32() -> None:
