@@ -8,6 +8,8 @@ import pyarrow.parquet as pq
 import torch
 import pytest
 
+from configs.loader import load_config
+from data.pack import _row, pack_token_stream
 from data.packed_data import count_target_tokens_post_shift
 from training.collator import PackedParquetDataset
 from training.sampler import StatefulRandomSampler
@@ -29,6 +31,20 @@ def test_stateful_sampler_restores_exact_next_index():
     resumed.load_state_dict(state)
     assert list(iter(resumed))[0] == expected_next
     assert len(set(first)) == len(first)
+
+
+def test_isolated_document_rows_mask_pad_and_cross_pad_targets():
+    config = load_config()
+    rows = pack_token_stream([[1, 42, 4], [1, 43, 4]], 6, config=config)
+    assert len(rows) == 2
+    assert rows[0]["input_ids"] == [1, 42, 4, 3, 3, 3]
+    assert rows[0]["labels"] == [-100, 42, 4, -100, -100, -100]
+    assert rows[0]["attention_mask"] == [1, 1, 1, 0, 0, 0]
+
+
+def test_single_token_pretrain_sequence_has_no_shifted_target():
+    row = _row([4, 3, 3], 3, load_config())
+    assert count_target_tokens_post_shift(torch.tensor([row["labels"]])) == 0
 
 
 def _write_packed_fixture(path):

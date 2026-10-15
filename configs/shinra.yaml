@@ -50,7 +50,7 @@ tokenizer:
   vocab_candidates: [32768, 49152, 65536, 98304]
   byte_fallback: true
   character_coverage: 0.99995
-  normalization: NFC
+  normalization: identity
   split_digits: false
   unk_id: 0
   bos_id: 1
@@ -94,6 +94,8 @@ tokenizer:
     tool_response: "<|tool_response|>"
     document: "<|document|>"
   add_bos_in_tokenizer: false
+  chat_template_adds_bos: true
+  chat_turn_stop_id: 2
   require_exact_roundtrip: true
   require_zero_unk_on_probes: true
   numeric_rewrite: forbidden
@@ -164,6 +166,15 @@ data:
     train_evaluation_document_overlap_allowed: false
     require_original_raw_sha256: true
     require_declared_train_validation_blind_split: true
+  packing:
+    policy: isolated_documents
+    isolate_document_attention: true
+    overlength_document_policy: reject_until_chunking_contract_is_approved
+    loss_on_bos: false
+    loss_on_eod: true
+    loss_on_pad: false
+    loss_on_first_token_after_pad: false
+    document_end_token_id: 4
 
 training:
   enabled: false

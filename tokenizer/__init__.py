@@ -16,6 +16,8 @@ def load_shinra_tokenizer(path: str | Path) -> PreTrainedTokenizerFast:
 
     tokenizer = AutoTokenizer.from_pretrained(str(path), use_fast=True, local_files_only=True)
     config = load_config()["tokenizer"]
+    if bool(getattr(tokenizer, "add_bos_token", False)) != bool(config["add_bos_in_tokenizer"]):
+        raise ValueError("tokenizer implicit BOS behavior differs from configs/shinra.yaml")
     if len(tokenizer) != int(config["vocab_size"]):
         raise ValueError("tokenizer vocabulary size differs from configs/shinra.yaml")
     expected = {config["special_tokens"][key]: int(value)

@@ -50,9 +50,17 @@ def wrap_pretrain_document(body_ids: list[int], bos_id: int | None = None, end_i
     end_id = int(tok["end_of_document_id"]) if end_id is None else end_id
     if not body_ids:
         raise PackContractError("empty document")
+    if not config["data"]["packing"].get("isolate_document_attention"):
+        raise PackContractError("document isolation is disabled; this packer only implements isolated rows")
+    if int(tok["pad_id"]) in body_ids:
+        raise PackContractError("PAD token is forbidden in source document bodies")
     if bos_id != int(tok["bos_id"]) or end_id != int(tok["end_of_document_id"]):
         raise PackContractError("BOS or document end ID differs from configs/shinra.yaml")
     assert_pretrain_body_clean(body_ids, config)
+    if config["data"]["packing"].get("loss_on_bos") is not True:
+        raise PackContractError("packing config must train BOS as the next-token target of the preceding boundary")
+    if not config["data"]["packing"].get("loss_on_eod", True):
+        raise PackContractError("excluding EOD from loss is not supported by the current row contract")
     wrapped = [bos_id, *body_ids, end_id]
     assert_packed_ids_clean(wrapped, config)
     return wrapped
@@ -60,9 +68,31 @@ def wrap_pretrain_document(body_ids: list[int], bos_id: int | None = None, end_i
 
 def _row(ids: list[int], pad_id: int, config: dict) -> dict:
     assert_packed_ids_clean(ids, config)
+    tok = config["tokenizer"]
     mask = [int(token != pad_id) for token in ids]
-    labels = [token if keep else -100 for token, keep in zip(ids, mask)]
+    labels = [-100] + [token if keep else -100 for token, keep in list(zip(ids, mask))[1:]]
+    for index, token in enumerate(ids):
+        if token in {pad_id, int(tok["bos_id"])}:
+            labels[index] = -100
+        elif index > 0 and mask[index - 1] == 0:
+            # Do not train a target across a padded row boundary.
+            labels[index] = -100
     return {"input_ids": ids, "labels": labels, "attention_mask": mask}
+
+
+def _write_parquet_shard(rows: list[dict], output_dir: Path, index: int, *, source_manifest_sha256: str) -> str:
+    name = f"packed-{index:05d}.parquet"
+    enriched = [{**row, "source_manifest_sha256": source_manifest_sha256} for row in rows]
+    pq.write_table(pa.Table.from_pylist(enriched), output_dir / name)
+    return name
+
+
+def _flush_rows(rows: list[dict], output_dir: Path, shard_index: int, source_manifest_sha256: str,
+                sequence_length: int) -> tuple[str, int, int]:
+    shard_name = _write_parquet_shard(rows, output_dir, shard_index,
+                                      source_manifest_sha256=source_manifest_sha256)
+    tokens = sum(sum(row["attention_mask"]) for row in rows)
+    return shard_name, tokens, len(rows) * sequence_length
 
 
 def pack_token_stream(documents: list[list[int]], sequence_length: int, pad_id: int | None = None,
@@ -74,19 +104,17 @@ def pack_token_stream(documents: list[list[int]], sequence_length: int, pad_id: 
     pad_id = configured_pad if pad_id is None else pad_id
     if pad_id != configured_pad:
         raise PackContractError("pad ID differs from configs/shinra.yaml")
-    buffer: list[int] = []
+    if config["data"]["packing"]["policy"] != "isolated_documents":
+        raise PackContractError("only isolated document packing is implemented")
     rows: list[dict] = []
     for document in documents:
         if not document:
             raise PackContractError("empty wrapped document")
+        if len(document) > sequence_length:
+            raise PackContractError("document exceeds sequence_length; explicit chunking policy is required")
         assert_packed_ids_clean(document, config)
-        buffer.extend(document)
-        while len(buffer) >= sequence_length:
-            rows.append(_row(buffer[:sequence_length], pad_id, config))
-            buffer = buffer[sequence_length:]
-    if buffer:
-        buffer.extend([pad_id] * (sequence_length - len(buffer)))
-        rows.append(_row(buffer, pad_id, config))
+        padded = list(document) + [pad_id] * (sequence_length - len(document))
+        rows.append(_row(padded, pad_id, config))
     return rows
 
 
@@ -138,6 +166,8 @@ def resolve_pretrain_special_ids(tokenizer, config: dict | None = None) -> tuple
 def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequence_length: int,
                    shard_tokens: int, *, config_path: Path, required_split: str) -> dict:
     config = load_config(config_path)
+    if config["data"]["packing"]["policy"] != "isolated_documents":
+        raise PackContractError("only isolated document packing is implemented")
     if sequence_length != int(config["model"]["train_sequence_length"]):
         raise PackContractError("sequence_length must match model.train_sequence_length in configs/shinra.yaml")
     if shard_tokens != int(config["data"]["packed_shard_tokens"]):
@@ -181,27 +211,31 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
         ids = tokenizer.encode(record["text"], add_special_tokens=False, truncation=False)
         if not ids:
             raise PackContractError("tokenizer produced an empty sequence")
+        decoded = tokenizer.decode(ids, skip_special_tokens=False)
+        if decoded != record["text"]:
+            raise PackContractError("tokenizer encode/decode round-trip changed cleaned source text")
         documents += 1
         tokens_in += len(ids)
-        buffer.extend(wrap_pretrain_document(ids, bos_id, end_id, config))
-        while len(buffer) >= sequence_length:
-            rows.append(_row(buffer[:sequence_length], pad_id, config))
-            buffer = buffer[sequence_length:]
-            if len(rows) * sequence_length >= shard_tokens:
-                shard_paths.append(_write_parquet_shard(rows, output_dir, shard_index,
-                                                        source_manifest_sha256=corpus_manifest_sha))
-                tokens_out += sum(sum(row["attention_mask"]) for row in rows)
-                padded_slots += len(rows) * sequence_length
-                shard_index += 1
-                rows = []
-    if buffer:
-        buffer.extend([pad_id] * (sequence_length - len(buffer)))
-        rows.append(_row(buffer, pad_id, config))
+        document_rows = pack_token_stream(
+            [wrap_pretrain_document(ids, bos_id, end_id, config)], sequence_length, pad_id, config
+        )
+        rows.extend(document_rows)
+        if len(rows) * sequence_length >= shard_tokens:
+            shard_name, shard_tokens_actual, shard_slots = _flush_rows(
+                rows, output_dir, shard_index, corpus_manifest_sha, sequence_length
+            )
+            shard_paths.append(shard_name)
+            tokens_out += shard_tokens_actual
+            padded_slots += shard_slots
+            shard_index += 1
+            rows = []
     if rows:
-        shard_paths.append(_write_parquet_shard(rows, output_dir, shard_index,
-                                                source_manifest_sha256=corpus_manifest_sha))
-        tokens_out += sum(sum(row["attention_mask"]) for row in rows)
-        padded_slots += len(rows) * sequence_length
+        shard_name, shard_tokens_actual, shard_slots = _flush_rows(
+            rows, output_dir, shard_index, corpus_manifest_sha, sequence_length
+        )
+        shard_paths.append(shard_name)
+        tokens_out += shard_tokens_actual
+        padded_slots += shard_slots
         shard_index += 1
     report = {"packer": PACKER_VERSION, "split": required_split, "documents": documents,
               "tokens_in": tokens_in, "tokens_out": tokens_out, "sequence_length": sequence_length,
@@ -221,13 +255,6 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
         temporary.replace(root_manifest)
         temporary.replace(root_manifest)
     return report
-
-
-def _write_parquet_shard(rows: list[dict], output_dir: Path, index: int, *, source_manifest_sha256: str) -> str:
-    name = f"packed-{index:05d}.parquet"
-    enriched = [{**row, "source_manifest_sha256": source_manifest_sha256} for row in rows]
-    pq.write_table(pa.Table.from_pylist(enriched), output_dir / name)
-    return name
 
 
 def main() -> None:

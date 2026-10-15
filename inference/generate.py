@@ -108,11 +108,7 @@ def generate_chat(
         "max_new_tokens": max_new_tokens,
         "do_sample": do_sample,
         "eos_token_id": tokenizer.eos_token_id,
-        "pad_token_id": (
-            tokenizer.pad_token_id
-            if tokenizer.pad_token_id is not None
-            else tokenizer.eos_token_id
-        ),
+        "pad_token_id": tokenizer.pad_token_id,
         "use_cache": True,
     }
     if do_sample:

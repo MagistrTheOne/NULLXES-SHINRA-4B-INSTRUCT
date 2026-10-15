@@ -72,6 +72,12 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
                           f"extra={sorted(specials.keys() - expected_specials)}")
     if len(set(specials.values())) != len(specials):
         raise ConfigError("special token strings must be unique")
+    if tokenizer.get("normalization") != "identity" or config["data"].get("cleaning", {}).get("unicode_normalization") != "NFC":
+        raise ConfigError("tokenizer must preserve normalized corpus text exactly (identity model normalization)")
+    if tokenizer.get("add_bos_in_tokenizer") is not False or tokenizer.get("chat_template_adds_bos") is not True:
+        raise ConfigError("tokenizer must not auto-add BOS; chat template must add one BOS")
+    if tokenizer.get("chat_turn_stop_id") != tokenizer.get("end_of_turn_id"):
+        raise ConfigError("chat turn stop ID must match EOT")
     for offset, key in enumerate(("system", "user", "assistant", "reasoning", "code", "language", "fim_prefix",
                                   "fim_suffix", "fim_middle", "repo", "file", "tool_call", "tool_response",
                                   "document"), start=5):
@@ -79,6 +85,17 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
             raise ConfigError(f"tokenizer.special_token_ids.{key} must be {offset}")
     if model["document_end_token_id"] != tokenizer["end_of_document_id"]:
         raise ConfigError("model document_end_token_id must match tokenizer.end_of_document_id")
+    packing = config["data"].get("packing", {})
+    if packing.get("policy") != "isolated_documents" or packing.get("isolate_document_attention") is not True:
+        raise ConfigError("the approved packing policy must isolate documents")
+    if packing.get("document_end_token_id") != tokenizer["end_of_document_id"]:
+        raise ConfigError("packing document end ID differs from the tokenizer contract")
+    if packing.get("overlength_document_policy") != "reject_until_chunking_contract_is_approved":
+        raise ConfigError("unknown overlength document policy")
+    if packing.get("loss_on_bos") is not False or packing.get("loss_on_eod") is not True:
+        raise ConfigError("BOS is context-only and EOD must be trained as a document-boundary target")
+    if packing.get("loss_on_pad") is not False or packing.get("loss_on_first_token_after_pad") is not False:
+        raise ConfigError("PAD and the first post-PAD target must be excluded from loss")
     if tokenizer["special_tokens"]["end_of_document"] not in {"<|end_of_text|>", "<|document_end|>"}:
         raise ConfigError("document termination token must remain a dedicated end-of-document control")
     if config["data"].get("training_enabled") and config["training"].get("enabled"):

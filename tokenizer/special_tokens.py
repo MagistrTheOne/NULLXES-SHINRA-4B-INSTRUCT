@@ -9,6 +9,8 @@ ID layout (SentencePiece):
   3 <|pad|>
   4 <|end_of_text|>     document terminator
   5-18 configured user-defined control symbols
+
+SentencePiece internal normalization must preserve Unicode and whitespace; the artifact is only approved after exact decode/encode checks on real EN/RU data.
 """
 
 from __future__ import annotations
@@ -94,7 +96,7 @@ TOKENIZER_CONFIG = {
     "eos_token": EOT,
     "unk_token": UNK,
     "pad_token": PAD,
-    "add_bos_token": True,
+    "add_bos_token": False,
     "add_eos_token": False,
     "clean_up_tokenization_spaces": False,
     "chat_template": CHAT_TEMPLATE,

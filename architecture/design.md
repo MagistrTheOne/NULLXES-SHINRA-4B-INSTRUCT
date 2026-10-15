@@ -5,7 +5,7 @@
 **Role:** Language Intelligence Layer  
 **Family:** RAIDEN (reasoning) · CERBER (vision) · **SHINRA (language)** · AION (embodied)
 
-SHINRA v1 (32 × 3072, GQA 24/8, Q width = residual) is closed as experimental lineage. No v1 weights, identity checkpoints, P0 optimizer states, or post-training LR decisions are inherited.
+Historical experiments are excluded from this base-training lineage.
 
 SHINRA is a NULLXES implementation: `ShinraConfig` / `ShinraForCausalLM`, an own Unigram tokenizer with provisional 65,536 vocabulary, random initialization, and an own training lineage. Geometry is SHINRA's: residual 2560, Q width 4096 (32×128), 36 layers, GQA 32/8, SwiGLU 9728. Hugging Face `PreTrainedModel` is an interface, not ancestry. Do not load foreign checkpoints into this lineage. The approved configuration source is `configs/shinra.yaml`; this design note is historical and non-authoritative.
 
@@ -106,8 +106,8 @@ The following historical risk notes need reconciliation against the current impl
 
 1. **RMSNorm numerics** — `ShinraRMSNorm` uses `F.rms_norm` when present (input dtype). Keep variance in fp32 before long pretrain.
 2. **Initialization** — `post_init` runs on `ShinraModel` and again on `ShinraForCausalLM`, then `_scaled_residual_init` on `o_proj`/`down_proj`. Audit the path before trusting `0.02/sqrt(2L)`.
-3. **Dual BOS** — `chat_template.jinja` emits `bos_token`; SentencePiece→HF `TemplateProcessing` also prepends `<|bos|>` when `add_special_tokens=True`. One authoritative encode path is required.
-4. **Pretrain packing** — confirm the effective cross-document attention policy against the approved data contract before enabling training.
+3. **BOS** — the chat template inserts BOS once; tokenizer backend automatic BOS insertion is disabled and checked.
+4. **Pretrain packing** — documents use isolated rows; overlength records fail pending an explicit chunking and document-boundary policy.
 
 Then optimizer / LR / WSD.
 

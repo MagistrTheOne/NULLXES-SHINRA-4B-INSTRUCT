@@ -8,3 +8,5 @@ Evaluation settings and benchmark task lists live in `configs/shinra.yaml`. No e
 - `evaluation.generate_eval` writes qualitative outputs for manual inspection only. It is not a benchmark score.
 
 The deleted synthetic needle probe and its hard-coded codeword are not evaluation evidence. Long-context capability remains unmeasured until a licensed, held-out task set and a real checkpoint are available.
+
+The generic continuation evaluator currently stops on EOD. Its prompts must be document-completion probes, not assistant chat turns. Chat generation stops on EOT; mixing these contracts would invalidate the result.

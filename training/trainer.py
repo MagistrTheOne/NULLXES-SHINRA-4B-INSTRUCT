@@ -313,6 +313,8 @@ def run_lm_training(cfg: TrainConfig) -> dict:
             target_tokens_this_batch = count_target_tokens_post_shift(batch["labels"])
             if target_tokens_this_batch <= 0:
                 raise RuntimeError("training batch has no valid next-token targets")
+            if torch.any(batch["labels"][:, 0] != -100):
+                raise RuntimeError("the first token of each isolated sequence must be masked from shifted loss")
             accelerator.backward(result.loss)
             if accelerator.sync_gradients:
                 norm = accelerator.clip_grad_norm_(model.parameters(), cfg.grad_clip)

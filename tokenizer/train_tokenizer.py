@@ -88,7 +88,7 @@ def build_spm_corpus(inputs: list[Path], corpus_path: Path, max_chars: int) -> d
     bytes_ = 0
     lang_scripts: Counter[str] = Counter()
     normalization = load_config()["tokenizer"]["normalization"]
-    with corpus_path.open("w", encoding="utf-8") as out:
+    with corpus_path.open("w", encoding="utf-8", newline="") as out:
         for file in files:
             with file.open("r", encoding="utf-8", errors="strict") as handle:
                 for line in handle:
@@ -108,9 +108,6 @@ def build_spm_corpus(inputs: list[Path], corpus_path: Path, max_chars: int) -> d
                             "documents": docs, "chars": chars, "bytes": bytes_, "files": len(files),
                             "rejected_short_records": rejected_short, "scripts": dict(lang_scripts),
                         }
-                    if len(text) > remaining:
-                        # Do not truncate text: that could silently damage a number or split a document.
-                        continue
                     out.write(text + "\n")
                     docs += 1
                     chars += len(text)
@@ -121,6 +118,11 @@ def build_spm_corpus(inputs: list[Path], corpus_path: Path, max_chars: int) -> d
                         lang_scripts["cjk"] += 1
                     if any(ch.isascii() and ch.isalpha() for ch in text[:400]):
                         lang_scripts["latin"] += 1
+                    if chars >= max_chars:
+                        return {
+                            "documents": docs, "chars": chars, "bytes": bytes_, "files": len(files),
+                            "rejected_short_records": rejected_short, "scripts": dict(lang_scripts),
+                        }
     return {
         "documents": docs,
         "chars": chars,
@@ -158,7 +160,7 @@ def train_sentencepiece(
         split_digits=bool(tok["split_digits"]),
         allow_whitespace_only_pieces=True,
         remove_extra_whitespaces=False,
-        normalization_rule_name=str(tok["normalization"]).lower(),
+        normalization_rule_name="identity",
         add_dummy_prefix=True,
         unk_id=int(tok["unk_id"]),
         bos_id=int(tok["bos_id"]),
@@ -211,14 +213,9 @@ def convert_spm_to_hf(model_file: Path, output_dir: Path) -> None:
     tokenizer = Tokenizer(Unigram(vocab, unk_id=int(token_cfg["unk_id"])))
     tokenizer.pre_tokenizer = pre_tokenizers.Metaspace(replacement="▁", add_prefix_space=True)
     tokenizer.decoder = decoders.Metaspace(replacement="▁", add_prefix_space=True)
-    tokenizer.post_processor = processors.TemplateProcessing(
-        single=f"{BOS} $A",
-        pair=f"{BOS} $A {BOS} $B",
-        special_tokens=[
-            (BOS, int(token_cfg["bos_id"])),
-            (EOT, int(token_cfg["end_of_turn_id"])),
-        ],
-    )
+    # `add_special_tokens=False` is the contract for corpus bodies. Chat templates
+    # insert BOS explicitly, so the tokenizer backend must never prepend another.
+    tokenizer.post_processor = None
 
     output_dir.mkdir(parents=True, exist_ok=True)
     tokenizer_json_path = output_dir / "tokenizer.json"
@@ -263,6 +260,7 @@ def convert_spm_to_hf(model_file: Path, output_dir: Path) -> None:
         encoding="utf-8",
     )
     config = dict(TOKENIZER_CONFIG)
+    config["add_bos_token"] = bool(token_cfg["add_bos_in_tokenizer"])
     config["added_tokens_decoder"] = {
         str(hf_tok.convert_tokens_to_ids(tok)): {
             "content": tok,
@@ -283,6 +281,9 @@ def evaluate_tokenizer(output_dir: Path, sample_files: list[Path], report_path: 
     from transformers import AutoTokenizer
 
     tok = AutoTokenizer.from_pretrained(str(output_dir), use_fast=True, local_files_only=True)
+    auto_bos_ids = tok.encode("round trip probe", add_special_tokens=True)
+    if auto_bos_ids and auto_bos_ids[0] == tok.bos_token_id:
+        raise ValueError("tokenizer adds BOS implicitly; chat template and corpus paths require one explicit BOS")
     samples: list[str] = []
     for file in sample_files[:32]:
         with file.open("r", encoding="utf-8", errors="strict") as handle:
@@ -306,13 +307,16 @@ def evaluate_tokenizer(output_dir: Path, sample_files: list[Path], report_path: 
     unk_id = tok.unk_token_id
     for text in samples:
         ids = tok.encode(text, add_special_tokens=False)
+        decoded = tok.decode(ids, skip_special_tokens=False)
+        if decoded != text:
+            raise ValueError(f"tokenizer exact round-trip failed for approved sample: {text[:120]!r}")
         nbytes = len(text.encode("utf-8"))
         byte_counts += nbytes
         token_counts += len(ids)
         unk_counts += sum(1 for i in ids if i == unk_id)
         bucket = int(math.log2(max(len(ids), 1)))
         length_hist[bucket] += 1
-        if any(tok in text for tok in ("def ", "class ", "function ", "#include", "fn ", "impl ")):
+        if any(marker in text for marker in ("def ", "class ", "function ", "#include", "fn ", "impl ")):
             code_token_counts += len(ids)
             code_bytes += nbytes
 
@@ -320,7 +324,20 @@ def evaluate_tokenizer(output_dir: Path, sample_files: list[Path], report_path: 
     unk_rate = unk_counts / max(token_counts, 1)
     code_fertility = code_token_counts / max(code_bytes, 1) if code_bytes else None
 
+    numeric_probes = [
+        "2026", "0000123456", "3.1415926535", "-0.000001", "1,234.56", "1 234,56",
+        "2026-10-16", "1e-9", "10^12", "₽149.99", "0xFF", "1/3", "12:30:45", "ё Ё № ± × ÷",
+    ]
+    numeric_roundtrip_failures = []
+    for probe in numeric_probes:
+        restored = tok.decode(tok.encode(probe, add_special_tokens=False), skip_special_tokens=False)
+        if restored != probe:
+            numeric_roundtrip_failures.append({"source": probe, "decoded": restored})
+    if numeric_roundtrip_failures:
+        raise ValueError(f"numeric/symbol exact round-trip failed: {numeric_roundtrip_failures}")
+
     probes = {
+        "numeric_roundtrip_probes": numeric_probes,
         "system_user_roundtrip": tok.decode(
             tok.encode(f"{SYSTEM}Answer directly.{EOT}{USER}Explain a kernel.{EOT}{ASSISTANT}", add_special_tokens=False),
             skip_special_tokens=False,
@@ -341,6 +358,8 @@ def evaluate_tokenizer(output_dir: Path, sample_files: list[Path], report_path: 
         "bytes_per_token": (byte_counts / token_counts) if token_counts else None,
         "tokens_per_byte": fertility,
         "unk_rate": unk_rate,
+        "exact_roundtrip_failures": 0,
+        "numeric_roundtrip_failures": len(numeric_roundtrip_failures),
         "code_bytes_per_token": (code_bytes / code_token_counts) if code_token_counts else None,
         "code_fertility": code_fertility,
         "length_log2_histogram": {str(k): v for k, v in sorted(length_hist.items())},
@@ -350,6 +369,8 @@ def evaluate_tokenizer(output_dir: Path, sample_files: list[Path], report_path: 
             "math_probe_len": len(probes["math_probe_tokens"]),
             "cyrillic_probe_len": len(probes["cyrillic_probe_tokens"]),
             "special_ids": probes["special_ids"],
+            "numeric_roundtrip_probes": probes["numeric_roundtrip_probes"],
+            "numeric_roundtrip_failures": len(numeric_roundtrip_failures),
         },
         "required_specials_present": all(
             tok.convert_tokens_to_ids(t) != tok.unk_token_id
@@ -395,6 +416,8 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit("--vocab-size must match configs/shinra.yaml")
     if args.character_coverage != config["tokenizer"]["character_coverage"]:
         raise SystemExit("--character-coverage must match configs/shinra.yaml")
+    if config["tokenizer"]["normalization"] != "identity":
+        raise SystemExit("tokenizer.normalization must be 'identity' for exact Unicode round-trip")
     inputs = [Path(p).resolve() for p in args.input]
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
