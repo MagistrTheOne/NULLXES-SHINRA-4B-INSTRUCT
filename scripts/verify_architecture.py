@@ -10,6 +10,7 @@ import torch
 from architecture.param_count import ShinraSpec, count_parameters
 from model.configuration_shinra import ShinraConfig
 from model.modeling_shinra import ShinraForCausalLM
+from configs.loader import load_config
 
 
 def main() -> None:
@@ -23,7 +24,9 @@ def main() -> None:
     args = parser.parse_args()
 
     analytical = count_parameters(ShinraSpec())
-    cfg = ShinraConfig(use_cache=True, attention_implementation=args.attn)
+    cfg = ShinraConfig.from_yaml("configs/shinra.yaml")
+    cfg.use_cache = True
+    cfg.attention_implementation = args.attn
     cfg._attn_implementation = args.attn
     meta = torch.device("meta")
     with torch.device(meta):

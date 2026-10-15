@@ -14,6 +14,7 @@ def build_optimizer(
     weight_decay: float,
     betas: tuple[float, float],
     eps: float,
+    fused: bool | None = None,
 ) -> AdamW:
     decay: list[torch.nn.Parameter] = []
     no_decay: list[torch.nn.Parameter] = []
@@ -27,7 +28,8 @@ def build_optimizer(
                 no_decay.append(param)
             else:
                 decay.append(param)
-    fused = torch.cuda.is_available()
+    if fused is None:
+        fused = torch.cuda.is_available()
     return AdamW(
         [
             {"params": decay, "weight_decay": weight_decay},
@@ -36,5 +38,5 @@ def build_optimizer(
         lr=learning_rate,
         betas=betas,
         eps=eps,
-        fused=fused,
+        fused=bool(fused and torch.cuda.is_available()),
     )

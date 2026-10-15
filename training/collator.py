@@ -8,7 +8,8 @@ import pyarrow.parquet as pq
 import torch
 from torch.utils.data import Dataset
 
-from data.shards import PackedBinDataset
+from data.packed_data import PackedBinDataset
+from configs.loader import load_config
 
 
 class PackedParquetDataset(Dataset):
@@ -16,6 +17,30 @@ class PackedParquetDataset(Dataset):
         self.files = sorted(Path(data_dir).glob("*.parquet"))
         if not self.files:
             raise FileNotFoundError(f"No parquet files in {data_dir}")
+        import hashlib
+
+        packed_manifest_path = Path(data_dir) / "manifest.json"
+        if not packed_manifest_path.is_file():
+            raise ValueError(f"{data_dir}: packed manifest.json is required")
+        packed_manifest = __import__("json").loads(packed_manifest_path.read_text(encoding="utf-8"))
+        packed_manifest_sha = packed_manifest.pop("manifest_sha256", None)
+        expected_packed_sha = hashlib.sha256(__import__("json").dumps(packed_manifest, sort_keys=True).encode()).hexdigest()
+        if packed_manifest_sha != expected_packed_sha:
+            raise ValueError(f"{data_dir}: packed manifest self-hash mismatch")
+        aggregate = hashlib.sha256()
+        for file in self.files:
+            table = pq.read_table(file)
+            if "source_manifest_sha256" not in table.column_names:
+                raise ValueError(f"{file}: corpus provenance missing")
+            hashes = set(table.column("source_manifest_sha256").to_pylist())
+            if len(hashes) != 1:
+                raise ValueError(f"{file}: mixed corpus manifests")
+            aggregate.update(next(iter(hashes)).encode("ascii"))
+        self.source_manifest_sha256 = aggregate.hexdigest()
+        if self.source_manifest_sha256 != packed_manifest.get("source_manifest_sha256"):
+            raise ValueError(f"{data_dir}: parquet shards do not match corpus manifest")
+        if packed_manifest.get("source_manifest_sha256") != self.source_manifest_sha256:
+            raise ValueError(f"{data_dir}: packed manifest source hash mismatch")
         self._offsets: list[tuple[int, int, int]] = []
         total = 0
         for file_idx, file in enumerate(self.files):
@@ -58,7 +83,9 @@ def collate_lm(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
     return {key: torch.stack([row[key] for row in batch], dim=0) for key in keys}
 
 
-def load_packed_dataset(data_dir: str | Path, pad_id: int = 3):
+def load_packed_dataset(data_dir: str | Path, pad_id: int | None = None):
+    if pad_id is None:
+        pad_id = int(load_config()["tokenizer"]["pad_id"])
     root = Path(data_dir)
     if any(root.glob("*.bin")):
         return PackedBinDataset(root, pad_id=pad_id)

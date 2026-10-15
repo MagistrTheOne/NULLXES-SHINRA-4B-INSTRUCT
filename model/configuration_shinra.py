@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any
-import os
 
 from transformers.configuration_utils import PretrainedConfig
 
@@ -53,7 +52,7 @@ class ShinraConfig(PretrainedConfig):
         attention_implementation: str = "sdpa",
         z_loss_coefficient: float = 1e-5,
         attention_multiplier: float | None = None,
-        document_end_token_id: int = 18,
+        document_end_token_id: int = 19,
         **kwargs: Any,
     ) -> None:
         self.vocab_size = vocab_size
@@ -139,30 +138,15 @@ class ShinraConfig(PretrainedConfig):
         return data
 
     @classmethod
-    def from_yaml(cls, path: str | os.PathLike[str]) -> ShinraConfig:
-        """Load architecture from YAML.
-
-        Architecture always comes from that file's `model:` section or from
-        sibling `architecture_v2.yaml`. Training hyperparams are ignored here.
-        """
+    def from_yaml(cls, path: str) -> ShinraConfig:
+        """Load architecture from the approved single configuration file."""
         from pathlib import Path
 
-        import yaml
-
         yaml_path = Path(path)
-        payload = yaml.safe_load(yaml_path.read_text(encoding="utf-8")) or {}
+        from configs.loader import load_config
+
+        payload = load_config(yaml_path)
         model_raw = payload.get("model")
-        if not model_raw:
-            # Active V2 path: no silent legacy fallback. Architecture must come from
-            # architecture_v2.yaml in the same directory; anything else is an error.
-            arch_path = yaml_path.parent / "architecture_v2.yaml"
-            if yaml_path.name != "architecture_v2.yaml" and arch_path.exists():
-                model_raw = (yaml.safe_load(arch_path.read_text(encoding="utf-8")) or {}).get("model")
-            if not model_raw:
-                raise FileNotFoundError(
-                    f"{yaml_path} has no model: section; expected architecture_v2.yaml "
-                    f"in {yaml_path.parent} (legacy shinra_4b.yaml is not consulted)"
-                )
         if not model_raw:
             raise ValueError(f"No model architecture in {yaml_path}")
         allowed = {

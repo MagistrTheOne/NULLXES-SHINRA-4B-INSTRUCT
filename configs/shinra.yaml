@@ -1,0 +1,243 @@
+# Single source of truth for SHINRA model, data policy, training, evaluation,
+# checkpointing, and runtime. Training stays disabled until all audit gates pass.
+schema_version: nullxes.shinra.v3
+status: data_tokenizer_and_runtime_audit_required
+
+identity:
+  family: NULLXES-SHINRA
+  release: NULLXES-SHINRA-4B-INSTRUCT
+  invariant: "SHINRA is SHINRA. Created by NULLXES."
+  initialization: random
+  historical_weights_allowed: false
+  historical_resume_allowed: false
+
+model:
+  model_type: nullxes_shinra
+  architectures: [ShinraForCausalLM]
+  hidden_size: 2560
+  intermediate_size: 9728
+  num_hidden_layers: 36
+  num_attention_heads: 32
+  num_key_value_heads: 8
+  head_dim: 128
+  vocab_size: 65536
+  max_position_embeddings: 32768
+  train_sequence_length: 4096
+  hidden_act: silu
+  rms_norm_eps: 1.0e-6
+  rope_theta: 1000000.0
+  rope_scaling: {rope_type: default}
+  attention_dropout: 0.0
+  residual_dropout: 0.0
+  embedding_dropout: 0.0
+  attention_bias: false
+  mlp_bias: false
+  tie_word_embeddings: true
+  qk_norm: true
+  initializer_range: 0.02
+  bos_token_id: 1
+  eos_token_id: 2
+  pad_token_id: 3
+  document_end_token_id: 4
+  z_loss_coefficient: 1.0e-5
+  attention_implementation: sdpa
+
+tokenizer:
+  status: provisional_until_corpus_audit
+  algorithm: unigram
+  vocab_size: 65536
+  vocab_candidates: [32000, 48000, 64000, 96000]
+  byte_fallback: true
+  character_coverage: 0.99995
+  normalization: NFC
+  split_digits: false
+  unk_id: 0
+  bos_id: 1
+  end_of_turn_id: 2
+  pad_id: 3
+  end_of_document_id: 4
+  special_token_ids:
+    system: 5
+    user: 6
+    assistant: 7
+    reasoning: 8
+    code: 9
+    language: 10
+    fim_prefix: 11
+    fim_suffix: 12
+    fim_middle: 13
+    repo: 14
+    file: 15
+    tool_call: 16
+    tool_response: 17
+    document: 18
+    end_of_document: 19
+  document_end_id: 19
+  artifact_sha256: null
+  special_tokens:
+    unk: "<|unk|>"
+    bos: "<|bos|>"
+    end_of_turn: "<|eot|>"
+    pad: "<|pad|>"
+    end_of_document: "<|end_of_text|>"
+    system: "<|system|>"
+    user: "<|user|>"
+    assistant: "<|assistant|>"
+    reasoning: "<|reasoning|>"
+    code: "<|code|>"
+    language: "<|language|>"
+    fim_prefix: "<|fim_prefix|>"
+    fim_suffix: "<|fim_suffix|>"
+    fim_middle: "<|fim_middle|>"
+    repo: "<|repo|>"
+    file: "<|file|>"
+    tool_call: "<|tool_call|>"
+    tool_response: "<|tool_response|>"
+    document: "<|document|>"
+  add_bos_in_tokenizer: false
+  require_exact_roundtrip: true
+  require_zero_unk_on_probes: true
+  numeric_rewrite: forbidden
+
+data:
+  acquisition: bounded_audit_slices_only
+  training_enabled: false
+  source_manifest_required: true
+  manifest_sha256: null
+  immutable_revision_required: true
+  provenance_fields: [source_id, revision, document_id, url_or_archive_id, license, language, split, raw_sha256, transform_version, clean_sha256]
+  split_salt: "NULLXES-SHINRA-AUDIT-2026-10-16-v1"
+  splits: {train: 0.98, validation: 0.01, blind: 0.01}
+  split_unit: source_document_or_work_before_chunking
+  sources:
+    - id: Wikimedia/wikipedia
+      subsets: [20231101.en, 20231101.ru]
+      languages: [en, ru]
+      status: audit_only
+      revision: null
+      license_review_required: true
+    - id: PleIAs/Russian-PD
+      subsets: [default]
+      languages: [ru]
+      status: audit_only
+      revision: null
+      ocr_review_required: true
+      license_review_required: true
+    - id: common-pile/source-level-subsets
+      subsets: [project_gutenberg, arxiv_papers, usgpo, wikimedia]
+      languages: [en]
+      status: audit_only
+      revision: null
+      source_level_license_required: true
+    - id: open-web-math/open-web-math
+      subsets: [default]
+      languages: [en]
+      status: excluded_pending_rights_review
+      revision: null
+      common_crawl_terms_review_required: true
+  excluded_sources: [FineWeb, FineWeb-Edu, FineWeb-2, SmolLM-Corpus]
+  cleaning:
+    strict_decode: true
+    unicode_normalization: NFC
+    preserve_numbers_dates_units_signs_decimals_and_math: true
+    verify_numeric_spans_after_cleaning: true
+    reject_malformed_records_with_reason: true
+    silent_skip: false
+    exact_deduplication: true
+    near_deduplication: true
+    preserve_duplicate_provenance: true
+    source_aware_markup_removal: true
+    retain_table_context_or_quarantine: true
+    filter_languages: [en, ru]
+    holdout_contamination_check: true
+  mix:
+    unit: actual_shinra_tokens
+    en: 0.50
+    ru: 0.50
+    domain_weights: {}
+  validation:
+    tokenizer_roundtrip_required: true
+    numeric_span_integrity_required: true
+    malformed_records: reject_with_reason
+    train_evaluation_document_overlap_allowed: false
+    require_original_raw_sha256: true
+    require_declared_train_validation_blind_split: true
+
+training:
+  enabled: false
+  objective: causal_language_modeling
+  initialization: random
+  diagnostic_tokens: 20000000
+  foundation_tokens: null
+  sequence_length: 4096
+  micro_batch_size: 1
+  gradient_accumulation_steps: 8
+  global_tokens_per_update: 32768
+  seed: 42
+  dataloader_num_workers: 2
+  gradient_checkpointing: true
+  max_grad_norm: 1.0
+  max_steps: null
+  logging_steps: 10
+  eval_steps: 100
+  save_steps: 100
+  fail_on_nonfinite_loss_or_gradients: true
+  optimizer:
+    name: adamw
+    learning_rate: 3.0e-4
+    betas: [0.9, 0.95]
+    eps: 1.0e-8
+    weight_decay: 0.1
+    fused: auto
+    max_grad_norm: 1.0
+  scheduler:
+    name: warmup_cosine
+    warmup_ratio: 0.03
+    min_lr_ratio: 0.1
+
+precision:
+  preferred: bfloat16
+  require_hardware_support: true
+  fallback: float32
+  tf32: true
+  attention_implementation: sdpa
+  activation_checkpointing: true
+  fsdp:
+    enabled: auto
+    cpu_offload: false
+  memory:
+    preflight_estimate_required: true
+    allocator_headroom_ratio: 0.10
+    fail_before_model_allocation_if_unsupported: true
+
+checkpoint:
+  output_dir: outputs/shinra
+  atomic_save: true
+  save_optimizer: true
+  save_scheduler: true
+  save_rng: true
+  save_dataloader_state: true
+  resume_requires_matching:
+    - architecture_sha256
+    - tokenizer_sha256
+    - data_manifest_sha256
+    - objective
+    - stage
+  retain_full_checkpoints: 2
+  never_delete_unconsumed_data: true
+
+evaluation:
+  heldout_required: true
+  report_loss_by: [language, numeric_stratum, source, domain]
+  report: [processed_tokens, optimizer_steps, tokens_per_second, peak_gpu_memory, train_loss, heldout_loss]
+  blind_manifest_frozen_before_training: true
+  identity_in_base_pretraining: false
+
+runtime:
+  allowed_gpu_families: [NVIDIA_RTX_PRO_6000_Blackwell_G4, NVIDIA_A100]
+  actual_device_query_required: true
+  allowed_a100_memory_gb: [40, 80]
+  minimum_free_disk_gb: 80
+  local_training_allowed: false
+  launch_automatically: false
+  colab_launch_allowed: false

@@ -15,6 +15,9 @@ from collections import Counter
 from pathlib import Path
 
 from .special_tokens import ALL_SPECIAL_TOKENS, CODE, EOT, FIM_PREFIX, LANGUAGE, REPO, TOOL_CALL
+from configs.loader import load_config
+
+_SHINRA_CONFIG = load_config()
 
 CODE_MARKERS = (
     "def ",
@@ -42,7 +45,7 @@ ACCEPTANCE = {
 def dna_inventory() -> dict:
     specials = list(ALL_SPECIAL_TOKENS)
     return {
-        "vocab_size_target": 131072,
+        "vocab_size_target": _SHINRA_CONFIG["tokenizer"]["vocab_size"],
         "model_type": "unigram",
         "special_tokens": specials,
         "n_specials": len(specials),
@@ -56,28 +59,11 @@ def dna_inventory() -> dict:
 
 
 def mix_plan() -> dict:
-    from data.sources import (
-        DPO_MIX_V1,
-        PILOT_BUCKET_WEIGHTS,
-        PILOT_LANGUAGE_QUOTAS,
-        PRODUCTION_MIX_V1,
-        SFT_MIX_V1,
-        audit_mix_weights,
-    )
-
+    config = _SHINRA_CONFIG
     return {
-        "pretrain_base_v1": dict(PRODUCTION_MIX_V1),
-        "sft_v1": dict(SFT_MIX_V1),
-        "dpo_v1": dict(DPO_MIX_V1),
-        "pilot_buckets": dict(PILOT_BUCKET_WEIGHTS),
-        "pilot_languages": dict(PILOT_LANGUAGE_QUOTAS),
-        "weight_audit": audit_mix_weights(),
-        "why_this_mix_fits_dna": {
-            "code_20_25": "<|code|> <|language|> <|repo|> <|file|> FIM need real code volume, not 5%.",
-            "tools_15_sft": "<|tool_call|> / <|tool_response|> stay undertrained without JSON/tool tasks.",
-            "ru_15_base": "Cyrillic pieces in 131k; 20% RU on 4B would skew the English core.",
-            "no_tinystories": "Child-story domain is a benchmark, not a foundation register.",
-        },
+        "source_candidates": [dict(source) for source in config["data"]["sources"]],
+        "language_weights": {"en": config["data"]["mix"]["en"], "ru": config["data"]["mix"]["ru"]},
+        "training_enabled": config["data"]["training_enabled"],
     }
 
 

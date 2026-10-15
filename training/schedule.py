@@ -39,8 +39,8 @@ def build_scheduler(
     min_lr_ratio: float,
 ) -> LambdaLR:
     name = name.lower()
-    if name == "wsd":
-        fn = lambda step: wsd_lambda(step, warmup_steps, max_steps, stable_ratio, min_lr_ratio)
+    if name in {"wsd", "warmup_cosine"}:
+        fn = lambda step: cosine_lambda(step, warmup_steps, max_steps, min_lr_ratio)
     elif name == "cosine":
         fn = lambda step: cosine_lambda(step, warmup_steps, max_steps, min_lr_ratio)
     else:

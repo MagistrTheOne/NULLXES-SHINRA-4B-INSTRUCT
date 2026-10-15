@@ -14,30 +14,39 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from configs.loader import load_config
+
+_SHINRA_CONFIG = load_config()
+_TOKENIZER_CONFIG = _SHINRA_CONFIG["tokenizer"]
+
 UNK = "<|unk|>"
 BOS = "<|bos|>"
 EOT = "<|eot|>"
 PAD = "<|pad|>"
+UNK = _TOKENIZER_CONFIG["special_tokens"]["unk"]
+BOS = _TOKENIZER_CONFIG["special_tokens"]["bos"]
+EOT = _TOKENIZER_CONFIG["special_tokens"]["end_of_turn"]
+PAD = _TOKENIZER_CONFIG["special_tokens"]["pad"]
 EOS = EOT  # HF eos_token == end-of-turn. Document end is END_OF_TEXT.
 
-END_OF_TEXT = "<|end_of_text|>"
-DOCUMENT = "<|document|>"
+END_OF_TEXT = _TOKENIZER_CONFIG["special_tokens"]["end_of_document"]
+DOCUMENT = _TOKENIZER_CONFIG["special_tokens"]["document"]
 
-SYSTEM = "<|system|>"
-USER = "<|user|>"
-ASSISTANT = "<|assistant|>"
-REASONING = "<|reasoning|>"
+SYSTEM = _TOKENIZER_CONFIG["special_tokens"]["system"]
+USER = _TOKENIZER_CONFIG["special_tokens"]["user"]
+ASSISTANT = _TOKENIZER_CONFIG["special_tokens"]["assistant"]
+REASONING = _TOKENIZER_CONFIG["special_tokens"]["reasoning"]
 
-CODE = "<|code|>"
-LANGUAGE = "<|language|>"
+CODE = _TOKENIZER_CONFIG["special_tokens"]["code"]
+LANGUAGE = _TOKENIZER_CONFIG["special_tokens"]["language"]
 
-FIM_PREFIX = "<|fim_prefix|>"
-FIM_SUFFIX = "<|fim_suffix|>"
-FIM_MIDDLE = "<|fim_middle|>"
-REPO = "<|repo|>"
-FILE = "<|file|>"
-TOOL_CALL = "<|tool_call|>"
-TOOL_RESPONSE = "<|tool_response|>"
+FIM_PREFIX = _TOKENIZER_CONFIG["special_tokens"]["fim_prefix"]
+FIM_SUFFIX = _TOKENIZER_CONFIG["special_tokens"]["fim_suffix"]
+FIM_MIDDLE = _TOKENIZER_CONFIG["special_tokens"]["fim_middle"]
+REPO = _TOKENIZER_CONFIG["special_tokens"]["repo"]
+FILE = _TOKENIZER_CONFIG["special_tokens"]["file"]
+TOOL_CALL = _TOKENIZER_CONFIG["special_tokens"]["tool_call"]
+TOOL_RESPONSE = _TOKENIZER_CONFIG["special_tokens"]["tool_response"]
 
 CORE_SPECIALS = [UNK, BOS, EOT, PAD]
 CHAT_SPECIALS = [SYSTEM, USER, ASSISTANT, REASONING]
@@ -46,18 +55,19 @@ REPO_SPECIALS = [REPO, FILE]
 AGENT_SPECIALS = [TOOL_CALL, TOOL_RESPONSE]
 META_SPECIALS = [DOCUMENT, END_OF_TEXT]
 
-USER_DEFINED_SYMBOLS = (
-    CHAT_SPECIALS + CODE_SPECIALS + REPO_SPECIALS + AGENT_SPECIALS + META_SPECIALS
-)
+USER_DEFINED_SYMBOLS = tuple(v for k, v in _TOKENIZER_CONFIG["special_tokens"].items()
+                             if k not in {"unk", "bos", "end_of_turn", "pad", "end_of_document"})
 ALL_SPECIAL_TOKENS = CORE_SPECIALS + USER_DEFINED_SYMBOLS
 
 # Frozen SentencePiece IDs. Pretrain pack may emit 1 (BOS), 3 (PAD), 18 (END_OF_TEXT).
-PRETRAIN_BOS_ID = 1
-PRETRAIN_EOT_ID = 2
-PRETRAIN_PAD_ID = 3
-PRETRAIN_END_OF_TEXT_ID = 18
-PRETRAIN_FORBIDDEN_IDS = frozenset([PRETRAIN_EOT_ID, *range(4, PRETRAIN_END_OF_TEXT_ID)])
-PRETRAIN_BODY_FORBIDDEN_IDS = frozenset(range(PRETRAIN_BOS_ID, PRETRAIN_END_OF_TEXT_ID + 1))
+PRETRAIN_BOS_ID = int(_TOKENIZER_CONFIG["bos_id"])
+PRETRAIN_EOT_ID = int(_TOKENIZER_CONFIG["end_of_turn_id"])
+PRETRAIN_PAD_ID = int(_TOKENIZER_CONFIG["pad_id"])
+PRETRAIN_END_OF_TEXT_ID = int(_TOKENIZER_CONFIG["end_of_document_id"])
+PRETRAIN_FORBIDDEN_IDS = frozenset({PRETRAIN_EOT_ID, *[int(v) for v in _TOKENIZER_CONFIG["special_token_ids"].values()
+                                                       if int(v) != PRETRAIN_END_OF_TEXT_ID]})
+PRETRAIN_BODY_FORBIDDEN_IDS = frozenset({PRETRAIN_BOS_ID, PRETRAIN_EOT_ID, PRETRAIN_PAD_ID, PRETRAIN_END_OF_TEXT_ID,
+                                          *[int(v) for v in _TOKENIZER_CONFIG["special_token_ids"].values()]})
 PRETRAIN_FORBIDDEN_STRINGS = tuple(
     tok for tok in ALL_SPECIAL_TOKENS if tok not in {UNK, BOS, PAD, END_OF_TEXT}
 )

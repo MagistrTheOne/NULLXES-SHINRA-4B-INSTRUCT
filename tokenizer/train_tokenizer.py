@@ -41,6 +41,8 @@ from .special_tokens import (
     USER,
     USER_DEFINED_SYMBOLS,
 )
+from configs.loader import load_config
+from data.numeric_integrity import DataIntegrityError, clean_text
 
 
 def _iter_text_files(paths: list[Path]) -> list[Path]:
@@ -87,10 +89,17 @@ def build_spm_corpus(inputs: list[Path], corpus_path: Path, max_chars: int) -> d
         for file in files:
             with file.open("r", encoding="utf-8", errors="replace") as handle:
                 for line in handle:
-                    text = _extract_line(line)
+            text = _extract_line(line)
+            if text:
+                text = clean_text(text, normalization=load_config()["tokenizer"]["normalization"])
+                    if text:
+                        try:
+                            text = clean_text(text, normalization=load_config()["tokenizer"]["normalization"])
+                        except DataIntegrityError as exc:
+                            raise ValueError(f"{file}: numeric-preserving corpus cleanup failed: {exc}") from exc
                     if len(text) < 32:
                         continue
-                    out.write(text.replace("\n", " ") + "\n")
+                    out.write(text + "\n")
                     docs += 1
                     chars += len(text)
                     bytes_ += len(text.encode("utf-8"))
@@ -126,8 +135,13 @@ def train_sentencepiece(
     num_threads: int,
     input_sentence_size: int,
     shuffle_input_sentence: bool,
+    config_path: Path,
 ) -> None:
     import sentencepiece as spm
+
+    config = load_config(config_path)
+    tok = config["tokenizer"]
+    specials = tok["special_tokens"]
 
     model_prefix.parent.mkdir(parents=True, exist_ok=True)
     spm.SentencePieceTrainer.train(
@@ -137,20 +151,20 @@ def train_sentencepiece(
         model_type="unigram",
         character_coverage=character_coverage,
         byte_fallback=True,
-        split_digits=True,
+        split_digits=bool(tok["split_digits"]),
         allow_whitespace_only_pieces=True,
         remove_extra_whitespaces=False,
-        normalization_rule_name="nfkc",
+        normalization_rule_name=str(tok["normalization"]).lower(),
         add_dummy_prefix=True,
-        unk_id=0,
-        bos_id=1,
-        eos_id=2,
-        pad_id=3,
-        unk_piece=UNK,
-        bos_piece=BOS,
-        eos_piece=EOT,
-        pad_piece=PAD,
-        user_defined_symbols=",".join(USER_DEFINED_SYMBOLS),
+        unk_id=int(tok["unk_id"]),
+        bos_id=int(tok["bos_id"]),
+        eos_id=int(tok["end_of_turn_id"]),
+        pad_id=int(tok["pad_id"]),
+        unk_piece=specials["unk"],
+        bos_piece=specials["bos"],
+        eos_piece=specials["end_of_turn"],
+        pad_piece=specials["pad"],
+        user_defined_symbols=[specials[k] for k, _ in sorted(tok["special_token_ids"].items(), key=lambda pair: pair[1])],
         train_extremely_large_corpus=True,
         num_threads=num_threads,
         input_sentence_size=input_sentence_size,
@@ -171,21 +185,27 @@ def convert_spm_to_hf(model_file: Path, output_dir: Path) -> None:
     import sentencepiece as spm
 
     sp = spm.SentencePieceProcessor(model_file=str(model_file))
+    approved = load_config()
+    token_cfg = approved["tokenizer"]
+    expected_ids = {token_cfg["special_tokens"][key]: int(value)
+                    for key, value in token_cfg["special_token_ids"].items()}
+    if any(sp.piece_to_id(token) != token_id for token, token_id in expected_ids.items()):
+        raise ValueError("SentencePiece special token IDs do not match configs/shinra.yaml")
     vocab: list[tuple[str, float]] = []
     for idx in range(sp.get_piece_size()):
         piece = sp.id_to_piece(idx)
         score = sp.get_score(idx)
         vocab.append((piece, score))
 
-    tokenizer = Tokenizer(Unigram(vocab, unk_id=0))
+    tokenizer = Tokenizer(Unigram(vocab, unk_id=int(token_cfg["unk_id"])))
     tokenizer.pre_tokenizer = pre_tokenizers.Metaspace(replacement="▁", add_prefix_space=True)
     tokenizer.decoder = decoders.Metaspace(replacement="▁", add_prefix_space=True)
     tokenizer.post_processor = processors.TemplateProcessing(
         single=f"{BOS} $A",
         pair=f"{BOS} $A {BOS} $B",
         special_tokens=[
-            (BOS, 1),
-            (EOT, 2),
+            (BOS, int(token_cfg["bos_id"])),
+            (EOT, int(token_cfg["end_of_turn_id"])),
         ],
     )
 
@@ -193,25 +213,22 @@ def convert_spm_to_hf(model_file: Path, output_dir: Path) -> None:
     tokenizer_json_path = output_dir / "tokenizer.json"
     tokenizer.save(str(tokenizer_json_path))
 
-    added = [
-        AddedToken(tok, special=True, normalized=False, lstrip=False, rstrip=False)
-        for tok in ALL_SPECIAL_TOKENS
-    ]
+    # Control tokens are already fixed IDs inside SentencePiece; adding them as
+    # post-vocabulary tokens silently grows/reorders the model vocabulary.
     hf_tok = PreTrainedTokenizerFast(
         tokenizer_object=tokenizer,
         bos_token=BOS,
         eos_token=EOT,
         unk_token=UNK,
         pad_token=PAD,
-        additional_special_tokens=USER_DEFINED_SYMBOLS,
-        extra_special_tokens=USER_DEFINED_SYMBOLS,
+        additional_special_tokens=[AddedToken(token, special=True, normalized=False, id=expected_ids[token]) for token in USER_DEFINED_SYMBOLS],
+        extra_special_tokens=[AddedToken(token, special=True, normalized=False, id=expected_ids[token]) for token in USER_DEFINED_SYMBOLS],
         model_max_length=TOKENIZER_CONFIG["model_max_length"],
         clean_up_tokenization_spaces=False,
     )
-    hf_tok.add_special_tokens({"additional_special_tokens": USER_DEFINED_SYMBOLS})
-    for token in added:
-        if token.content not in hf_tok.get_vocab():
-            hf_tok.add_tokens([token], special_tokens=True)
+    actual_ids = {token: hf_tok.convert_tokens_to_ids(token) for token in expected_ids}
+    if actual_ids != expected_ids:
+        raise ValueError(f"converted tokenizer special IDs changed: {actual_ids} != {expected_ids}")
     hf_tok.chat_template = CHAT_TEMPLATE
     hf_tok.save_pretrained(str(output_dir))
     shutil.copy2(model_file, output_dir / "tokenizer.model")
@@ -226,7 +243,7 @@ def convert_spm_to_hf(model_file: Path, output_dir: Path) -> None:
                 "eos_token": EOT,
                 "unk_token": UNK,
                 "pad_token": PAD,
-                "additional_special_tokens": USER_DEFINED_SYMBOLS,
+                "additional_special_tokens": list(USER_DEFINED_SYMBOLS),
             },
             indent=2,
             ensure_ascii=False,
@@ -267,12 +284,7 @@ def evaluate_tokenizer(output_dir: Path, sample_files: list[Path], report_path: 
         if len(samples) >= 2048:
             break
     if not samples:
-        samples = [
-            "NULLXES SHINRA language intelligence layer.",
-            "def attention(q, k, v):\n    return softmax(q @ k.T) @ v\n",
-            "Решение уравнения Максвелла в вакууме.",
-            "∫_0^∞ e^{-x^2} dx = √π / 2",
-        ]
+        raise ValueError("tokenizer evaluation needs held-out corpus samples; built-in probe examples are not data")
 
     byte_counts = 0
     token_counts = 0
@@ -310,8 +322,8 @@ def evaluate_tokenizer(output_dir: Path, sample_files: list[Path], report_path: 
         "special_ids": {tok_name: tok.convert_tokens_to_ids(tok_name) for tok_name in ALL_SPECIAL_TOKENS},
     }
     stats = {
-        "vocab_size": tok.vocab_size,
-        "num_added_tokens": len(tok.all_special_tokens),
+        "vocab_size": len(tok.get_vocab()),
+        "num_added_tokens": 0,
         "sample_documents": len(samples),
         "sample_bytes": byte_counts,
         "sample_tokens": token_counts,
@@ -350,14 +362,16 @@ def evaluate_tokenizer(output_dir: Path, sample_files: list[Path], report_path: 
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    config = load_config()
     parser = argparse.ArgumentParser(description="Train NULLXES SHINRA SentencePiece Unigram tokenizer")
     parser.add_argument("--input", nargs="+", required=True, help="Text / JSONL files or directories")
     parser.add_argument("--output-dir", default="tokenizer/artifacts")
-    parser.add_argument("--vocab-size", type=int, default=131072)
-    parser.add_argument("--character-coverage", type=float, default=0.99995)
-    parser.add_argument("--max-chars", type=int, default=10_000_000_000, help="Corpus cap in characters (~10GB text)")
+    parser.add_argument("--config", default="configs/shinra.yaml")
+    parser.add_argument("--vocab-size", type=int, default=config["tokenizer"]["vocab_size"])
+    parser.add_argument("--character-coverage", type=float, default=config["tokenizer"]["character_coverage"])
+    parser.add_argument("--max-chars", type=int, required=True, help="Corpus cap, explicitly set from the approved audit plan")
     parser.add_argument("--num-threads", type=int, default=max(os.cpu_count() or 8, 8))
-    parser.add_argument("--input-sentence-size", type=int, default=20_000_000)
+    parser.add_argument("--input-sentence-size", type=int, required=True)
     parser.add_argument("--no-shuffle", action="store_true")
     parser.add_argument("--keep-corpus", action="store_true")
     return parser.parse_args(argv)
@@ -365,6 +379,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
+    config = load_config(args.config)
+    if args.vocab_size != config["tokenizer"]["vocab_size"]:
+        raise SystemExit("--vocab-size must match configs/shinra.yaml")
+    if args.character_coverage != config["tokenizer"]["character_coverage"]:
+        raise SystemExit("--character-coverage must match configs/shinra.yaml")
     inputs = [Path(p).resolve() for p in args.input]
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -384,10 +403,27 @@ def main(argv: list[str] | None = None) -> None:
         num_threads=args.num_threads,
         input_sentence_size=args.input_sentence_size,
         shuffle_input_sentence=not args.no_shuffle,
+        config_path=Path(args.config),
     )
     model_file = output_dir / "tokenizer.model"
     convert_spm_to_hf(model_file, output_dir)
     stats = evaluate_tokenizer(output_dir, _iter_text_files(inputs), output_dir / "tokenizer_stats.json")
+    config = load_config(args.config)
+    if stats["vocab_size"] != config["tokenizer"]["vocab_size"]:
+        raise SystemExit(f"trained tokenizer vocab size {stats['vocab_size']} != configured {config['tokenizer']['vocab_size']}")
+    tokenizer_sha = __import__("hashlib").sha256((output_dir / "tokenizer.json").read_bytes()).hexdigest()
+    tok_cfg = config["tokenizer"]
+    ids = {tok_cfg["special_tokens"][key]: int(value) for key, value in tok_cfg["special_token_ids"].items()}
+    for key in ("unk", "bos", "end_of_turn", "pad"):
+        ids[tok_cfg["special_tokens"][key]] = int(tok_cfg[f"{key}_id"] if key != "end_of_turn" else tok_cfg["end_of_turn_id"])
+    actual = {token: stats["probes"]["special_ids"].get(token) for token in ids}
+    if actual != ids:
+        raise SystemExit(f"special token IDs failed contract: {actual}")
+    if stats["probes"]["system_user_roundtrip"] != f"{SYSTEM}You are SHINRA.{EOT}{USER}Write a kernel.{EOT}{ASSISTANT}":
+        raise SystemExit("chat control token roundtrip failed")
+    if tok_cfg["require_zero_unk_on_probes"] and stats["unk_rate"] != 0:
+        raise SystemExit(f"tokenizer probe unk rate is not zero: {stats['unk_rate']}")
+    print(f"tokenizer_artifact_sha256={tokenizer_sha}")
     print(json.dumps(stats, indent=2, ensure_ascii=False))
     if not args.keep_corpus:
         shutil.rmtree(tmp_dir, ignore_errors=True)

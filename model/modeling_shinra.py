@@ -286,6 +286,12 @@ class ShinraForCausalLM(ShinraPreTrainedModel, GenerationMixin):
         self.post_init()
         self.model._scaled_residual_init()
 
+    def tie_weights(self) -> None:
+        self.lm_head.weight = self.model.embed_tokens.weight
+
+    def get_output_embeddings(self) -> nn.Linear:
+        return self.lm_head
+
     def get_input_embeddings(self) -> nn.Embedding:
         return self.model.embed_tokens
 
@@ -381,6 +387,7 @@ class ShinraForCausalLM(ShinraPreTrainedModel, GenerationMixin):
                 log_z = torch.logsumexp(shift_logits[valid].float(), dim=-1)
                 z = z_coeff * (log_z**2).mean()
         return {"train_ce": float(ce.detach().cpu()), "z_loss": float(z.detach().cpu())}
+
 
     def prepare_inputs_for_generation(
         self,

@@ -7,9 +7,15 @@ from transformers import AutoConfig, AutoModel, AutoModelForCausalLM
 from .configuration_shinra import ShinraConfig
 from .modeling_shinra import ShinraDecoderLayer, ShinraForCausalLM, ShinraModel, ShinraPreTrainedModel
 
-AutoConfig.register("nullxes_shinra", ShinraConfig)
-AutoModel.register(ShinraConfig, ShinraModel)
-AutoModelForCausalLM.register(ShinraConfig, ShinraForCausalLM)
+for registry, key, value in (
+    (AutoConfig, "nullxes_shinra", ShinraConfig),
+    (AutoModel, ShinraConfig, ShinraModel),
+    (AutoModelForCausalLM, ShinraConfig, ShinraForCausalLM),
+):
+    try:
+        registry.register(key, value)
+    except ValueError:
+        pass
 
 __all__ = [
     "ShinraConfig",
