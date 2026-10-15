@@ -20,7 +20,7 @@ from training.collator import PackedParquetDataset, collate_lm
 def evaluate_perplexity(model_path: str, data_dir: str, batch_size: int, max_batches: int | None) -> dict:
     tokenizer, model = load_generate_stack(model_path)
     loader = DataLoader(
-        PackedParquetDataset(data_dir),
+        PackedParquetDataset(data_dir, expected_split="validation"),
         batch_size=batch_size,
         shuffle=False,
         collate_fn=collate_lm,
@@ -34,7 +34,10 @@ def evaluate_perplexity(model_path: str, data_dir: str, batch_size: int, max_bat
         out = model(**batch)
         labels = batch["labels"]
         valid = (labels[:, 1:] != -100).sum().item()
-        nll_sum += float(out.loss.item()) * valid
+        ce = model.compute_loss_parts(out.logits, labels)["train_ce"]
+        if not math.isfinite(ce):
+            raise FloatingPointError("non-finite held-out cross-entropy")
+        nll_sum += ce * valid
         token_count += valid
     mean_nll = nll_sum / max(token_count, 1)
     if token_count == 0:

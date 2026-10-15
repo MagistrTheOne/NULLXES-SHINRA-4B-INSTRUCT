@@ -31,6 +31,7 @@ from .parallel import enable_tf32
 from .schedule import build_scheduler
 from .sampler import StatefulRandomSampler
 from tokenizer import load_shinra_tokenizer
+from tokenizer.bundle import copy_bundle, verify_bundle
 
 
 def config_from_yaml(path: Path, attention_implementation: str | None = None) -> ShinraConfig:
@@ -111,7 +112,7 @@ def save_checkpoint(accelerator: Accelerator, model, tokenizer, output_dir: Path
         accelerator.save_model(unwrapped, str(temporary))
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
-            tokenizer.save_pretrained(temporary)
+            copy_bundle(tokenizer.shinra_bundle_path, temporary, tokenizer.shinra_config)
             unwrapped.config.save_pretrained(temporary)
             from scripts.export_hf_bundle import export_code
 
@@ -121,7 +122,7 @@ def save_checkpoint(accelerator: Accelerator, model, tokenizer, output_dir: Path
                 "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(), "stage": stage,
                 "objective": objective, "training_config_sha256": training_config_sha256,
                 "architecture_sha256": _sha(manifest["architecture"]),
-                "tokenizer_sha256": manifest["tokenizer_sha256"],
+                "tokenizer_bundle_sha256": manifest["tokenizer_bundle_sha256"],
                 "data_manifest_sha256": manifest["data_manifest_sha256"],
                 "rng": torch.get_rng_state(), "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
                 "python_rng": random.getstate(), "numpy_rng": np.random.get_state(),
@@ -153,7 +154,9 @@ def evaluate(model, loader, max_batches: int | None = None) -> dict:
         result = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], labels=batch["labels"], use_cache=False)
         if not torch.isfinite(result.loss):
             raise FloatingPointError("non-finite validation loss")
-        total_loss += float(result.loss) * n_tokens
+        # Evaluation CE excludes the training-only z-loss regularizer.
+        core_model = model.module if hasattr(model, "module") else model
+        total_loss += core_model.compute_loss_parts(result.logits, batch["labels"])["train_ce"] * n_tokens
         tokens += n_tokens
     model.train()
     if tokens == 0:
@@ -164,6 +167,9 @@ def evaluate(model, loader, max_batches: int | None = None) -> dict:
 
 def run_lm_training(cfg: TrainConfig) -> dict:
     approved = load_config(cfg.model_config, require_ready=True)
+    verify_bundle(cfg.tokenizer_path, approved)
+    if cfg.resume_from:
+        verify_bundle(cfg.resume_from, approved)
     if cfg.stage != "pretrain":
         raise SystemExit("only causal pretraining is active; instruction tuning is a future phase")
     if not Path("/content").exists():
@@ -176,7 +182,7 @@ def run_lm_training(cfg: TrainConfig) -> dict:
     if not torch.cuda.is_bf16_supported():
         raise RuntimeError("BF16 is required by configs/shinra.yaml but unsupported on this GPU")
     disk_root = cfg.output_dir.parent if cfg.output_dir.parent.exists() else Path.cwd()
-    free_bytes, _ = shutil.disk_usage(disk_root)
+    free_bytes = shutil.disk_usage(disk_root).free
     if free_bytes < int(approved["runtime"]["minimum_free_disk_gb"] * 1024**3):
         raise RuntimeError("insufficient free disk before model allocation")
     device_properties = torch.cuda.get_device_properties(0)
@@ -222,8 +228,8 @@ def run_lm_training(cfg: TrainConfig) -> dict:
     if not heldout_dir.is_dir():
         raise FileNotFoundError("held-out validation data is required")
     train_dir = cfg.data_dir / "train"
-    train_data = load_packed_dataset(train_dir)
-    validation_data = load_packed_dataset(heldout_dir)
+    train_data = load_packed_dataset(train_dir, config=approved, expected_split="train")
+    validation_data = load_packed_dataset(heldout_dir, config=approved, expected_split="validation")
     if not data_manifest.get("train_hash") or not data_manifest.get("validation_hash") or not data_manifest.get("blind_hash"):
         raise ShardIdentityError("manifest missing frozen train/validation/blind split hashes")
     if len({data_manifest["train_hash"], data_manifest["validation_hash"], data_manifest["blind_hash"]}) != 3:
@@ -235,9 +241,6 @@ def run_lm_training(cfg: TrainConfig) -> dict:
     accelerator = Accelerator(gradient_accumulation_steps=cfg.gradient_accumulation_steps, mixed_precision="bf16")
     if accelerator.num_processes != 1:
         raise RuntimeError("multi-process training is unavailable; use one approved GPU per run")
-    tokenizer_file = cfg.tokenizer_path / "tokenizer.json"
-    if hashlib.sha256(tokenizer_file.read_bytes()).hexdigest() != approved["tokenizer"]["artifact_sha256"]:
-        raise ShardIdentityError("tokenizer artifact hash does not match configs/shinra.yaml")
     training_config_sha = _sha(approved["training"])
     resume_state = None
     if cfg.resume_from:
@@ -247,7 +250,7 @@ def run_lm_training(cfg: TrainConfig) -> dict:
         resume_state = torch.load(state_file, map_location="cpu", weights_only=False)
         expected_state = {
             "architecture_sha256": _sha(approved["model"]),
-            "tokenizer_sha256": approved["tokenizer"]["artifact_sha256"],
+            "tokenizer_bundle_sha256": approved["tokenizer"]["artifact_sha256"],
             "data_manifest_sha256": manifest_sha,
             "objective": approved["training"]["objective"],
             "stage": cfg.stage,
@@ -282,8 +285,8 @@ def run_lm_training(cfg: TrainConfig) -> dict:
             torch.cuda.set_rng_state_all(resume_state["cuda_rng"])
         random.setstate(resume_state["python_rng"])
         np.random.set_state(resume_state["numpy_rng"])
-    tokenizer = load_shinra_tokenizer(cfg.tokenizer_path)
-    manifest = {"architecture": approved["model"], "tokenizer_sha256": approved["tokenizer"]["artifact_sha256"],
+    tokenizer = load_shinra_tokenizer(cfg.tokenizer_path, approved)
+    manifest = {"architecture": approved["model"], "tokenizer_bundle_sha256": approved["tokenizer"]["artifact_sha256"],
                 "data_manifest_sha256": manifest_sha}
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     cfg.run_dir.mkdir(parents=True, exist_ok=True)

@@ -46,7 +46,7 @@ data/shards/
 tokenizer/artifacts/*.txt
 tokenizer/artifacts/*.tsv
 tokenizer/corpus/
-tokenizer/tokenizer_friendship.json
+tokenizer/.tokenizer-build-*/
 
 # IDE / OS
 .idea/

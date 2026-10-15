@@ -22,7 +22,7 @@ _STATE: dict[str, Any] = {}
 
 
 class ChatMessage(BaseModel):
-    role: Literal["system", "user", "assistant", "tool", "code"]
+    role: Literal["system", "user", "assistant"]
     content: str
 
 
@@ -70,19 +70,20 @@ def chat_completions(req: ChatRequest) -> dict:
         raise HTTPException(status_code=422, detail="max_tokens must be positive")
     if req.temperature < 0 or not 0 < req.top_p <= 1:
         raise HTTPException(status_code=422, detail="temperature or top_p is outside the supported range")
-    if req.temperature == 0 and req.top_p != 1:
-        raise HTTPException(status_code=422, detail="top_p is only applied when temperature is greater than zero")
     messages = [message.model_dump() for message in req.messages]
-    text = generate_chat(
-        _STATE["model_path"], messages, max_new_tokens=req.max_tokens, temperature=req.temperature,
-        top_p=req.top_p, tokenizer=_STATE["tokenizer"], model=_STATE["model"],
-    )
+    try:
+        result = generate_chat(
+            _STATE["model_path"], messages, max_new_tokens=req.max_tokens, temperature=req.temperature,
+            top_p=req.top_p, tokenizer=_STATE["tokenizer"], model=_STATE["model"], return_details=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex[:12]}",
         "object": "chat.completion",
         "created": int(time.time()),
         "model": _MODEL_ID,
-        "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": result["text"]}, "finish_reason": result["finish_reason"]}],
     }
 
 

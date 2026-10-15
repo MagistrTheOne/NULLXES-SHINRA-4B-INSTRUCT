@@ -8,7 +8,6 @@ import json
 import re
 import shutil
 import tempfile
-import unicodedata
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -18,6 +17,7 @@ except ImportError as exc:  # pragma: no cover - exercised in minimal VM install
     raise ImportError("corpus preparation requires the preinstalled 'datasketch' package") from exc
 
 from configs.loader import load_config
+from tokenizer.contract import normalize_text
 
 
 class DataIntegrityError(ValueError):
@@ -39,14 +39,16 @@ def numeric_spans(text: str) -> list[str]:
 def clean_text(text: str, *, normalization: str = "NFC") -> str:
     if not isinstance(text, str):
         raise DataIntegrityError("text must be a string")
-    # Normalization and newline cleanup only; numbers, signs and punctuation stay byte-for-byte equivalent.
-    cleaned = unicodedata.normalize(normalization, text).replace("\x00", "")
-    cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
+    # NFC may change Unicode code points; whitespace and numerical spans are preserved.
+    try:
+        cleaned = normalize_text(text, normalization)
+    except ValueError as exc:
+        raise DataIntegrityError(str(exc)) from exc
     before = numeric_spans(text)
     after = numeric_spans(cleaned)
     if before != after:
         raise DataIntegrityError(f"numeric spans changed during cleaning: before={before!r}, after={after!r}")
-    return cleaned.strip()
+    return cleaned
 
 
 def _records(path: Path) -> Iterator[dict[str, Any]]:
@@ -186,7 +188,7 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
                           "license": row["license"], "source_record": row.get("document_id", row["_path"]),
                           "work_id": row.get("work_id"), "document_id": row.get("document_id"),
                           "language": row.get("language"), "domain": row.get("domain"),
-                          "transform_version": "numeric-integrity.v2",
+                          "transform_version": "numeric-integrity.v3-nfc-whitespace-preserved",
                           "raw_sha256": raw_sha256,
                           "clean_sha256": digest, "numeric_spans": numeric_spans(text), "split": split}
                 handles[split].write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")

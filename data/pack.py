@@ -12,6 +12,8 @@ import pyarrow as pa
 from tqdm import tqdm
 from configs.loader import load_config
 from tokenizer import load_shinra_tokenizer
+from tokenizer.contract import encode_text, plain_text
+from tokenizer.bundle import file_sha256
 
 PACKER_VERSION = "shinra-pack.v2"
 
@@ -29,11 +31,13 @@ def current_packed_forbidden_ids(config: dict | None = None) -> frozenset[int]:
 
 def assert_pretrain_body_clean(body_ids: list[int], config: dict | None = None) -> None:
     tok = (config or load_config())["tokenizer"]
-    forbidden = {int(tok["bos_id"]), int(tok["end_of_turn_id"]), int(tok["pad_id"]),
+    forbidden = {int(tok["unk_id"]), int(tok["bos_id"]), int(tok["end_of_turn_id"]), int(tok["pad_id"]),
                  int(tok["end_of_document_id"]), *map(int, tok["special_token_ids"].values())}
     overlap = forbidden.intersection(body_ids)
     if overlap:
         raise PackContractError(f"special control IDs in document body: {sorted(overlap)}")
+    if any(not 0 <= i < int(tok["vocab_size"]) for i in body_ids):
+        raise PackContractError("document body contains an out-of-range token ID")
 
 
 def assert_packed_ids_clean(ids: list[int], config: dict | None = None) -> None:
@@ -57,8 +61,8 @@ def wrap_pretrain_document(body_ids: list[int], bos_id: int | None = None, end_i
     if bos_id != int(tok["bos_id"]) or end_id != int(tok["end_of_document_id"]):
         raise PackContractError("BOS or document end ID differs from configs/shinra.yaml")
     assert_pretrain_body_clean(body_ids, config)
-    if config["data"]["packing"].get("loss_on_bos") is not True:
-        raise PackContractError("packing config must train BOS as the next-token target of the preceding boundary")
+    if config["data"]["packing"].get("loss_on_bos") is not False:
+        raise PackContractError("isolated document packing requires loss_on_bos=False")
     if not config["data"]["packing"].get("loss_on_eod", True):
         raise PackContractError("excluding EOD from loss is not supported by the current row contract")
     wrapped = [bos_id, *body_ids, end_id]
@@ -108,8 +112,12 @@ def pack_token_stream(documents: list[list[int]], sequence_length: int, pad_id: 
         raise PackContractError("only isolated document packing is implemented")
     rows: list[dict] = []
     for document in documents:
-        if not document:
-            raise PackContractError("empty wrapped document")
+        if len(document) < 3:
+            raise PackContractError("wrapped document requires BOS, nonempty body and EOD")
+        tok = config["tokenizer"]
+        if document[0] != tok["bos_id"] or document[-1] != tok["end_of_document_id"]:
+            raise PackContractError("wrapped document must begin with BOS and end with EOD")
+        assert_pretrain_body_clean(document[1:-1], config)
         if len(document) > sequence_length:
             raise PackContractError("document exceeds sequence_length; explicit chunking policy is required")
         assert_packed_ids_clean(document, config)
@@ -123,7 +131,7 @@ def iter_clean_records(input_dir: Path, split: str, manifest: dict):
     expected_hash = manifest.get("files", {}).get(f"{split}.jsonl")
     if not path.is_file() or not expected_hash:
         raise PackContractError(f"cleaned {split}.jsonl or its manifest hash is missing")
-    if hashlib.sha256(path.read_bytes()).hexdigest() != expected_hash:
+    if file_sha256(path) != expected_hash:
         raise PackContractError(f"{path}: SHA256 differs from corpus manifest")
     required = ("text", "source_id", "revision", "license", "split", "raw_sha256", "clean_sha256")
     from data.numeric_integrity import numeric_spans
@@ -134,6 +142,8 @@ def iter_clean_records(input_dir: Path, split: str, manifest: dict):
                 row = json.loads(line)
             except json.JSONDecodeError as exc:
                 raise PackContractError(f"{path}:{line_no}: malformed JSON: {exc}") from exc
+            if not isinstance(row, dict):
+                raise PackContractError(f"{path}:{line_no}: record must be an object")
             missing = [key for key in required if not isinstance(row.get(key), str) or not row[key].strip()]
             if missing:
                 raise PackContractError(f"{path}:{line_no}: missing provenance/text fields {missing}")
@@ -194,31 +204,26 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
             raise PackContractError("packed output root already belongs to a different corpus manifest")
     if output_dir.exists() and any(output_dir.iterdir()):
         raise PackContractError(f"refusing to overwrite non-empty packed split directory: {output_dir}")
-    tokenizer_file = tokenizer_path / "tokenizer.json"
-    if not tokenizer_file.is_file():
-        raise FileNotFoundError(f"local tokenizer artifact is missing: {tokenizer_file}")
-    configured_tokenizer_hash = config["tokenizer"].get("artifact_sha256")
-    if configured_tokenizer_hash and hashlib.sha256(tokenizer_file.read_bytes()).hexdigest() != configured_tokenizer_hash:
-        raise PackContractError("tokenizer artifact SHA256 differs from configs/shinra.yaml")
-    tokenizer = load_shinra_tokenizer(tokenizer_path)
+    tokenizer = load_shinra_tokenizer(tokenizer_path, config)
+    bundle_sha = tokenizer.shinra_bundle_sha256
     bos_id, end_id, pad_id = resolve_pretrain_special_ids(tokenizer, config)
     output_dir.mkdir(parents=True, exist_ok=True)
-    buffer: list[int] = []
     rows: list[dict] = []
     shard_index = documents = tokens_in = tokens_out = padded_slots = 0
     shard_paths = []
     for record in tqdm(iter_clean_records(input_dir, required_split, corpus_manifest), desc="pack"):
-        ids = tokenizer.encode(record["text"], add_special_tokens=False, truncation=False)
+        if plain_text(record["text"], config) != record["text"]:
+            raise PackContractError("cleaned corpus is not NFC-normalized")
+        ids = encode_text(tokenizer, record["text"], config)
         if not ids:
             raise PackContractError("tokenizer produced an empty sequence")
-        decoded = tokenizer.decode(ids, skip_special_tokens=False)
-        if decoded != record["text"]:
-            raise PackContractError("tokenizer encode/decode round-trip changed cleaned source text")
         documents += 1
         tokens_in += len(ids)
         document_rows = pack_token_stream(
             [wrap_pretrain_document(ids, bos_id, end_id, config)], sequence_length, pad_id, config
         )
+        for row in document_rows:
+            row["tokenizer_bundle_sha256"] = bundle_sha
         rows.extend(document_rows)
         if len(rows) * sequence_length >= shard_tokens:
             shard_name, shard_tokens_actual, shard_slots = _flush_rows(
@@ -237,22 +242,26 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
         tokens_out += shard_tokens_actual
         padded_slots += shard_slots
         shard_index += 1
+    if not documents:
+        raise PackContractError("cannot publish an empty packed split")
+    if file_sha256(input_dir / f"{required_split}.jsonl") != corpus_manifest["files"][f"{required_split}.jsonl"]:
+        raise PackContractError("corpus split changed during packing")
     report = {"packer": PACKER_VERSION, "split": required_split, "documents": documents,
               "tokens_in": tokens_in, "tokens_out": tokens_out, "sequence_length": sequence_length,
               "shards": shard_index, "shard_files": shard_paths, "padded_slots": padded_slots,
               "packing_efficiency": tokens_out / max(padded_slots, 1)}
     (output_dir / "pack_report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     packed_manifest_path = output_dir / "manifest.json"
-    packed_manifest = {"schema": "nullxes.shinra.packed.v1", "source_manifest_sha256": corpus_manifest_sha,
+    packed_manifest = {"schema": "nullxes.shinra.packed.v2", "source_manifest_sha256": corpus_manifest_sha,
+                       "tokenizer_bundle_sha256": bundle_sha,
                        "split": required_split, "shard_files": shard_paths,
-                       "shard_sha256": {name: hashlib.sha256((output_dir / name).read_bytes()).hexdigest()
+                       "shard_sha256": {name: file_sha256(output_dir / name)
                                          for name in shard_paths}, "report": report}
     packed_manifest["manifest_sha256"] = hashlib.sha256(json.dumps(packed_manifest, sort_keys=True).encode()).hexdigest()
     packed_manifest_path.write_text(json.dumps(packed_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if not root_manifest.exists():
         temporary = output_root / ".manifest.json.tmp"
         temporary.write_text(json.dumps(corpus_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-        temporary.replace(root_manifest)
         temporary.replace(root_manifest)
     return report
 

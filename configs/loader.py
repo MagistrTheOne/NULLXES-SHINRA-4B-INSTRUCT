@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 import yaml
@@ -74,6 +75,15 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         raise ConfigError("special token strings must be unique")
     if tokenizer.get("normalization") != "identity" or config["data"].get("cleaning", {}).get("unicode_normalization") != "NFC":
         raise ConfigError("tokenizer must preserve normalized corpus text exactly (identity model normalization)")
+    if tokenizer.get("byte_fallback") is not True:
+        raise ConfigError("tokenizer byte fallback is required")
+    digest = tokenizer.get("artifact_sha256")
+    if digest is not None and (not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest)):
+        raise ConfigError("tokenizer.artifact_sha256 must be the bundle manifest SHA256 or null")
+    build = tokenizer.get("build", {})
+    for key in ("max_chars", "input_sentence_size", "num_threads", "max_sentence_bytes"):
+        if key not in build or (build[key] is not None and (type(build[key]) is not int or build[key] <= 0)):
+            raise ConfigError(f"tokenizer.build.{key} must be a positive integer or null pending audit")
     if tokenizer.get("add_bos_in_tokenizer") is not False or tokenizer.get("chat_template_adds_bos") is not True:
         raise ConfigError("tokenizer must not auto-add BOS; chat template must add one BOS")
     if tokenizer.get("chat_turn_stop_id") != tokenizer.get("end_of_turn_id"):

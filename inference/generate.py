@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import torch
@@ -10,6 +11,7 @@ import torch
 from configs.loader import load_config
 from model.modeling_shinra import ShinraForCausalLM
 from tokenizer import load_shinra_tokenizer
+from tokenizer.contract import encode_chat, suppressed_controls
 
 
 def load_generate_stack(model_path: str):
@@ -21,6 +23,9 @@ def load_generate_stack(model_path: str):
         if not (checkpoint / name).is_file():
             raise FileNotFoundError(f"checkpoint is missing {name}: {checkpoint}")
     tokenizer = load_shinra_tokenizer(checkpoint)
+    state = json.loads((checkpoint / "train_state.json").read_text(encoding="utf-8"))
+    if state.get("tokenizer_bundle_sha256") != tokenizer.shinra_bundle_sha256:
+        raise ValueError("checkpoint training state and tokenizer bundle differ")
     expected = approved["tokenizer"]
     if len(tokenizer) != expected["vocab_size"]:
         raise ValueError("checkpoint tokenizer vocabulary differs from configs/shinra.yaml")
@@ -59,7 +64,8 @@ def generate_chat(
     top_p: float | None = None,
     tokenizer=None,
     model=None,
-) -> str:
+    return_details: bool = False,
+) -> str | dict:
     max_new_tokens = _INFERENCE_DEFAULTS["default_max_new_tokens"] if max_new_tokens is None else max_new_tokens
     temperature = _INFERENCE_DEFAULTS["default_temperature"] if temperature is None else temperature
     top_p = _INFERENCE_DEFAULTS["default_top_p"] if top_p is None else top_p
@@ -72,15 +78,6 @@ def generate_chat(
         raise ValueError("temperature must be >= 0")
     if not 0 < top_p <= 1:
         raise ValueError("top_p must be in (0, 1]")
-    if temperature == 0 and top_p != 1:
-        raise ValueError("top_p is only applied when temperature is greater than zero")
-
-    prompt = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
-
     context_limit = int(
         getattr(model.config, "max_position_embeddings", tokenizer.model_max_length)
     )
@@ -88,20 +85,11 @@ def generate_chat(
         raise ValueError("max_new_tokens must be smaller than the configured context window")
     max_input_tokens = max(1, context_limit - max_new_tokens)
 
-    previous_truncation_side = tokenizer.truncation_side
-    tokenizer.truncation_side = "left"
-    try:
-        inputs = tokenizer(
-            prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=max_input_tokens,
-        )
-    finally:
-        tokenizer.truncation_side = previous_truncation_side
-
+    approved = load_config()
+    ids = encode_chat(tokenizer, messages, max_input_tokens, approved)
     input_device = model.get_input_embeddings().weight.device
-    inputs = {name: tensor.to(input_device) for name, tensor in inputs.items()}
+    inputs = {"input_ids": torch.tensor([ids], dtype=torch.long, device=input_device),
+              "attention_mask": torch.ones((1, len(ids)), dtype=torch.long, device=input_device)}
 
     do_sample = temperature > 0
     generation_kwargs = {
@@ -110,6 +98,9 @@ def generate_chat(
         "eos_token_id": tokenizer.eos_token_id,
         "pad_token_id": tokenizer.pad_token_id,
         "use_cache": True,
+        "suppress_tokens": suppressed_controls(approved, tokenizer.eos_token_id),
+        "forced_bos_token_id": None,
+        "forced_eos_token_id": None,
     }
     if do_sample:
         generation_kwargs["temperature"] = temperature
@@ -117,7 +108,11 @@ def generate_chat(
 
     out = model.generate(**inputs, **generation_kwargs)
     generated = out[0, inputs["input_ids"].shape[1] :]
-    return tokenizer.decode(generated, skip_special_tokens=True).strip()
+    generated_ids = generated.tolist()
+    stopped = bool(generated_ids and generated_ids[-1] == tokenizer.eos_token_id)
+    text = tokenizer.decode(generated_ids[:-1] if stopped else generated_ids,
+                            skip_special_tokens=False, clean_up_tokenization_spaces=False)
+    return {"text": text, "finish_reason": "stop" if stopped else "length"} if return_details else text
 
 
 def main() -> None:

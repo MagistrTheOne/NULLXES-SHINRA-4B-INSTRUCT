@@ -12,6 +12,7 @@ from pathlib import Path
 import torch
 from configs.loader import load_config
 from inference.generate import load_generate_stack
+from tokenizer.contract import encode_text, plain_text, suppressed_controls
 
 _APPROVED = load_config()
 CONTINUATION_EOS_ID = int(_APPROVED["tokenizer"]["end_of_document_id"])
@@ -41,7 +42,10 @@ def continuation_eval(model_path: str, prompts_path: str, output_path: str,
         if not 0 < max_new_tokens < int(model.config.max_position_embeddings):
             raise ValueError("max_new_tokens must be positive and below the model context limit")
         # Single BOS, no chat template (pretrain-eval): encode adds no specials.
-        body = tokenizer.encode(prompt, add_special_tokens=False)
+        prompt = plain_text(prompt, _APPROVED)
+        body = encode_text(tokenizer, prompt, _APPROVED)
+        if 1 + len(body) + max_new_tokens > int(model.config.max_position_embeddings):
+            raise ValueError("continuation exceeds context budget; implicit truncation is forbidden")
         input_device = model.get_input_embeddings().weight.device
         input_ids = torch.tensor([[int(tokenizer.bos_token_id), *body]], dtype=torch.long, device=input_device)
         out = model.generate(
@@ -51,6 +55,9 @@ def continuation_eval(model_path: str, prompts_path: str, output_path: str,
             eos_token_id=CONTINUATION_EOS_ID,
             pad_token_id=tokenizer.pad_token_id,
             use_cache=False,
+            suppress_tokens=suppressed_controls(_APPROVED, CONTINUATION_EOS_ID),
+            forced_bos_token_id=None,
+            forced_eos_token_id=None,
         )
         # UNK counted ONLY among newly generated tokens (never the prompt).
         gen = out[0, input_ids.shape[1]:].tolist()

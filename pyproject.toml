@@ -43,6 +43,7 @@ include-package-data = true
 [tool.setuptools.packages.find]
 include = [
   "architecture*",
+  "configs*",
   "model*",
   "tokenizer*",
   "data*",
@@ -53,7 +54,7 @@ include = [
 ]
 
 [tool.setuptools.package-data]
-tokenizer = ["*.jinja", "*.json"]
+tokenizer = ["chat_template.jinja"]
 configs = ["*.yaml"]
 
 [tool.ruff]

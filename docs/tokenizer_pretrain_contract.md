@@ -3,3 +3,8 @@
 The active packer is `data.pack`. It reads the strict cleaned JSONL split and the root corpus manifest, verifies both hashes, encodes records with `add_special_tokens=False`, wraps each document as `[BOS] + body + [END_OF_TEXT]`, and writes fixed-length Parquet token shards with per-shard SHA256 entries.
 
 ID assignments come from `configs/shinra.yaml`: BOS=1, EOT=2, PAD=3, document end=4. EOT and all chat/control tokens are rejected inside document bodies. BOS supplies the initial context and is masked as a target; EOD remains an ordinary causal target. PAD and the first target after PAD are masked. Documents occupy separate rows with isolated attention; overlength documents are rejected until a chunking contract is approved. No alternate binary shard format is supported.
+
+Packed schema v2 requires `tokenizer_bundle_sha256` in the split manifest and every row.
+The loader refuses legacy v1, mismatched bundle identities, missing labels and invalid row masks.
+The complete bundle must match the frozen YAML hash before packing; checkpoints retain all bundle
+files unchanged. See [the bundle contract](tokenizer.md). These checks have not been executed here.

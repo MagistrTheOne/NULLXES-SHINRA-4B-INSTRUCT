@@ -9,6 +9,8 @@ from pathlib import Path
 from huggingface_hub import HfApi, create_repo, upload_folder
 
 from .export_hf_bundle import export_code
+from configs.loader import load_config
+from tokenizer.bundle import verify_bundle
 
 
 def main() -> None:
@@ -22,6 +24,7 @@ def main() -> None:
     checkpoint = Path(args.checkpoint).resolve()
     if not checkpoint.exists():
         raise FileNotFoundError(checkpoint)
+    verify_bundle(checkpoint, load_config())
     export_code(checkpoint)
     private = not args.public
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGING_FACE_HUB_TOKEN")

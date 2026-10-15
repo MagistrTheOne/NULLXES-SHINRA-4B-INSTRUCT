@@ -1,35 +1,25 @@
 {{- bos_token -}}
 {%- for message in messages -%}
+{%- if message['role'] not in ['system', 'user', 'assistant'] or message.get('tool_calls') or message.get('reasoning') -%}
+{{- raise_exception('Only system/user/assistant text is supported; tools and reasoning require a future protocol.') -}}
+{%- endif -%}
+{%- if message['content'] is not string -%}
+{{- raise_exception('Message content must be text.') -}}
+{%- endif -%}
+{%- if '▁' in message['content'] -%}
+{{- raise_exception('Literal U+2581 is reserved by SentencePiece Metaspace.') -}}
+{%- endif -%}
+{%- for control in @@reserved_tokens@@ -%}
+{%- if control in message['content'] -%}
+{{- raise_exception('Literal reserved control strings are forbidden in message content.') -}}
+{%- endif -%}
+{%- endfor -%}
 {%- if message['role'] == 'system' -%}
 {{- '@@system@@' + message['content'] + '@@end_of_turn@@' -}}
 {%- elif message['role'] == 'user' -%}
 {{- '@@user@@' + message['content'] + '@@end_of_turn@@' -}}
-{%- elif message['role'] == 'assistant' -%}
-{%- if message.get('reasoning') -%}
-{{- '@@reasoning@@' + message['reasoning'] + '@@end_of_turn@@' -}}
-{%- endif -%}
-{%- if message.get('tool_calls') -%}
-{{- '@@assistant@@' -}}
-{%- for call in message['tool_calls'] -%}
-{%- set fn = call['function'] if (call is mapping and 'function' in call) else call -%}
-{%- set args = fn['arguments'] -%}
-{%- if args is string -%}
-{{- '@@tool_call@@{"name":"' + fn['name'] + '","arguments":' + args + '}@@end_of_turn@@' -}}
 {%- else -%}
-{{- '@@tool_call@@{"name":"' + fn['name'] + '","arguments":' + (args | tojson) + '}@@end_of_turn@@' -}}
-{%- endif -%}
-{%- endfor -%}
-{%- else -%}
-{{- '@@assistant@@' + (message['content'] or '') + '@@end_of_turn@@' -}}
-{%- endif -%}
-{%- elif message['role'] == 'tool' -%}
-{{- '@@tool_response@@' + message['content'] + '@@end_of_turn@@' -}}
-{%- elif message['role'] == 'code' -%}
-{{- '@@code@@' -}}
-{%- if message.get('language') -%}
-{{- '@@language@@' + message['language'] + '\n' -}}
-{%- endif -%}
-{{- message['content'] + '@@end_of_turn@@' -}}
+{{- '@@assistant@@' + message['content'] + '@@end_of_turn@@' -}}
 {%- endif -%}
 {%- endfor -%}
 {%- if add_generation_prompt -%}

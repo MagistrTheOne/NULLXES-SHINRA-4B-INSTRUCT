@@ -50,7 +50,12 @@ tokenizer:
   vocab_candidates: [32768, 49152, 65536, 98304]
   byte_fallback: true
   character_coverage: 0.99995
-  normalization: identity
+  normalization: identity  # SentencePiece only; Unicode NFC is data.cleaning.unicode_normalization
+  build:
+    max_chars: null  # Must be selected from the approved corpus audit before building.
+    input_sentence_size: null
+    num_threads: null
+    max_sentence_bytes: 65536
   split_digits: false
   unk_id: 0
   bos_id: 1
@@ -72,7 +77,7 @@ tokenizer:
     tool_call: 16
     tool_response: 17
     document: 18
-  artifact_sha256: null
+  artifact_sha256: null  # SHA256 identity of tokenizer_manifest.json, NOT tokenizer.json.
   special_tokens:
     unk: "<|unk|>"
     bos: "<|bos|>"
@@ -232,7 +237,7 @@ checkpoint:
   save_dataloader_state: true
   resume_requires_matching:
     - architecture_sha256
-    - tokenizer_sha256
+    - tokenizer_bundle_sha256
     - data_manifest_sha256
     - objective
     - stage
