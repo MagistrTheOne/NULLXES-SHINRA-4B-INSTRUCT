@@ -173,6 +173,56 @@ class StatefulTokenMixSampler(Sampler[int]):
                 "pending_indices": list(self.pending_indices),
                 "position": self.position, "epoch": self.epoch}
 
+    def _replay_legacy_schedule(self, state: dict, scheduled_rows: int) -> list[int]:
+        """Rebuild the v1 schedule from its seed and prove it matches saved cursors."""
+        generator = torch.Generator().manual_seed(self.seed)
+        permutations: dict[int, torch.Tensor | None] = {code: None for code in self.weights}
+        positions = {code: 0 for code in self.weights}
+        epochs = {code: 0 for code in self.weights}
+        tokens = {code: 0 for code in self.weights}
+        global_position = 0
+        global_epoch = 0
+        rows: list[int] = []
+
+        while len(rows) < scheduled_rows:
+            if global_position >= len(self.data_source):
+                global_position = 0
+                global_epoch += 1
+            code = 0 if tokens[0] / self.weights[0] <= tokens[1] / self.weights[1] else 1
+            permutation = permutations[code]
+            if permutation is None or positions[code] >= len(permutation):
+                permutation = torch.randperm(len(self.indices[code]), generator=generator)
+                permutations[code] = permutation
+                positions[code] = 0
+                epochs[code] += 1
+            local_position = positions[code]
+            index = int(self.indices[code][int(permutation[local_position])])
+            positions[code] = local_position + 1
+            tokens[code] += int(self.target_counts[index])
+            global_position += 1
+            rows.append(index)
+
+        saved_positions = {int(key): int(value) for key, value in state["positions"].items()}
+        saved_epochs = {int(key): int(value) for key, value in state["epochs_by_language"].items()}
+        saved_tokens = {int(key): int(value) for key, value in state["tokens_by_language"].items()}
+        saved_permutations = state["permutations"]
+        permutation_mismatch = any(
+            (permutations[code] is None) != (saved_permutations.get(code, saved_permutations.get(str(code))) is None)
+            or (permutations[code] is not None and not torch.equal(
+                permutations[code], saved_permutations.get(code, saved_permutations.get(str(code)))
+            ))
+            for code in self.weights
+        )
+        if (positions != saved_positions or epochs != saved_epochs or tokens != saved_tokens
+                or permutation_mismatch or global_position != int(state["position"])
+                or global_epoch != int(state["epoch"])
+                or not torch.equal(generator.get_state(), state["generator_state"])):
+            raise ValueError(
+                "legacy sampler schedule cannot be reproduced exactly from its saved seed and cursors; "
+                "refusing heuristic resume"
+            )
+        return rows
+
     def load_state_dict(self, state: dict, *, expected_consumed_tokens: int | None = None,
                         expected_consumed_rows: int | None = None) -> None:
         if int(state["dataset_length"]) != len(self.data_source) or state["dataset_identity"] != self.dataset_identity:
@@ -203,12 +253,11 @@ class StatefulTokenMixSampler(Sampler[int]):
 
         saved_tokens = {int(key): int(value) for key, value in state["tokens_by_language"].items()}
         if state_version == 1:
-            # v1 counted sampled/yielded rows. It is safe to reinterpret as consumed
-            # only when its token and row totals match the training checkpoint.
+            if expected_consumed_tokens is None or expected_consumed_rows is None:
+                raise ValueError(
+                    "legacy sampler migration requires checkpoint consumed-token and consumed-row totals"
+                )
             self.scheduled_tokens_by_language = dict(saved_tokens)
-            self.tokens_by_language = dict(saved_tokens)
-            self.pending_indices = []
-            self.consumed_rows_by_language = {}
         else:
             self.scheduled_tokens_by_language = {
                 int(key): int(value) for key, value in state["scheduled_tokens_by_language"].items()
@@ -257,18 +306,44 @@ class StatefulTokenMixSampler(Sampler[int]):
 
         if state_version == 1:
             scheduled_rows = sum(scheduled_rows_by_language.values())
-            consumed_tokens = sum(self.tokens_by_language.values())
-            if expected_consumed_tokens is not None and consumed_tokens != expected_consumed_tokens:
+            if scheduled_rows < expected_consumed_rows:
                 raise ValueError(
-                    "legacy sampler token total cannot resume safely: "
-                    f"sampler={consumed_tokens}, checkpoint={expected_consumed_tokens}"
+                    "legacy sampler cursor ends before the checkpoint's consumed rows: "
+                    f"sampler_rows={scheduled_rows}, checkpoint_rows={expected_consumed_rows}"
                 )
-            if expected_consumed_rows is not None and scheduled_rows != expected_consumed_rows:
+            replayed_rows = self._replay_legacy_schedule(state, scheduled_rows)
+            consumed_indices = replayed_rows[:expected_consumed_rows]
+            pending_indices = replayed_rows[expected_consumed_rows:]
+            consumed_tokens_by_language = {code: 0 for code in self.weights}
+            consumed_rows_by_language = {code: 0 for code in self.weights}
+            for index in consumed_indices:
+                code = int(self.data_source.language_codes[index])
+                consumed_tokens_by_language[code] += int(self.target_counts[index])
+                consumed_rows_by_language[code] += 1
+            consumed_tokens = sum(consumed_tokens_by_language.values())
+            if consumed_tokens != expected_consumed_tokens:
                 raise ValueError(
-                    "legacy sampler row cursor cannot resume safely: "
-                    f"sampler={scheduled_rows}, checkpoint={expected_consumed_rows}"
+                    "legacy sampler replay does not identify the checkpoint consumption boundary: "
+                    f"replayed_prefix_tokens={consumed_tokens}, checkpoint_tokens={expected_consumed_tokens}, "
+                    f"replayed_prefix_rows={expected_consumed_rows}, scheduled_rows={scheduled_rows}"
                 )
-            self.consumed_rows_by_language = dict(scheduled_rows_by_language)
+            self.scheduled_tokens_by_language = dict(saved_tokens)
+            self.tokens_by_language = consumed_tokens_by_language
+            self.consumed_rows_by_language = consumed_rows_by_language
+            self.pending_indices = pending_indices
+            pending_tokens_by_language = {code: 0 for code in self.weights}
+            pending_rows_by_language = {code: 0 for code in self.weights}
+            for index in self.pending_indices:
+                code = int(self.data_source.language_codes[index])
+                pending_tokens_by_language[code] += int(self.target_counts[index])
+                pending_rows_by_language[code] += 1
+            for code in self.weights:
+                if self.scheduled_tokens_by_language[code] != (
+                    self.tokens_by_language[code] + pending_tokens_by_language[code]
+                ) or scheduled_rows_by_language[code] != (
+                    self.consumed_rows_by_language[code] + pending_rows_by_language[code]
+                ):
+                    raise ValueError("legacy sampler migration failed scheduled/consumed/pending accounting")
         else:
             for code in self.weights:
                 if self.scheduled_tokens_by_language[code] != self.tokens_by_language[code] + scheduled_tokens_from_rows[code]:
