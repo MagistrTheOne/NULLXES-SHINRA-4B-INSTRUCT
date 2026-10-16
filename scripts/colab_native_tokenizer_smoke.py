@@ -88,7 +88,6 @@ def validate_vocab_companion(vocab_path: Path, sentencepiece_processor) -> None:
     vocab_bytes = vocab_path.read_bytes()
     cursor = 0
     score_pattern = re.compile(rb"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
-    score_tolerance = Decimal("0.00000051")  # half a unit at 6 decimal places plus float conversion margin
 
     for index in range(piece_count):
         expected_piece = sentencepiece_processor.id_to_piece(index)
@@ -137,12 +136,18 @@ def validate_vocab_companion(vocab_path: Path, sentencepiece_processor) -> None:
                 f"expected piece={expected_piece!r}, score={str(expected_score)!r}; "
                 f"actual score bytes={score_bytes!r}"
             ) from exc
-        if not actual_score.is_finite() or abs(actual_score - expected_score) > score_tolerance:
+        score_exponent = actual_score.as_tuple().exponent
+        score_rounding_tolerance = Decimal((0, (5,), score_exponent - 1))
+        score_quantum = Decimal((0, (1,), score_exponent))
+        if (not actual_score.is_finite()
+                or abs(actual_score - expected_score) > score_rounding_tolerance):
             raise ValueError(
                 f"SentencePiece vocab score mismatch at ID {index}: "
                 f"expected piece={expected_piece!r}, score={str(expected_score)!r}; "
                 f"actual piece={expected_piece!r}, score={str(actual_score)!r}; "
-                f"allowed absolute decimal-rounding error={score_tolerance}"
+                f"written score quantum={score_quantum}, "
+                f"allowed absolute rounding error={score_rounding_tolerance} "
+                "(half a written unit; exact boundary is accepted)"
             )
 
         cursor = record_end
