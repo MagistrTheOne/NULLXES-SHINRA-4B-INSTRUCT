@@ -240,8 +240,8 @@ def main(argv: list[str] | None = None) -> None:
         (stage / "corpus_stats.json").write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
         (stage / "tokenizer_stats.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         (stage / "identities.sqlite").unlink()
-        digest = write_manifest(stage, config)
-        verify_bundle(stage, config, require_frozen=False)
+        digest = write_manifest(stage, config, backend="sentencepiece_fast")
+        verify_bundle(stage, config, require_frozen=False, backend="sentencepiece_fast")
         stage.replace(output)
     print(f"candidate_tokenizer_bundle_sha256={digest}; manual review and YAML freeze are required")
 

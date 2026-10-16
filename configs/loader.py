@@ -77,6 +77,13 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         raise ConfigError("tokenizer must preserve normalized corpus text exactly (identity model normalization)")
     if tokenizer.get("byte_fallback") is not True:
         raise ConfigError("tokenizer byte fallback is required")
+    if tokenizer.get("backend") not in {"sentencepiece_native", "sentencepiece_fast"}:
+        raise ConfigError("tokenizer backend must be explicitly supported")
+    native_sha = tokenizer.get("native_model_sha256")
+    if tokenizer["backend"] == "sentencepiece_native" and (
+        not isinstance(native_sha, str) or not re.fullmatch(r"[a-f0-9]{64}", native_sha)
+    ):
+        raise ConfigError("Native SentencePiece model SHA256 must be fixed in configs/shinra.yaml")
     digest = tokenizer.get("artifact_sha256")
     if digest is not None and (not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest)):
         raise ConfigError("tokenizer.artifact_sha256 must be the bundle manifest SHA256 or null")

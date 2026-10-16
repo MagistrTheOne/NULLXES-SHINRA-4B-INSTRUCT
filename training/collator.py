@@ -13,7 +13,8 @@ from configs.loader import load_config
 
 
 class PackedParquetDataset(Dataset):
-    def __init__(self, data_dir: str | Path, config: dict | None = None, expected_split: str | None = None) -> None:
+    def __init__(self, data_dir: str | Path, config: dict | None = None, expected_split: str | None = None,
+                 *, allow_smoke_test: bool = False) -> None:
         self.config = config or load_config()
         bundle_sha = self.config["tokenizer"].get("artifact_sha256")
         if not bundle_sha:
@@ -35,6 +36,8 @@ class PackedParquetDataset(Dataset):
             raise ValueError(f"{data_dir}: tokenizer bundle mismatch or legacy packed schema")
         if expected_split is not None and packed_manifest.get("split") != expected_split:
             raise ValueError(f"{data_dir}: expected {expected_split} split")
+        if packed_manifest.get("smoke_test_only") and not allow_smoke_test:
+            raise ValueError("smoke-test shards cannot be used for training or evaluation")
         declared = packed_manifest.get("shard_files")
         shard_hashes = packed_manifest.get("shard_sha256")
         if not isinstance(declared, list) or sorted(declared) != [p.name for p in self.files]:
@@ -116,9 +119,9 @@ def collate_lm(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
 
 
 def load_packed_dataset(data_dir: str | Path, pad_id: int | None = None, *, config: dict | None = None,
-                        expected_split: str | None = None):
+                        expected_split: str | None = None, allow_smoke_test: bool = False):
     config = config or load_config()
     configured_pad = int(config["tokenizer"]["pad_id"])
     if pad_id is not None and pad_id != configured_pad:
         raise ShardError("loader pad ID differs from configs/shinra.yaml")
-    return PackedParquetDataset(data_dir, config, expected_split)
+    return PackedParquetDataset(data_dir, config, expected_split, allow_smoke_test=allow_smoke_test)

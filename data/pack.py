@@ -174,8 +174,11 @@ def resolve_pretrain_special_ids(tokenizer, config: dict | None = None) -> tuple
 
 
 def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequence_length: int,
-                   shard_tokens: int, *, config_path: Path, required_split: str) -> dict:
-    config = load_config(config_path)
+                   shard_tokens: int, *, config_path: Path, required_split: str,
+                   config: dict | None = None, smoke_test_documents: int | None = None) -> dict:
+    config = config or load_config(config_path)
+    if smoke_test_documents is not None and smoke_test_documents <= 0:
+        raise PackContractError("smoke_test_documents must be positive")
     if config["data"]["packing"]["policy"] != "isolated_documents":
         raise PackContractError("only isolated document packing is implemented")
     if sequence_length != int(config["model"]["train_sequence_length"]):
@@ -225,6 +228,8 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
         for row in document_rows:
             row["tokenizer_bundle_sha256"] = bundle_sha
         rows.extend(document_rows)
+        if smoke_test_documents is not None and documents >= smoke_test_documents:
+            break
         if len(rows) * sequence_length >= shard_tokens:
             shard_name, shard_tokens_actual, shard_slots = _flush_rows(
                 rows, output_dir, shard_index, corpus_manifest_sha, sequence_length
@@ -247,6 +252,7 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
     if file_sha256(input_dir / f"{required_split}.jsonl") != corpus_manifest["files"][f"{required_split}.jsonl"]:
         raise PackContractError("corpus split changed during packing")
     report = {"packer": PACKER_VERSION, "split": required_split, "documents": documents,
+              "smoke_test_only": smoke_test_documents is not None,
               "tokens_in": tokens_in, "tokens_out": tokens_out, "sequence_length": sequence_length,
               "shards": shard_index, "shard_files": shard_paths, "padded_slots": padded_slots,
               "packing_efficiency": tokens_out / max(padded_slots, 1)}
@@ -254,6 +260,7 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
     packed_manifest_path = output_dir / "manifest.json"
     packed_manifest = {"schema": "nullxes.shinra.packed.v2", "source_manifest_sha256": corpus_manifest_sha,
                        "tokenizer_bundle_sha256": bundle_sha,
+                       "smoke_test_only": smoke_test_documents is not None,
                        "split": required_split, "shard_files": shard_paths,
                        "shard_sha256": {name: file_sha256(output_dir / name)
                                          for name in shard_paths}, "report": report}

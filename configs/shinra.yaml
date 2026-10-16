@@ -44,6 +44,8 @@ model:
 
 tokenizer:
   status: provisional_until_corpus_audit
+  backend: sentencepiece_native
+  native_model_sha256: 372eb8e5b82a950af7db3fd54d1ded4a36116016af6103076074ef99d9a0d83c
   artifact_dir: tokenizer/artifacts
   algorithm: unigram
   vocab_size: 65536
