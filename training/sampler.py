@@ -64,6 +64,7 @@ class StatefulTokenMixSampler(Sampler[int]):
 
     def __init__(self, data_source, seed: int, weights: dict[str, float]) -> None:
         self.data_source = data_source
+        self.seed = int(seed)
         self.weights = {self.LANGUAGE_CODES[key]: float(weights[key]) for key in ("en", "ru")}
         if any(value <= 0 for value in self.weights.values()) or abs(sum(self.weights.values()) - 1.0) > 1e-12:
             raise ValueError("token-mix weights must be positive and sum to 1")
@@ -75,14 +76,17 @@ class StatefulTokenMixSampler(Sampler[int]):
         if any(len(indices) == 0 for indices in self.indices.values()):
             raise ValueError("both EN and RU must have rows for the configured token-level mix")
         self.target_counts = targets
-        self.generator = torch.Generator().manual_seed(seed)
+        self.generator = torch.Generator().manual_seed(self.seed)
         self.permutations: dict[int, torch.Tensor | None] = {code: None for code in self.weights}
         self.positions = {code: 0 for code in self.weights}
         self.epochs_by_language = {code: 0 for code in self.weights}
         self.tokens_by_language = {code: 0 for code in self.weights}
         self.position = 0
         self.epoch = 0
-        self.dataset_identity = hashlib.sha256(languages.tobytes() + targets.tobytes()).hexdigest()
+        packed_identity = str(getattr(data_source, "packed_manifest_sha256", ""))
+        self.dataset_identity = hashlib.sha256(
+            languages.tobytes() + targets.tobytes() + packed_identity.encode("ascii")
+        ).hexdigest()
 
     def __len__(self) -> int:
         return len(self.data_source)
@@ -118,13 +122,27 @@ class StatefulTokenMixSampler(Sampler[int]):
     def mix_report(self) -> dict[str, int | float]:
         en, ru = self.tokens_by_language[0], self.tokens_by_language[1]
         total = en + ru
+        row_metrics: dict[str, int] = {}
+        for code, name in ((0, "en"), (1, "ru")):
+            pool_size = len(self.indices[code])
+            permutations = self.epochs_by_language[code]
+            current_position = self.positions[code]
+            presentations = (max(permutations - 1, 0) * pool_size + current_position) if permutations else 0
+            unique_rows = min(presentations, pool_size)
+            row_metrics[f"{name}_row_presentations"] = presentations
+            row_metrics[f"{name}_unique_rows_presented"] = unique_rows
+            row_metrics[f"{name}_reused_row_presentations"] = presentations - unique_rows
         return {"en_target_tokens": en, "ru_target_tokens": ru,
                 "en_fraction": en / total if total else 0.0,
                 "ru_fraction": ru / total if total else 0.0,
-                "absolute_token_imbalance": abs(en - ru), "sampled_target_tokens": total}
+                "absolute_token_imbalance": abs(en - ru), "sampled_target_tokens": total,
+                **row_metrics,
+                "reused_row_presentations": row_metrics["en_reused_row_presentations"]
+                + row_metrics["ru_reused_row_presentations"]}
 
     def state_dict(self) -> dict:
         return {"dataset_length": len(self.data_source), "dataset_identity": self.dataset_identity,
+                "seed": self.seed,
                 "weights": self.weights, "generator_state": self.generator.get_state(),
                 "permutations": self.permutations, "positions": self.positions,
                 "epochs_by_language": self.epochs_by_language, "tokens_by_language": self.tokens_by_language,
@@ -133,6 +151,8 @@ class StatefulTokenMixSampler(Sampler[int]):
     def load_state_dict(self, state: dict) -> None:
         if int(state["dataset_length"]) != len(self.data_source) or state["dataset_identity"] != self.dataset_identity:
             raise ValueError("saved token-mix sampler dataset identity differs from the current training split")
+        if int(state["seed"]) != self.seed:
+            raise ValueError("saved token-mix sampler seed differs from the current training configuration")
         saved_weights = {int(key): float(value) for key, value in state["weights"].items()}
         if saved_weights != self.weights:
             raise ValueError("saved token-mix weights differ from the current YAML")
@@ -152,6 +172,22 @@ class StatefulTokenMixSampler(Sampler[int]):
         self.epoch = int(state["epoch"])
         if not 0 <= self.position <= len(self.data_source):
             raise ValueError("saved token-mix sampler cursor is invalid")
-        if any(not 0 <= self.positions[code] <= len(self.permutations[code])
-               for code in self.weights if self.permutations[code] is not None):
-            raise ValueError("saved per-language sampler cursor is invalid")
+        for code in self.weights:
+            permutation = self.permutations[code]
+            epochs = self.epochs_by_language[code]
+            position = self.positions[code]
+            if epochs < 0 or self.tokens_by_language[code] < 0:
+                raise ValueError("saved per-language sampler counters are negative")
+            if permutation is None:
+                if epochs != 0 or position != 0 or self.tokens_by_language[code] != 0:
+                    raise ValueError("saved empty language sampler state has nonzero counters")
+                continue
+            if epochs <= 0 or not 0 <= position <= len(permutation):
+                raise ValueError("saved per-language sampler cursor is invalid")
+            completed_cycle_tokens = int(np.sum(self.target_counts[self.indices[code]], dtype=np.int64))
+            local_prefix = permutation[:position].numpy().astype(np.int64, copy=False)
+            current_dataset_indices = self.indices[code][local_prefix]
+            current_cycle_tokens = int(np.sum(self.target_counts[current_dataset_indices], dtype=np.int64))
+            expected_tokens = (epochs - 1) * completed_cycle_tokens + current_cycle_tokens
+            if self.tokens_by_language[code] != expected_tokens:
+                raise ValueError("saved language-token counters differ from the consumed row permutations")

@@ -54,11 +54,12 @@ def _register_native_special_tokens(tokenizer, token_config: dict) -> dict[str, 
     return expected
 
 
-def _load_native_tokenizer(path: Path, approved: dict):
+def _load_native_tokenizer(path: Path, approved: dict, *, require_frozen_bundle: bool):
     from .native import ShinraNativeTokenizer
     from .special_tokens import render_chat_template
 
-    tokenizer = ShinraNativeTokenizer(str(path / "tokenizer.model"), config=approved)
+    tokenizer = ShinraNativeTokenizer(str(path / "tokenizer.model"), config=approved,
+                                     require_frozen_bundle=require_frozen_bundle)
     bundle_sha = tokenizer.shinra_bundle_sha256
     token_config = approved["tokenizer"]
     expected = _register_native_special_tokens(tokenizer, token_config)
@@ -87,11 +88,12 @@ def _load_native_tokenizer(path: Path, approved: dict):
     return tokenizer
 
 
-def _load_fast_tokenizer(path: Path, approved: dict):
+def _load_fast_tokenizer(path: Path, approved: dict, *, require_frozen_bundle: bool):
     from .bundle import verify_bundle
     from transformers import AutoTokenizer
 
-    bundle_sha = verify_bundle(path, approved, backend="sentencepiece_fast")
+    bundle_sha = verify_bundle(path, approved, backend="sentencepiece_fast",
+                               require_frozen=require_frozen_bundle)
     tokenizer = AutoTokenizer.from_pretrained(str(path), use_fast=True, local_files_only=True)
     expected = _expected_specials(approved["tokenizer"])
     _validate_common(tokenizer, expected, approved)
@@ -108,14 +110,14 @@ def _load_fast_tokenizer(path: Path, approved: dict):
 
 
 def load_shinra_tokenizer(
-    path: str | Path, config: dict | None = None
+    path: str | Path, config: dict | None = None, *, require_frozen_bundle: bool = True
 ) -> ShinraNativeTokenizer | PreTrainedTokenizerFast:
     """Load exactly the configured backend. Backend failures do not trigger fallback."""
     approved = config or load_config()
     path = Path(path)
     backend = approved["tokenizer"].get("backend", "sentencepiece_fast")
     if backend == "sentencepiece_native":
-        return _load_native_tokenizer(path, approved)
+        return _load_native_tokenizer(path, approved, require_frozen_bundle=require_frozen_bundle)
     if backend == "sentencepiece_fast":
-        return _load_fast_tokenizer(path, approved)
+        return _load_fast_tokenizer(path, approved, require_frozen_bundle=require_frozen_bundle)
     raise ValueError(f"unsupported tokenizer backend in configs/shinra.yaml: {backend}")

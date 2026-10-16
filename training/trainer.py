@@ -20,6 +20,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from configs.loader import load_config
+from data.hashing import sha256_file
 from data.packed_data import ShardIdentityError, count_target_tokens_post_shift
 from data.run_ledger import RunLedger
 from model.configuration_shinra import ShinraConfig
@@ -69,6 +70,37 @@ def load_model(cfg: TrainConfig) -> ShinraForCausalLM:
 
 def _sha(value: object) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def verify_training_checkpoint(path: Path) -> dict:
+    manifest_path = path / "checkpoint_manifest.json"
+    if not manifest_path.is_file():
+        raise ShardIdentityError(f"{path}: checkpoint integrity manifest is missing")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ShardIdentityError(f"{path}: checkpoint integrity manifest is unreadable: {exc}") from exc
+    declared = manifest.pop("manifest_sha256", None)
+    if manifest.get("schema") != "nullxes.shinra.training-checkpoint.v1" or declared != _sha(manifest):
+        raise ShardIdentityError(f"{path}: checkpoint manifest schema or self-hash is invalid")
+    expected_files = manifest.get("files")
+    if not isinstance(expected_files, dict) or not expected_files:
+        raise ShardIdentityError(f"{path}: checkpoint file checksum map is missing")
+    actual_files = {}
+    for item in path.rglob("*"):
+        if item.is_symlink():
+            raise ShardIdentityError(f"{path}: symlinks are forbidden in a training checkpoint")
+        if item.is_file() and item != manifest_path:
+            actual_files[item.relative_to(path).as_posix()] = sha256_file(item)
+    if actual_files != expected_files:
+        missing = sorted(set(expected_files) - set(actual_files))
+        extra = sorted(set(actual_files) - set(expected_files))
+        mismatched = sorted(name for name in set(actual_files) & set(expected_files)
+                            if actual_files[name] != expected_files[name])
+        raise ShardIdentityError(
+            f"{path}: checkpoint files differ from manifest; missing={missing}, extra={extra}, sha_mismatch={mismatched}"
+        )
+    return manifest
 
 
 def estimate_training_memory(model: dict, training: dict) -> dict[str, int]:
@@ -132,6 +164,18 @@ def save_checkpoint(accelerator: Accelerator, model, tokenizer, output_dir: Path
             torch.save(state, temporary / "trainer_state.pt")
             details = {k: v for k, v in state.items() if k not in {"optimizer", "scheduler", "rng", "cuda_rng", "python_rng", "numpy_rng", "sampler"}}
             (temporary / "train_state.json").write_text(json.dumps(details, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            checkpoint_files = {
+                item.relative_to(temporary).as_posix(): sha256_file(item)
+                for item in sorted(temporary.rglob("*")) if item.is_file()
+            }
+            checkpoint_manifest = {"schema": "nullxes.shinra.training-checkpoint.v1", "step": step,
+                                   "files": checkpoint_files}
+            checkpoint_manifest["manifest_sha256"] = _sha(checkpoint_manifest)
+            checkpoint_manifest_tmp = temporary / ".checkpoint_manifest.json.tmp"
+            checkpoint_manifest_tmp.write_text(
+                json.dumps(checkpoint_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            os.replace(checkpoint_manifest_tmp, temporary / "checkpoint_manifest.json")
             # Rename within the same filesystem; the visible checkpoint is complete or absent.
             os.replace(temporary, final)
         accelerator.wait_for_everyone()
@@ -172,6 +216,7 @@ def run_lm_training(cfg: TrainConfig) -> dict:
     verify_bundle(cfg.tokenizer_path, approved)
     if cfg.resume_from:
         verify_bundle(cfg.resume_from, approved)
+        verify_training_checkpoint(cfg.resume_from)
     if cfg.stage != "pretrain":
         raise SystemExit("only causal pretraining is active; instruction tuning is a future phase")
     if not Path("/content").exists():
@@ -232,17 +277,11 @@ def run_lm_training(cfg: TrainConfig) -> dict:
     if not heldout_dir.is_dir():
         raise FileNotFoundError("held-out validation data is required")
     train_dir = cfg.data_dir / "train"
-    blind_dir = cfg.data_dir / "blind"
-    blind_data = load_packed_dataset(blind_dir, config=approved, expected_split="blind")
-    if getattr(blind_data, "source_manifest_sha256", None) != manifest_sha:
-        raise ShardIdentityError("packed blind source manifest differs from the frozen corpus manifest")
     train_data = load_packed_dataset(train_dir, config=approved, expected_split="train")
     validation_data = load_packed_dataset(heldout_dir, config=approved, expected_split="validation")
     packed_manifest_shas = {"train": train_data.packed_manifest_sha256,
-                            "validation": validation_data.packed_manifest_sha256,
-                            "blind": blind_data.packed_manifest_sha256}
+                            "validation": validation_data.packed_manifest_sha256}
     packed_data_manifests_sha = _sha(packed_manifest_shas)
-    del blind_data
     if not data_manifest.get("train_hash") or not data_manifest.get("validation_hash") or not data_manifest.get("blind_hash"):
         raise ShardIdentityError("manifest missing frozen train/validation/blind split hashes")
     if len({data_manifest["train_hash"], data_manifest["validation_hash"], data_manifest["blind_hash"]}) != 3:

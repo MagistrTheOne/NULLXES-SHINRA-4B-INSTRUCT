@@ -87,6 +87,11 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
     digest = tokenizer.get("artifact_sha256")
     if digest is not None and (not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest)):
         raise ConfigError("tokenizer.artifact_sha256 must be the bundle manifest SHA256 or null")
+    corpus_digest = config["data"].get("manifest_sha256")
+    if corpus_digest is not None and (
+        not isinstance(corpus_digest, str) or not re.fullmatch(r"[a-f0-9]{64}", corpus_digest)
+    ):
+        raise ConfigError("data.manifest_sha256 must be a 64-character SHA256 or null")
     build = tokenizer.get("build", {})
     for key in ("max_chars", "input_sentence_size", "num_threads", "max_sentence_bytes"):
         if key not in build or (build[key] is not None and (type(build[key]) is not int or build[key] <= 0)):

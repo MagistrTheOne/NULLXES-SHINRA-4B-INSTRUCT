@@ -23,11 +23,9 @@ class PackedParquetDataset(Dataset):
     LANGUAGE_CODES = {"en": 0, "ru": 1}
 
     def __init__(self, data_dir: str | Path, config: dict | None = None, expected_split: str | None = None,
-                 *, allow_smoke_test: bool = False) -> None:
+                 *, allow_smoke_test: bool = False, allow_audit_data: bool = False) -> None:
         self.config = config or load_config()
-        bundle_sha = self.config["tokenizer"].get("artifact_sha256")
-        if not bundle_sha:
-            raise ValueError("packed loading requires a frozen tokenizer bundle SHA256")
+        configured_bundle_sha = self.config["tokenizer"].get("artifact_sha256")
         root = Path(data_dir)
         self.files = sorted(root.glob("*.parquet"))
         if not self.files:
@@ -41,10 +39,18 @@ class PackedParquetDataset(Dataset):
         if declared_sha != actual_sha:
             raise ValueError(f"{root}: packed manifest self-hash mismatch")
         self.packed_manifest_sha256 = declared_sha
+        admission = packed_manifest.get("admission")
+        bundle_sha = packed_manifest.get("tokenizer_bundle_sha256")
         if packed_manifest.get("schema") != "nullxes.shinra.packed.v3" \
-                or packed_manifest.get("admission") != "production" \
-                or packed_manifest.get("tokenizer_bundle_sha256") != bundle_sha:
-            raise ValueError(f"{root}: packed artifact is not production-admitted or tokenizer identity mismatches")
+                or admission not in {"production", "audit_only"} \
+                or not isinstance(bundle_sha, str) or not re.fullmatch(r"[a-f0-9]{64}", bundle_sha):
+            raise ValueError(f"{root}: packed artifact schema/admission/tokenizer identity is invalid")
+        if admission == "production" and (not configured_bundle_sha or configured_bundle_sha != bundle_sha):
+            raise ValueError(f"{root}: production packed tokenizer identity differs from the frozen YAML SHA")
+        if admission == "audit_only" and not allow_audit_data:
+            raise ValueError(f"{root}: audit-only packed data requires explicit allow_audit_data=True")
+        if admission == "audit_only" and configured_bundle_sha and configured_bundle_sha != bundle_sha:
+            raise ValueError(f"{root}: audit packed tokenizer identity differs from the configured SHA")
         if expected_split is not None and packed_manifest.get("split") != expected_split:
             raise ValueError(f"{root}: expected {expected_split} split")
         if packed_manifest.get("smoke_test_only") and not allow_smoke_test:
@@ -82,7 +88,7 @@ class PackedParquetDataset(Dataset):
                 "subset", "license", "url_or_archive_id", "window_semantics",
                 "rights_status",
                 "chunk_index", "chunk_count",
-                "token_start", "token_end", "split", "raw_sha256", "clean_sha256", "upstream_file_sha256",
+                "token_start", "token_end", "document_token_count", "split", "raw_sha256", "clean_sha256", "upstream_file_sha256",
                 "is_final_document_window"}
             if not row_metadata_fields.issubset(parquet.schema_arrow.names):
                 raise ShardError(f"{path}: per-row source/document/chunk provenance is incomplete")
@@ -117,16 +123,20 @@ class PackedParquetDataset(Dataset):
                     source_id = metadata_columns["source_id"][row_idx]
                     revision = metadata_columns["revision"][row_idx]
                     source = source_allowlist.get(source_id)
-                    if source is None or source.get("revision") != revision \
-                            or source.get("status") != "approved" \
-                            or source.get("rights_review_status") != "approved" \
-                            or source.get("provenance_review_status") != "approved":
-                        raise ShardError(f"{path}: row belongs to a source without current production approval")
+                    if source is None or source.get("revision") != revision:
+                        raise ShardError(f"{path}: row source/revision is outside the current YAML allowlist")
+                    if admission == "production" and (
+                        source.get("status") != "approved" or source.get("rights_review_status") != "approved"
+                        or source.get("provenance_review_status") != "approved"
+                    ):
+                        raise ShardError(f"{path}: production row belongs to a source without current approval")
                     if metadata_columns["split"][row_idx] != packed_manifest.get("split"):
                         raise ShardError(f"{path}: row split differs from the packed split manifest")
                     if metadata_columns["license"][row_idx] != source.get("license_claim"):
                         raise ShardError(f"{path}: row license claim differs from YAML source metadata")
-                    if metadata_columns["rights_status"][row_idx] != "approved":
+                    if metadata_columns["rights_status"][row_idx] != source.get("rights_review_status"):
+                        raise ShardError(f"{path}: row rights status differs from the source YAML")
+                    if admission == "production" and metadata_columns["rights_status"][row_idx] != "approved":
                         raise ShardError(f"{path}: row has no production rights approval")
                     if not metadata_columns["source_record"][row_idx] or not metadata_columns["subset"][row_idx]:
                         raise ShardError(f"{path}: upstream row and source subset provenance are missing")
@@ -140,16 +150,20 @@ class PackedParquetDataset(Dataset):
                     chunk_count = int(metadata_columns["chunk_count"][row_idx])
                     token_start = int(metadata_columns["token_start"][row_idx])
                     token_end = int(metadata_columns["token_end"][row_idx])
+                    document_token_count = int(metadata_columns["document_token_count"][row_idx])
                     final_window = bool(metadata_columns["is_final_document_window"][row_idx])
                     if not document_id or chunk_count <= 0 or not 0 <= chunk_index < chunk_count \
-                            or token_start < 0 or token_end <= token_start:
+                            or token_start < 0 or token_end <= token_start or document_token_count < token_end:
                         raise ShardError(f"{path}: invalid document chunk offsets or indices")
                     if final_window != (chunk_index == chunk_count - 1):
                         raise ShardError(f"{path}: EOD/final-window declaration differs from chunk count")
+                    if final_window != (token_end == document_token_count):
+                        raise ShardError(f"{path}: final chunk does not account for the complete source token tail")
                     if token_end - token_start != int(counts[row_idx]) - int(final_window):
                         raise ShardError(f"{path}: source token offsets differ from supervised body-token count")
                     identity = tuple(metadata_columns[name][row_idx] for name in
-                                     ("source_id", "revision", "language", "raw_sha256", "clean_sha256"))
+                                     ("source_id", "revision", "language", "raw_sha256", "clean_sha256",
+                                      "document_token_count"))
                     for hash_field in ("raw_sha256", "clean_sha256", "upstream_file_sha256"):
                         if not re.fullmatch(r"[a-f0-9]{64}", str(metadata_columns[hash_field][row_idx])):
                             raise ShardError(f"{path}: malformed per-row {hash_field}")
@@ -254,9 +268,11 @@ def collate_lm(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
 
 
 def load_packed_dataset(data_dir: str | Path, pad_id: int | None = None, *, config: dict | None = None,
-                        expected_split: str | None = None, allow_smoke_test: bool = False):
+                        expected_split: str | None = None, allow_smoke_test: bool = False,
+                        allow_audit_data: bool = False):
     config = config or load_config()
     configured_pad = int(config["tokenizer"]["pad_id"])
     if pad_id is not None and pad_id != configured_pad:
         raise ShardError("loader pad ID differs from configs/shinra.yaml")
-    return PackedParquetDataset(data_dir, config, expected_split, allow_smoke_test=allow_smoke_test)
+    return PackedParquetDataset(data_dir, config, expected_split, allow_smoke_test=allow_smoke_test,
+                                allow_audit_data=allow_audit_data)

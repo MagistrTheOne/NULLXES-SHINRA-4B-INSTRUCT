@@ -18,7 +18,8 @@ class ShinraNativeTokenizer(PreTrainedTokenizer):
     model_input_names = ["input_ids", "attention_mask"]
     is_fast = False
 
-    def __init__(self, vocab_file: str, *, config: dict, **kwargs: Any) -> None:
+    def __init__(self, vocab_file: str, *, config: dict, require_frozen_bundle: bool = True,
+                 **kwargs: Any) -> None:
         from .bundle import verify_bundle
         import sentencepiece as spm
 
@@ -27,7 +28,8 @@ class ShinraNativeTokenizer(PreTrainedTokenizer):
             raise ValueError("Native tokenizer must load tokenizer.model from its verified bundle root")
         self.shinra_bundle_path = Path(self.vocab_file).parent
         self.shinra_bundle_sha256 = verify_bundle(
-            self.shinra_bundle_path, config, backend="sentencepiece_native"
+            self.shinra_bundle_path, config, backend="sentencepiece_native",
+            require_frozen=require_frozen_bundle,
         )
         self._shinra_config = config
         self.sp_model = spm.SentencePieceProcessor(model_file=self.vocab_file)

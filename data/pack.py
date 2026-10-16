@@ -311,10 +311,9 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
     corpus_manifest_sha = corpus_manifest.get("manifest_sha256")
     if corpus_manifest_sha != _json_sha({k: v for k, v in corpus_manifest.items() if k != "manifest_sha256"}):
         raise PackContractError("corpus manifest self-hash is invalid")
-    if corpus_manifest.get("purpose") != "pretraining" or (
-        corpus_manifest.get("admission") != "production" and smoke_test_documents is None
-    ):
-        raise PackContractError("production packing requires an admitted pretraining corpus; audit snapshots cannot train")
+    corpus_admission = corpus_manifest.get("admission")
+    if corpus_manifest.get("purpose") != "pretraining" or corpus_admission not in {"production", "audit_only"}:
+        raise PackContractError("packing requires a pretraining corpus manifest with an explicit admission status")
     if config["data"].get("manifest_sha256") is not None and config["data"]["manifest_sha256"] != corpus_manifest_sha:
         raise PackContractError("corpus manifest SHA256 does not match configs/shinra.yaml")
     if corpus_manifest.get("split_hashes", {}).get(required_split) is None:
@@ -334,7 +333,9 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
             or provenance.get("provenance_review_status") != "approved"
         ):
             raise PackContractError("production corpus manifest contains a source without both approvals")
-    tokenizer = load_shinra_tokenizer(tokenizer_path, config)
+    tokenizer = load_shinra_tokenizer(
+        tokenizer_path, config, require_frozen_bundle=(corpus_admission == "production")
+    )
     bundle_sha = tokenizer.shinra_bundle_sha256
     _, _, pad_id = resolve_pretrain_special_ids(tokenizer, config)
     output_dir = Path(output_dir)
@@ -471,6 +472,7 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
                     "chunk_count": count,
                     "token_start": token_start,
                     "token_end": token_end,
+                    "document_token_count": len(ids),
                     "window_semantics": CHUNKING_POLICY_VERSION,
                     "is_final_document_window": final_window,
                 })
@@ -509,7 +511,8 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
         }
         (stage / "pack_report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         packed_manifest = {
-            "schema": "nullxes.shinra.packed.v3", "admission": "audit_only" if smoke_test_documents else "production",
+            "schema": "nullxes.shinra.packed.v3",
+            "admission": "audit_only" if corpus_admission != "production" or smoke_test_documents else "production",
             "source_manifest_sha256": corpus_manifest_sha, "tokenizer_bundle_sha256": bundle_sha,
             "smoke_test_only": smoke_test_documents is not None, "split": required_split,
             "shard_files": shard_files, "shard_sha256": shard_hashes, "report": report,
@@ -532,15 +535,31 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--sequence-length", type=int, default=None)
     parser.add_argument("--shard-tokens", type=int, default=None)
-    parser.add_argument("--split", choices=("train", "validation", "blind"), required=True)
+    parser.add_argument("--split", choices=("train", "validation", "blind", "all"), required=True)
     parser.add_argument("--config", default=str(CONFIG_PATH))
     parser.add_argument("--resume", action="store_true", help="verify the partial-split journal and resume safely")
     args = parser.parse_args()
     config = load_config(args.config)
     sequence_length = args.sequence_length or int(config["model"]["train_sequence_length"])
     shard_tokens = args.shard_tokens or int(config["data"]["packed_shard_tokens"])
-    result = pack_documents(Path(args.input_dir), Path(args.tokenizer), Path(args.output_dir), sequence_length,
-                            shard_tokens, config_path=Path(args.config), required_split=args.split, resume=args.resume)
+    input_dir = Path(args.input_dir)
+    tokenizer_path = Path(args.tokenizer)
+    output_dir = Path(args.output_dir)
+    config_path = Path(args.config)
+    if args.split == "all":
+        if args.resume:
+            parser.error("resume one interrupted split at a time with --split <name> --resume")
+        results = {}
+        for split in ("train", "validation", "blind"):
+            results[split] = pack_documents(
+                input_dir, tokenizer_path, output_dir / split, sequence_length, shard_tokens,
+                config_path=config_path, required_split=split, config=config,
+            )
+        print(json.dumps(results, indent=2, sort_keys=True))
+        return
+    result = pack_documents(input_dir, tokenizer_path, output_dir, sequence_length,
+                            shard_tokens, config_path=config_path, required_split=args.split, resume=args.resume,
+                            config=config)
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

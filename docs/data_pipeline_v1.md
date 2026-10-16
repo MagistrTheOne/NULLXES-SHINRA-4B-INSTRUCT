@@ -8,7 +8,7 @@ The corpus cleaner stores fixed-size MinHash signatures and LSH bands in SQLite;
 
 The two configured candidates currently have `status: audit_only`, `rights_review_status: audit_only` and `provenance_review_status: audit_only`. A pinned commit makes an acquisition reproducible; it does not establish permission to train. Wikimedia pages can carry different terms, and the PleIAs public-domain statement is a publisher claim that still needs work-level review. A bounded acquisition (`--max-documents`) is always marked `audit_only`.
 
-Production acquisition refuses sources until both reviews and the source status are approved in `configs/shinra.yaml`. Production cleaning refuses an unapproved source snapshot. The cleaner emits `admission: audit_only` for audit data, and the production packer refuses that output. Training remains blocked by the three existing false gates and additionally requires a frozen tokenizer bundle SHA and packed data manifest SHA.
+Production acquisition refuses sources until both reviews and the source status are approved in `configs/shinra.yaml`. Production cleaning refuses an unapproved source snapshot. The packer can serialize an `audit_only` corpus into explicitly audit-only packed artifacts; they require an explicit `allow_audit_data=True` when loaded directly and are rejected by the training engine. Training remains blocked by the three existing false gates and additionally requires a frozen tokenizer bundle SHA and packed data manifest SHA.
 
 ## Colab commands
 
@@ -39,22 +39,17 @@ python -m data.numeric_integrity \
 
 After both sources are approved, acquire fresh production snapshots as above and use `--admission production` with `data.numeric_integrity`. The cleaner stages the complete output beside the destination and publishes its directory atomically. Existing output paths are never overwritten. The destination filesystem must support same-filesystem atomic directory `os.replace`; this behavior has not been verified on the Colab Drive mount, so verify it before a production build or stage on a filesystem where that guarantee holds.
 
-After production corpus, Native tokenizer bundle SHA and YAML data manifest identity have passed their separate approvals, pack one split at a time:
+Pack the existing audit corpus into three separate split directories with one command. The command uses the configured Native SentencePiece bundle, validates the corpus SHA pinned in `configs/shinra.yaml`, chunks each document without overlap, and keeps split boundaries separate. All outputs remain `audit_only` and cannot be used by the trainer:
 
 ```bash
-PACKED=/content/drive/MyDrive/NULLXES/SHINRA/data/packed/v1
-python -m data.pack --input-dir /content/drive/MyDrive/NULLXES/SHINRA/data/clean/production-v1 \
+python -m data.pack \
+  --input-dir /content/drive/MyDrive/NULLXES/SHINRA/data/clean/shinra-audit-v2 \
   --tokenizer /content/drive/MyDrive/NULLXES/SHINRA/tokenizer/artifacts/shinra_unigram_65k_v1_verified \
-  --output-dir "$PACKED/train" --split train
-python -m data.pack --input-dir /content/drive/MyDrive/NULLXES/SHINRA/data/clean/production-v1 \
-  --tokenizer /content/drive/MyDrive/NULLXES/SHINRA/tokenizer/artifacts/shinra_unigram_65k_v1_verified \
-  --output-dir "$PACKED/validation" --split validation
-python -m data.pack --input-dir /content/drive/MyDrive/NULLXES/SHINRA/data/clean/production-v1 \
-  --tokenizer /content/drive/MyDrive/NULLXES/SHINRA/tokenizer/artifacts/shinra_unigram_65k_v1_verified \
-  --output-dir "$PACKED/blind" --split blind
+  --output-dir /content/drive/MyDrive/NULLXES/SHINRA/data/packed/shinra-audit-v2 \
+  --split all
 ```
 
-If a packing process is interrupted, the final split directory is absent and the sibling `.<split>.partial` directory contains a self-hashed journal and checksummed completed shards. Re-run the same command with `--resume`; processing replays from the last journaled shard boundary, discarding an unjournaled in-progress shard. Input split, corpus manifest, tokenizer bundle and packing configuration must match. A missing/corrupt journal or committed shard stops recovery. An existing published split is immutable to this command.
+Each split is published atomically and independently. If the all-split command is interrupted, already published split directories remain immutable; resume the interrupted split with its specific `--split train|validation|blind --resume` command, using that split directory as `--output-dir`. The sibling `.<split>.partial` directory contains a self-hashed journal and checksummed completed shards. Processing replays from the last journaled shard boundary, discarding an unjournaled in-progress shard. Input split, corpus manifest, tokenizer bundle and packing configuration must match. A missing/corrupt journal or committed shard stops recovery. An existing published split is immutable.
 
 No `shinra-pretrain` command is approved by this runbook while the three config gates are false. FSDP is unavailable; the current trainer requires one supported Colab GPU and BF16.
 
@@ -64,13 +59,13 @@ No `shinra-pretrain` command is approved by this runbook while the three config 
 |---|---|---|
 | Raw source snapshot | `nullxes.shinra.raw-source.v2` | Exact source revision, source-specific license claim and review status, upstream file path/SHA-256 list, accepted/scanned/rejected counts, rejection reason counts, `records.jsonl` and redacted `rejections.jsonl` SHA-256 values, self-hashed manifest; accepted rows have stable document ID, original text SHA-256, upstream file hash, row position and URL/archive identifier. Rejection rows never contain source text. |
 | Clean corpus | `nullxes.shinra.corpus.v2` | Admission, source revision and raw manifest identities, frozen split policy, cleaner/dedup versions, total and per-language counts, train/validation/blind/duplicates/quarantine SHA-256 values, self-hashed manifest. Duplicate and quarantine records preserve source provenance. |
-| Packed split | `nullxes.shinra.packed.v3` | Corpus manifest SHA, Native tokenizer bundle SHA, split, per-shard SHA-256, token accounting and chunking contract, self-hashed manifest. Each Parquet row includes source/revision/document IDs, language, split, chunk index/count, half-open token offsets and raw/clean/upstream hashes. Training checkpoints bind the SHA of the train, validation and blind split manifests together.
+| Packed split | `nullxes.shinra.packed.v3` | Corpus manifest SHA, Native tokenizer bundle SHA, split, per-shard SHA-256, token accounting and chunking contract, self-hashed manifest. Each Parquet row includes source/revision/document IDs, language, split, chunk index/count, half-open token offsets, total document token count and raw/clean/upstream hashes. Training binds only the train and validation packed-manifest hashes; it does not open or evaluate the blind split.
 
 ## Chunking and language mix
 
 Each source document is tokenized after deduplication and split assignment. Body token ranges are ordered, half-open, non-overlapping and cover every source token exactly once. Each packed row starts with BOS; the first body token in each independent continuation window is predicted from that window's BOS. Intermediate windows omit EOD; the final window alone has EOD and trains it. BOS is masked, EOD is a target, PAD and post-PAD targets are masked. There is no overlap and no cross-document packing. Continuation windows do not receive previous-window context.
 
-The pretraining sampler uses actual supervised target-token counts from packed EN/RU rows. It schedules the language with the lower normalized cumulative token count, weights the per-row mean loss by its supervised-token count, re-shuffles a language's rows when that language permutation is exhausted, and saves both permutations and counters in the checkpoint. Its schedule epoch is exactly `len(train_split)` scheduled row selections; with a strongly imbalanced source mix, that counter does not claim every row was visited once. With 50/50 YAML weights the final count is checked against one maximum packed-row target tolerance; counts, fractions and imbalance are recorded. `max_steps` is a hard safety limit: if the token budget is still short, the ledger records `budget_incomplete`, never `complete`.
+The pretraining sampler uses actual supervised target-token counts from packed EN/RU rows. It schedules the language with the lower normalized cumulative token count, weights the per-row mean loss by its supervised-token count, re-shuffles a language's rows when that language permutation is exhausted, and saves seed, permutations, token counters and cursors in the checkpoint. Its report records row presentations and presentations caused by reusing exhausted language pools. With 50/50 YAML weights the final count is checked against one maximum packed-row target tolerance; counts, fractions and imbalance are recorded. `max_steps` is a hard safety limit: if the token budget is still short, the ledger records `budget_incomplete`, never `complete`.
 
 ## External admission work still required
 
