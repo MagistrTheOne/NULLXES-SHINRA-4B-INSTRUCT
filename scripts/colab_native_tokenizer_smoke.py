@@ -9,12 +9,13 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import math
 import os
+import re
 import shutil
 import sys
 import tempfile
 import uuid
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 REPO = Path("/content/NULLXES-SHINRA-4B-INSTRUCT")
@@ -22,6 +23,8 @@ VERIFIED = Path("/content/drive/MyDrive/NULLXES/SHINRA/tokenizer/artifacts/shinr
 ORIGINAL_NATIVE = Path("/content/drive/MyDrive/NULLXES/SHINRA/tokenizer/artifacts/shinra_unigram_65k_v1_native")
 CORPUS = Path("/content/drive/MyDrive/NULLXES/SHINRA/datasets/clean/tokenizer_wiki_v2")
 EXPECTED_NATIVE_MODEL_SHA256 = "372eb8e5b82a950af7db3fd54d1ded4a36116016af6103076074ef99d9a0d83c"
+EXPECTED_ORIGINAL_VOCAB_SHA256 = "193cbf2e1dca090497352ba3b567e18740d0c63515a3ac9e886fc17db6562acc"
+EXPECTED_NATIVE_VOCAB_SIZE = 65_536
 EXPECTED_VALIDATION_DOCUMENTS = 19_829
 EXPECTED_VALIDATION_TOKENS = 15_147_605
 SMOKE_DOCUMENT_LIMIT = 32
@@ -63,6 +66,12 @@ if verified_model_sha256 != original_model_sha256:
         "Verified and Original Native SentencePiece model SHA256 differ: "
         f"verified={verified_model_sha256}, original={original_model_sha256}"
     )
+original_vocab_sha256 = file_sha256(original_vocab_path)
+if original_vocab_sha256 != EXPECTED_ORIGINAL_VOCAB_SHA256:
+    raise ValueError(
+        "Original Native SentencePiece vocab SHA256 differs from the approved artifact: "
+        f"expected={EXPECTED_ORIGINAL_VOCAB_SHA256}, actual={original_vocab_sha256}"
+    )
 if not (CORPUS / "manifest.json").is_file() or not (CORPUS / "validation.jsonl").is_file():
     raise FileNotFoundError("Clean corpus must provide manifest.json and validation.jsonl")
 import sentencepiece as spm
@@ -70,57 +79,82 @@ processor = spm.SentencePieceProcessor(model_file=str(verified_model_path))
 
 
 def validate_vocab_companion(vocab_path: Path, sentencepiece_processor) -> None:
-    """Fail with the exact model-vs-vocab values before creating a bundle directory."""
+    """Parse by model piece boundaries, preserving literal CR/LF/tab bytes in pieces."""
     piece_count = sentencepiece_processor.get_piece_size()
-    count = 0
-    with vocab_path.open("r", encoding="utf-8", errors="strict") as stream:
-        for index, line in enumerate(stream):
-            expected_piece = sentencepiece_processor.id_to_piece(index) if index < piece_count else "<no piece>"
-            expected_score = sentencepiece_processor.get_score(index) if index < piece_count else None
-            actual_piece, separator, actual_score_text = line.rstrip("\r\n").rpartition("\t")
-            if index >= piece_count:
-                raise ValueError(
-                    f"SentencePiece vocab mismatch at ID {index}: expected no entry, "
-                    f"actual piece={actual_piece!r}, score={actual_score_text!r}"
-                )
-            if not separator:
-                raise ValueError(
-                    f"SentencePiece vocab mismatch at ID {index}: expected piece={expected_piece!r}, "
-                    f"score={expected_score!r}; actual line has no tab-separated score: {line.rstrip()!r}"
-                )
-            try:
-                actual_score = float(actual_score_text)
-            except ValueError as exc:
-                raise ValueError(
-                    f"SentencePiece vocab mismatch at ID {index}: expected piece={expected_piece!r}, "
-                    f"score={expected_score!r}; actual piece={actual_piece!r}, "
-                    f"score={actual_score_text!r} (invalid number)"
-                ) from exc
-            if actual_piece != expected_piece:
-                raise ValueError(
-                    f"SentencePiece vocab piece mismatch at ID {index}: "
-                    f"expected={expected_piece!r}, actual={actual_piece!r}; "
-                    f"expected score={expected_score!r}, actual score={actual_score!r}"
-                )
-            if abs(actual_score - expected_score) > max(1e-6, abs(expected_score) * 1e-5):
-                raise ValueError(
-                    f"SentencePiece vocab score mismatch at ID {index}: "
-                    f"expected piece={expected_piece!r}, actual piece={actual_piece!r}; "
-                    f"expected score={expected_score!r}, actual score={actual_score!r}"
-                )
-            if not math.isfinite(actual_score):
-                raise ValueError(
-                    f"SentencePiece vocab score mismatch at ID {index}: "
-                    f"expected piece={expected_piece!r}, actual piece={actual_piece!r}; "
-                    f"expected finite score={expected_score!r}, actual score={actual_score!r}"
-                )
-            count = index + 1
-    if count != piece_count:
-        missing_id = count
+    if piece_count != EXPECTED_NATIVE_VOCAB_SIZE:
         raise ValueError(
-            f"SentencePiece vocab mismatch at ID {missing_id}: "
-            f"expected piece={sentencepiece_processor.id_to_piece(missing_id)!r}, "
-            f"score={sentencepiece_processor.get_score(missing_id)!r}; actual=<missing>"
+            f"SentencePiece model has {piece_count} pieces; expected exactly {EXPECTED_NATIVE_VOCAB_SIZE}"
+        )
+    vocab_bytes = vocab_path.read_bytes()
+    cursor = 0
+    score_pattern = re.compile(rb"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
+    score_tolerance = Decimal("0.00000051")  # half a unit at 6 decimal places plus float conversion margin
+
+    for index in range(piece_count):
+        expected_piece = sentencepiece_processor.id_to_piece(index)
+        expected_piece_bytes = expected_piece.encode("utf-8", errors="strict")
+        expected_score = Decimal(str(sentencepiece_processor.get_score(index)))
+        piece_end = cursor + len(expected_piece_bytes)
+        actual_piece_bytes = vocab_bytes[cursor:piece_end]
+        if actual_piece_bytes != expected_piece_bytes:
+            actual_piece = actual_piece_bytes.decode("utf-8", errors="replace")
+            raise ValueError(
+                f"SentencePiece vocab piece mismatch at ID {index}: "
+                f"expected={expected_piece!r}, actual={actual_piece!r}"
+            )
+        cursor = piece_end
+
+        if cursor >= len(vocab_bytes) or vocab_bytes[cursor] != 0x09:
+            actual_byte = vocab_bytes[cursor:cursor + 1]
+            raise ValueError(
+                f"SentencePiece vocab record mismatch at ID {index}: "
+                f"expected tab after piece={expected_piece!r}, actual byte={actual_byte!r}"
+            )
+        cursor += 1
+
+        record_end = vocab_bytes.find(b"\n", cursor)
+        if record_end < 0:
+            if index != piece_count - 1:
+                raise ValueError(
+                    f"SentencePiece vocab record mismatch at ID {index}: "
+                    "score record terminator is missing before the final ID"
+                )
+            record_end = len(vocab_bytes)
+        score_bytes = vocab_bytes[cursor:record_end]
+        if score_bytes.endswith(b"\r"):
+            score_bytes = score_bytes[:-1]
+        if not score_pattern.fullmatch(score_bytes):
+            raise ValueError(
+                f"SentencePiece vocab score mismatch at ID {index}: "
+                f"expected piece={expected_piece!r}, score={str(expected_score)!r}; "
+                f"actual score bytes={score_bytes!r}"
+            )
+        try:
+            actual_score = Decimal(score_bytes.decode("ascii", errors="strict"))
+        except (UnicodeDecodeError, InvalidOperation) as exc:
+            raise ValueError(
+                f"SentencePiece vocab score mismatch at ID {index}: "
+                f"expected piece={expected_piece!r}, score={str(expected_score)!r}; "
+                f"actual score bytes={score_bytes!r}"
+            ) from exc
+        if not actual_score.is_finite() or abs(actual_score - expected_score) > score_tolerance:
+            raise ValueError(
+                f"SentencePiece vocab score mismatch at ID {index}: "
+                f"expected piece={expected_piece!r}, score={str(expected_score)!r}; "
+                f"actual piece={expected_piece!r}, score={str(actual_score)!r}; "
+                f"allowed absolute decimal-rounding error={score_tolerance}"
+            )
+
+        cursor = record_end
+        if cursor < len(vocab_bytes):
+            cursor += 1  # Consume the score record LF; CRLF was handled above.
+        elif index != piece_count - 1:
+            raise ValueError(f"SentencePiece vocab ended before ID {index + 1}")
+
+    if cursor != len(vocab_bytes):
+        raise ValueError(
+            f"SentencePiece vocab has trailing bytes after {piece_count} entries: "
+            f"offset={cursor}, trailing_bytes={len(vocab_bytes) - cursor}"
         )
 
 
@@ -156,6 +190,12 @@ bundle_root = VERIFIED.parent / f"shinra_native_unigram_65k_bundle_{uuid.uuid4()
 bundle_root.mkdir(parents=False, exist_ok=False)
 shutil.copy2(verified_model_path, bundle_root / "tokenizer.model")
 shutil.copy2(original_vocab_path, bundle_root / "tokenizer.vocab")
+copied_vocab_sha256 = file_sha256(bundle_root / "tokenizer.vocab")
+if copied_vocab_sha256 != EXPECTED_ORIGINAL_VOCAB_SHA256:
+    raise ValueError(
+        "Copied Native tokenizer.vocab SHA256 differs from the approved artifact: "
+        f"expected={EXPECTED_ORIGINAL_VOCAB_SHA256}, actual={copied_vocab_sha256}"
+    )
 
 # The wrapper requires a signed bundle before loading. First stage real provenance/statistics,
 # then write the manifest and freeze only the in-memory smoke-test configuration.
@@ -163,6 +203,7 @@ config["data"]["manifest_sha256"] = corpus_hash
 stats = {
     **validation,
     "native_model_sha256": EXPECTED_NATIVE_MODEL_SHA256,
+    "original_vocab_sha256": EXPECTED_ORIGINAL_VOCAB_SHA256,
     "validation_jsonl_sha256": corpus_manifest["files"]["validation.jsonl"],
     "wrapper_parity": "pending bundle load",
 }
@@ -176,6 +217,7 @@ corpus_stats = {
 (bundle_root / "corpus_stats.json").write_text(json.dumps(corpus_stats, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 bundle_provenance = {
     "source_model_sha256": EXPECTED_NATIVE_MODEL_SHA256,
+    "source_vocab_sha256": EXPECTED_ORIGINAL_VOCAB_SHA256,
     "clean_corpus_manifest_sha256": corpus_hash,
     "validation_jsonl_sha256": corpus_manifest["files"]["validation.jsonl"],
 }
