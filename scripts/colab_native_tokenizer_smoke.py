@@ -7,15 +7,12 @@
 from __future__ import annotations
 
 import copy
-import hashlib
 import json
 import os
-import re
 import shutil
 import sys
 import tempfile
 import uuid
-from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 REPO = Path("/content/NULLXES-SHINRA-4B-INSTRUCT")
@@ -23,8 +20,6 @@ VERIFIED = Path("/content/drive/MyDrive/NULLXES/SHINRA/tokenizer/artifacts/shinr
 ORIGINAL_NATIVE = Path("/content/drive/MyDrive/NULLXES/SHINRA/tokenizer/artifacts/shinra_unigram_65k_v1_native")
 CORPUS = Path("/content/drive/MyDrive/NULLXES/SHINRA/datasets/clean/tokenizer_wiki_v2")
 EXPECTED_NATIVE_MODEL_SHA256 = "372eb8e5b82a950af7db3fd54d1ded4a36116016af6103076074ef99d9a0d83c"
-EXPECTED_ORIGINAL_VOCAB_SHA256 = "193cbf2e1dca090497352ba3b567e18740d0c63515a3ac9e886fc17db6562acc"
-EXPECTED_NATIVE_VOCAB_SIZE = 65_536
 EXPECTED_VALIDATION_DOCUMENTS = 19_829
 EXPECTED_VALIDATION_TOKENS = 15_147_605
 SMOKE_DOCUMENT_LIMIT = 32
@@ -40,6 +35,11 @@ from data.pack import file_sha256, iter_clean_records, pack_documents
 from tokenizer import load_shinra_tokenizer
 from tokenizer.bundle import _digest, verify_bundle, write_manifest, write_native_metadata
 from tokenizer.contract import encode_text
+from tokenizer.vocab import (
+    EXPECTED_NATIVE_VOCAB_SHA256,
+    EXPECTED_NATIVE_VOCAB_SIZE,
+    validate_sentencepiece_vocab,
+)
 
 config = copy.deepcopy(load_config())
 verified_model_path = VERIFIED / "tokenizer.model"
@@ -66,104 +66,15 @@ if verified_model_sha256 != original_model_sha256:
         "Verified and Original Native SentencePiece model SHA256 differ: "
         f"verified={verified_model_sha256}, original={original_model_sha256}"
     )
-original_vocab_sha256 = file_sha256(original_vocab_path)
-if original_vocab_sha256 != EXPECTED_ORIGINAL_VOCAB_SHA256:
-    raise ValueError(
-        "Original Native SentencePiece vocab SHA256 differs from the approved artifact: "
-        f"expected={EXPECTED_ORIGINAL_VOCAB_SHA256}, actual={original_vocab_sha256}"
-    )
 if not (CORPUS / "manifest.json").is_file() or not (CORPUS / "validation.jsonl").is_file():
     raise FileNotFoundError("Clean corpus must provide manifest.json and validation.jsonl")
 import sentencepiece as spm
 processor = spm.SentencePieceProcessor(model_file=str(verified_model_path))
 
 
-def validate_vocab_companion(vocab_path: Path, sentencepiece_processor) -> None:
-    """Parse by model piece boundaries, preserving literal CR/LF/tab bytes in pieces."""
-    piece_count = sentencepiece_processor.get_piece_size()
-    if piece_count != EXPECTED_NATIVE_VOCAB_SIZE:
-        raise ValueError(
-            f"SentencePiece model has {piece_count} pieces; expected exactly {EXPECTED_NATIVE_VOCAB_SIZE}"
-        )
-    vocab_bytes = vocab_path.read_bytes()
-    cursor = 0
-    score_pattern = re.compile(rb"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?\Z")
-
-    for index in range(piece_count):
-        expected_piece = sentencepiece_processor.id_to_piece(index)
-        expected_piece_bytes = expected_piece.encode("utf-8", errors="strict")
-        expected_score = Decimal(str(sentencepiece_processor.get_score(index)))
-        piece_end = cursor + len(expected_piece_bytes)
-        actual_piece_bytes = vocab_bytes[cursor:piece_end]
-        if actual_piece_bytes != expected_piece_bytes:
-            actual_piece = actual_piece_bytes.decode("utf-8", errors="replace")
-            raise ValueError(
-                f"SentencePiece vocab piece mismatch at ID {index}: "
-                f"expected={expected_piece!r}, actual={actual_piece!r}"
-            )
-        cursor = piece_end
-
-        if cursor >= len(vocab_bytes) or vocab_bytes[cursor] != 0x09:
-            actual_byte = vocab_bytes[cursor:cursor + 1]
-            raise ValueError(
-                f"SentencePiece vocab record mismatch at ID {index}: "
-                f"expected tab after piece={expected_piece!r}, actual byte={actual_byte!r}"
-            )
-        cursor += 1
-
-        record_end = vocab_bytes.find(b"\n", cursor)
-        if record_end < 0:
-            if index != piece_count - 1:
-                raise ValueError(
-                    f"SentencePiece vocab record mismatch at ID {index}: "
-                    "score record terminator is missing before the final ID"
-                )
-            record_end = len(vocab_bytes)
-        score_bytes = vocab_bytes[cursor:record_end]
-        if score_bytes.endswith(b"\r"):
-            score_bytes = score_bytes[:-1]
-        if not score_pattern.fullmatch(score_bytes):
-            raise ValueError(
-                f"SentencePiece vocab score mismatch at ID {index}: "
-                f"expected piece={expected_piece!r}, score={str(expected_score)!r}; "
-                f"actual score bytes={score_bytes!r}"
-            )
-        try:
-            actual_score = Decimal(score_bytes.decode("ascii", errors="strict"))
-        except (UnicodeDecodeError, InvalidOperation) as exc:
-            raise ValueError(
-                f"SentencePiece vocab score mismatch at ID {index}: "
-                f"expected piece={expected_piece!r}, score={str(expected_score)!r}; "
-                f"actual score bytes={score_bytes!r}"
-            ) from exc
-        score_exponent = actual_score.as_tuple().exponent
-        score_rounding_tolerance = Decimal((0, (5,), score_exponent - 1))
-        score_quantum = Decimal((0, (1,), score_exponent))
-        if (not actual_score.is_finite()
-                or abs(actual_score - expected_score) > score_rounding_tolerance):
-            raise ValueError(
-                f"SentencePiece vocab score mismatch at ID {index}: "
-                f"expected piece={expected_piece!r}, score={str(expected_score)!r}; "
-                f"actual piece={expected_piece!r}, score={str(actual_score)!r}; "
-                f"written score quantum={score_quantum}, "
-                f"allowed absolute rounding error={score_rounding_tolerance} "
-                "(half a written unit; exact boundary is accepted)"
-            )
-
-        cursor = record_end
-        if cursor < len(vocab_bytes):
-            cursor += 1  # Consume the score record LF; CRLF was handled above.
-        elif index != piece_count - 1:
-            raise ValueError(f"SentencePiece vocab ended before ID {index + 1}")
-
-    if cursor != len(vocab_bytes):
-        raise ValueError(
-            f"SentencePiece vocab has trailing bytes after {piece_count} entries: "
-            f"offset={cursor}, trailing_bytes={len(vocab_bytes) - cursor}"
-        )
-
-
-validate_vocab_companion(original_vocab_path, processor)
+original_vocab_sha256 = validate_sentencepiece_vocab(
+    original_vocab_path, processor, expected_vocab_size=EXPECTED_NATIVE_VOCAB_SIZE
+)
 
 corpus_manifest = json.loads((CORPUS / "manifest.json").read_text(encoding="utf-8"))
 corpus_hash = corpus_manifest.pop("manifest_sha256", None)
@@ -196,10 +107,10 @@ bundle_root.mkdir(parents=False, exist_ok=False)
 shutil.copy2(verified_model_path, bundle_root / "tokenizer.model")
 shutil.copy2(original_vocab_path, bundle_root / "tokenizer.vocab")
 copied_vocab_sha256 = file_sha256(bundle_root / "tokenizer.vocab")
-if copied_vocab_sha256 != EXPECTED_ORIGINAL_VOCAB_SHA256:
+if copied_vocab_sha256 != EXPECTED_NATIVE_VOCAB_SHA256:
     raise ValueError(
         "Copied Native tokenizer.vocab SHA256 differs from the approved artifact: "
-        f"expected={EXPECTED_ORIGINAL_VOCAB_SHA256}, actual={copied_vocab_sha256}"
+        f"expected={EXPECTED_NATIVE_VOCAB_SHA256}, actual={copied_vocab_sha256}"
     )
 
 # The wrapper requires a signed bundle before loading. First stage real provenance/statistics,
@@ -208,7 +119,7 @@ config["data"]["manifest_sha256"] = corpus_hash
 stats = {
     **validation,
     "native_model_sha256": EXPECTED_NATIVE_MODEL_SHA256,
-    "original_vocab_sha256": EXPECTED_ORIGINAL_VOCAB_SHA256,
+    "original_vocab_sha256": EXPECTED_NATIVE_VOCAB_SHA256,
     "validation_jsonl_sha256": corpus_manifest["files"]["validation.jsonl"],
     "wrapper_parity": "pending bundle load",
 }
@@ -222,7 +133,7 @@ corpus_stats = {
 (bundle_root / "corpus_stats.json").write_text(json.dumps(corpus_stats, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 bundle_provenance = {
     "source_model_sha256": EXPECTED_NATIVE_MODEL_SHA256,
-    "source_vocab_sha256": EXPECTED_ORIGINAL_VOCAB_SHA256,
+    "source_vocab_sha256": EXPECTED_NATIVE_VOCAB_SHA256,
     "clean_corpus_manifest_sha256": corpus_hash,
     "validation_jsonl_sha256": corpus_manifest["files"]["validation.jsonl"],
 }

@@ -6,7 +6,6 @@ backend and never constructs a Transformers AutoTokenizer.
 from __future__ import annotations
 
 import shutil
-import math
 from pathlib import Path
 from typing import Any
 
@@ -32,7 +31,11 @@ class ShinraNativeTokenizer(PreTrainedTokenizer):
         self._shinra_config = config
         self.sp_model = spm.SentencePieceProcessor(model_file=self.vocab_file)
         self._validate_model_contract()
-        self._validate_vocab_companion(Path(self.vocab_file).with_suffix(".vocab"))
+        from .vocab import validate_sentencepiece_vocab
+        validate_sentencepiece_vocab(
+            Path(self.vocab_file).with_suffix(".vocab"), self.sp_model,
+            expected_vocab_size=int(config["tokenizer"]["vocab_size"]),
+        )
         self._native_special_strings: dict[int, str] = {}
         super().__init__(
             model_max_length=int(config["model"]["max_position_embeddings"]),
@@ -68,29 +71,6 @@ class ShinraNativeTokenizer(PreTrainedTokenizer):
     @property
     def vocab_size(self) -> int:
         return int(self.sp_model.get_piece_size())
-
-    def _validate_vocab_companion(self, vocab_path: Path) -> None:
-        if not vocab_path.is_file():
-            raise FileNotFoundError(f"SentencePiece vocab companion is required: {vocab_path}")
-        count = 0
-        with vocab_path.open("r", encoding="utf-8", errors="strict") as stream:
-            for index, line in enumerate(stream):
-                if index >= self.sp_model.get_piece_size():
-                    raise ValueError("tokenizer.vocab has more entries than tokenizer.model")
-                piece, separator, score = line.rstrip("\r\n").rpartition("\t")
-                if not separator or piece != self.sp_model.id_to_piece(index):
-                    raise ValueError(f"tokenizer.vocab piece/order mismatch at ID {index}")
-                try:
-                    value = float(score)
-                except ValueError as exc:
-                    raise ValueError(f"tokenizer.vocab score is invalid at ID {index}") from exc
-                if not math.isfinite(value) or not math.isclose(
-                    value, self.sp_model.get_score(index), rel_tol=1e-5, abs_tol=1e-6
-                ):
-                    raise ValueError(f"tokenizer.vocab score differs from tokenizer.model at ID {index}")
-                count = index + 1
-        if count != self.sp_model.get_piece_size():
-            raise ValueError("tokenizer.vocab has fewer entries than tokenizer.model")
 
     def __len__(self) -> int:
         return self.vocab_size
