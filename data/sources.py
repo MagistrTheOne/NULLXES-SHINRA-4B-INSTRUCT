@@ -444,7 +444,7 @@ def acquire_source(source_id: str, output_dir: str | Path, *, config_path: str |
                 rejections_path.open("a", encoding="utf-8", newline="\n") as rejected_stream:
             pending = 0
             for outcome in rows:
-                check_every = int(config["data"]["cleaning"]["disk_check_records"])
+                check_every = int(config["data"]["performance"]["disk_check_records"])
                 if scanned % check_every == 0:
                     require_disk_headroom()
                 current = outcome.get("_cursor")

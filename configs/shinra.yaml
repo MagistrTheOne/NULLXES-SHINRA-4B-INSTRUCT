@@ -284,10 +284,31 @@ data:
     table_rows_quarantine_threshold: 2
     max_control_character_ratio: 0.001
     repeated_short_line_quarantine_threshold: 12
-    cleaning_checkpoint_records: 512
-    disk_check_records: 32
     filter_languages: [en, ru]
     holdout_contamination_check: true
+  quality:
+    policy_version: shinra-web-quality.v1
+    minimum_characters: 96
+    minimum_letters: 28
+    minimum_letter_fraction: 0.08
+    minimum_word_sample: 8
+    word_sample_limit: 512
+    uniqueness_minimum_sample: 128
+    minimum_unique_word_fraction: 0.08
+    maximum_url_character_fraction: 0.55
+    maximum_repeated_character_run: 64
+    technical_minimum_characters: 48
+    technical_minimum_letters: 12
+    dclm_minimum_english_function_word_fraction: 0.015
+    dclm_language_minimum_words: 40
+  performance:
+    clean_checkpoint_records: 8192
+    clean_checkpoint_bytes: 536870912
+    disk_check_records: 4096
+    sqlite_cache_mib: 256
+    sqlite_mmap_mib: 1024
+    sqlite_wal_autocheckpoint_pages: 131072
+    output_buffer_bytes: 1048576
   mix:
     unit: actual_shinra_tokens
     en: 0.50

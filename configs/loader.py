@@ -252,10 +252,33 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
                                   "HuggingFaceFW/fineweb-2"} \
             or any(type(value) is not int or value <= 0 for value in candidate_targets.values()):
         raise ConfigError("source candidate token caps must be explicit positive integers for all selected sources")
-    if type(cleaning.get("cleaning_checkpoint_records")) is not int or cleaning["cleaning_checkpoint_records"] <= 0:
-        raise ConfigError("cleaning checkpoint cadence must be a positive integer")
-    if type(cleaning.get("disk_check_records")) is not int or cleaning["disk_check_records"] <= 0:
-        raise ConfigError("corpus disk headroom check cadence must be a positive integer")
+    quality = config["data"].get("quality", {})
+    if quality.get("policy_version") != "shinra-web-quality.v1":
+        raise ConfigError("data quality policy version is missing or unsupported")
+    positive_quality_fields = ("minimum_characters", "minimum_letters", "minimum_word_sample", "word_sample_limit",
+                               "uniqueness_minimum_sample", "maximum_repeated_character_run",
+                               "technical_minimum_characters", "technical_minimum_letters", "dclm_language_minimum_words")
+    if any(type(quality.get(key)) is not int or quality[key] <= 0 for key in positive_quality_fields):
+        raise ConfigError("data quality integer thresholds must be positive integers")
+    if quality["minimum_word_sample"] > quality["word_sample_limit"] \
+            or quality["uniqueness_minimum_sample"] > quality["word_sample_limit"]:
+        raise ConfigError("data quality sample thresholds must fit within word_sample_limit")
+    if quality["maximum_repeated_character_run"] < 2:
+        raise ConfigError("maximum repeated-character run must be at least two characters")
+    for key in ("minimum_letter_fraction", "minimum_unique_word_fraction",
+                "maximum_url_character_fraction", "dclm_minimum_english_function_word_fraction"):
+        if not 0 < float(quality.get(key, 0)) <= 1:
+            raise ConfigError(f"data.quality.{key} must be in (0, 1]")
+    if quality["technical_minimum_characters"] > quality["minimum_characters"] \
+            or quality["technical_minimum_letters"] > quality["minimum_letters"]:
+        raise ConfigError("technical-content exceptions cannot be stricter than the general minimums")
+    performance = config["data"].get("performance", {})
+    positive_performance_fields = ("clean_checkpoint_records", "clean_checkpoint_bytes", "disk_check_records",
+                                   "sqlite_cache_mib", "sqlite_wal_autocheckpoint_pages", "output_buffer_bytes")
+    if any(type(performance.get(key)) is not int or performance[key] <= 0 for key in positive_performance_fields):
+        raise ConfigError("data performance settings must use positive integer limits")
+    if type(performance.get("sqlite_mmap_mib")) is not int or performance["sqlite_mmap_mib"] < 0:
+        raise ConfigError("data.performance.sqlite_mmap_mib must be a non-negative integer")
     excluded = {str(source).casefold() for source in config["data"].get("excluded_sources", [])}
     for source in sources:
         source_id = source.get("id", "").casefold()

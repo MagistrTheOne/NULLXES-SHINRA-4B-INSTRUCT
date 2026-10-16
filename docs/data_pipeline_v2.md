@@ -46,6 +46,41 @@ Do not pass the audit-only artifacts to pretraining. The future data gate requir
 - Packing uses the pinned Native tokenizer, NFC contract, non-overlapping windows no longer than the configured 4096-token sequence, BOS per window, EOD only on the final window, and no cross-document packing. Provenance and half-open source token offsets are stored per row. Each split is packed separately with resumable checksummed shards.
 - Packed manifests report exact supervised target counts by language. The trainer's EN/RU sampler uses those counts and persists its state; it does not mix validation or blind into training.
 
+## CPU fast quality cleaning
+
+Cleaning thresholds live in `data.quality`; SQLite cache, commit cadence, disk-check cadence, and JSONL
+buffer sizes live separately in `data.performance`. The cleaner first performs bounded-sample word checks,
+letter/URL ratios, the DCLM English function-word guard, and source-structure quarantine. Rejected rows retain
+provenance and hashes but never copy their full text into the quarantine ledger. Surviving rows still pass exact
+numeric-span integrity, NFC normalization, disk-backed exact/near deduplication, and deterministic splitting.
+No filter substitutes text or changes the 500M EN + 500M RU target or admission gates.
+
+The new quality/cleaning semantic identity is `numeric-integrity.v5-fast-quality`. An older
+`.clean.corpus-partial` created with v4 does **not** qualify for resume under v5. `--resume` performs a
+read-only SQLite identity check before opening the dedup database for writes; on mismatch it stops and leaves
+the old partial untouched. Keep that 29 GiB partial for forensic comparison and start the new build at a new
+output path. Performance-only settings are excluded from semantic identity, so changing buffer/cache/checkpoint
+cadence alone does not change corpus semantics.
+
+For the already downloaded raw snapshots in the prior Colab build, use a CPU runtime and run from the repository
+root. This writes the new partial and final clean corpus to Drive for disconnect-safe resume:
+
+```bash
+python -m data.numeric_integrity \
+  --input \
+  /content/drive/MyDrive/NULLXES/SHINRA/data/build/shinra-enru-1b-v1.partial/raw/HuggingFaceFW--fineweb-edu \
+  /content/drive/MyDrive/NULLXES/SHINRA/data/build/shinra-enru-1b-v1.partial/raw/mlfoundations--dclm-baseline-1.0 \
+  /content/drive/MyDrive/NULLXES/SHINRA/data/build/shinra-enru-1b-v1.partial/raw/HuggingFaceFW--fineweb-2 \
+  --output-dir /content/drive/MyDrive/NULLXES/SHINRA/data/clean/shinra-enru-fast-quality-v1 \
+  --admission audit \
+  --minimum-free-gb 80
+```
+
+If this **new** build is interrupted, repeat the same command with `--resume`. Do not add `--resume` to the old
+v4 partial and do not reuse its clean outputs. The raw snapshots are read sequentially; large JSONL writes are
+buffered and SQLite commits are grouped at configured row/byte boundaries to reduce Drive FUSE metadata and
+sync traffic. Confirm the raw paths exist and Drive has the configured free-space reserve before starting.
+
 ## Upstream source references
 
 - [FineWeb-Edu dataset card](https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu)

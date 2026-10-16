@@ -12,7 +12,7 @@ import re
 import shutil
 import sqlite3
 import struct
-from collections import Counter, deque
+from collections import deque
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -44,6 +44,21 @@ HTML_BLOCK = re.compile(r"<(script|style|noscript)\b[^>]*>.*?</\1\s*>", re.IGNOR
 HTML_TAG = re.compile(r"</?[A-Za-z][^>]*>")
 TABLE_ROW = re.compile(r"^\s*(?:\|.*\||\+[-=+]{3,}\+)\s*$")
 CONTROL_CHARACTER = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+LINE = re.compile(r"[^\r\n]+")
+LETTER = re.compile(r"[^\W\d_]", re.UNICODE)
+WORD = re.compile(r"[^\W\d_]+(?:['’][^\W\d_]+)?", re.UNICODE)
+URL = re.compile(r"(?:https?://|www\.)\S+", re.IGNORECASE)
+TECHNICAL_SIGNAL = re.compile(
+    r"(?i)(?:```|=>|->|:=|\b(?:api|algorithm|arxiv|code|compiler|dataset|doi|equation|function|gradient|"
+    r"integral|lemma|matrix|neural network|protocol|python|quantum|tensor|theorem)\b|"
+    r"\\(?:begin|frac|int|sum)|^\s*(?:def|class|import|from|select|create table)\b)", re.MULTILINE
+)
+ENGLISH_FUNCTION_WORDS = frozenset({
+    "a", "an", "and", "are", "as", "at", "be", "been", "but", "by", "can", "for", "from", "has",
+    "have", "he", "in", "into", "is", "it", "its", "may", "not", "of", "on", "or", "our", "that",
+    "the", "their", "this", "to", "was", "we", "were", "which", "with", "you", "your",
+})
+CLEANING_PIPELINE_VERSION = "numeric-integrity.v5-fast-quality"
 
 
 def numeric_spans(text: str) -> list[str]:
@@ -82,18 +97,85 @@ def _clean_source_markup(text: str, source: dict[str, Any]) -> str:
     return cleaned
 
 
+def _cheap_quality_reason(text: str, quality: dict[str, Any], source: dict[str, Any]
+                          ) -> tuple[str | None, dict[str, int | float | bool]]:
+    """Bounded-memory content and language checks before numeric scans and MinHash."""
+    sample_words: list[str] = []
+    unique_words: set[str] = set()
+    english_function_words = 0
+    for match in WORD.finditer(text):
+        word = match.group(0).casefold()
+        if len(sample_words) < int(quality["word_sample_limit"]):
+            sample_words.append(word)
+            unique_words.add(word)
+            english_function_words += int(word in ENGLISH_FUNCTION_WORDS)
+        else:
+            break
+    letter_count = sum(1 for _ in LETTER.finditer(text))
+    text_length = len(text)
+    letter_fraction = letter_count / max(text_length, 1)
+    url_characters = sum(match.end() - match.start() for match in URL.finditer(text))
+    url_fraction = url_characters / max(text_length, 1)
+    technical_signal = bool(TECHNICAL_SIGNAL.search(text))
+    unique_fraction = len(unique_words) / max(len(sample_words), 1)
+    metrics: dict[str, int | float | bool] = {
+        "characters": text_length,
+        "letters": letter_count,
+        "letter_fraction": letter_fraction,
+        "word_sample_count": len(sample_words),
+        "unique_word_fraction": unique_fraction,
+        "url_character_fraction": url_fraction,
+        "technical_signal": technical_signal,
+    }
+    if text_length < int(quality["minimum_characters"]) or letter_count < int(quality["minimum_letters"]):
+        if text_length < int(quality["technical_minimum_characters"]) \
+                or letter_count < int(quality["technical_minimum_letters"]) or not technical_signal:
+            return "quality_too_short_or_low_letter_count", metrics
+    if letter_fraction < float(quality["minimum_letter_fraction"]) and not technical_signal:
+        return "quality_low_letter_fraction", metrics
+    if len(sample_words) < int(quality["minimum_word_sample"]) and not technical_signal:
+        return "quality_too_few_words", metrics
+    if len(sample_words) >= int(quality["uniqueness_minimum_sample"]) \
+            and unique_fraction < float(quality["minimum_unique_word_fraction"]):
+        return "quality_repetitive_word_sample", metrics
+    if url_fraction > float(quality["maximum_url_character_fraction"]):
+        return "quality_url_or_link_farm", metrics
+    repeated_limit = int(quality["maximum_repeated_character_run"])
+    repeated_match = re.search(rf"([^\s])\1{{{repeated_limit - 1},}}", text)
+    if repeated_match and not technical_signal:
+        metrics["longest_repeated_character_run_exceeds_limit"] = True
+        return "quality_repeated_character_run", metrics
+    if source.get("language_validation_profile") == "english_source_latin_script_guard" \
+            and len(sample_words) >= int(quality["dclm_language_minimum_words"]) and not technical_signal:
+        english_fraction = english_function_words / len(sample_words)
+        metrics["english_function_word_fraction"] = english_fraction
+        if english_fraction < float(quality["dclm_minimum_english_function_word_fraction"]):
+            return "language_english_function_word_guard", metrics
+    return None, metrics
+
+
 def _quarantine_reason(text: str, cleaning: dict[str, Any], source: dict[str, Any]) -> str | None:
-    lines = text.splitlines()
-    table_rows = sum(bool(TABLE_ROW.fullmatch(line)) for line in lines)
+    table_rows = 0
+    short_line_counts: dict[str, int] = {}
+    repeated = 0
+    track_repeated_lines = source.get("quarantine_profile") in {"ocr_book", "web_crawl"}
+    for match in LINE.finditer(text):
+        line = match.group(0)
+        if TABLE_ROW.fullmatch(line):
+            table_rows += 1
+        if track_repeated_lines:
+            stripped = line.strip()
+            if 0 < len(stripped) <= 120:
+                count = short_line_counts.get(stripped, 0) + 1
+                short_line_counts[stripped] = count
+                repeated = max(repeated, count)
     if cleaning.get("quarantine_table_documents", True) and table_rows >= int(cleaning.get("table_rows_quarantine_threshold", 2)):
         return f"table_structure_without_reliable_context:{table_rows}_rows"
     if source.get("quarantine_profile") == "ocr_book" and "\ufffd" in text:
         return "ocr_or_decode_replacement_character"
-    controls = len(CONTROL_CHARACTER.findall(text))
+    controls = sum(1 for _ in CONTROL_CHARACTER.finditer(text))
     if text and controls / len(text) > float(cleaning.get("max_control_character_ratio", 0.001)):
         return f"excessive_control_characters:{controls}"
-    short_lines = [line.strip() for line in lines if 0 < len(line.strip()) <= 120]
-    repeated = max(Counter(short_lines).values(), default=0)
     if source.get("quarantine_profile") == "ocr_book" \
             and repeated >= int(cleaning.get("repeated_short_line_quarantine_threshold", 12)):
         return f"repeated_page_header_or_ocr_line:{repeated}"
@@ -288,7 +370,8 @@ class DiskBackedDeduplicator:
     """SQLite exact and banded-MinHash index with fixed-size signatures, not corpus-wide shingles."""
 
     def __init__(self, path: Path, *, threshold: float, num_perm: int, bands: int = 16,
-                 shingle_words: int = 5) -> None:
+                 shingle_words: int = 5, sqlite_cache_mib: int = 256, sqlite_mmap_mib: int = 1024,
+                 wal_autocheckpoint_pages: int = 131072) -> None:
         if bands <= 0 or num_perm <= 0 or shingle_words <= 0 or num_perm % bands:
             raise DataIntegrityError("near_dedup_num_perm must be divisible by the configured LSH band count")
         self.threshold = threshold
@@ -299,6 +382,9 @@ class DiskBackedDeduplicator:
         self.db = sqlite3.connect(path)
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
+        self.db.execute(f"PRAGMA cache_size=-{int(sqlite_cache_mib) * 1024}")
+        self.db.execute(f"PRAGMA mmap_size={int(sqlite_mmap_mib) * 1024 * 1024}")
+        self.db.execute(f"PRAGMA wal_autocheckpoint={int(wal_autocheckpoint_pages)}")
         self.db.executescript("""
             CREATE TABLE IF NOT EXISTS documents (clean_sha TEXT PRIMARY KEY, source_record TEXT NOT NULL,
                 provenance_json TEXT NOT NULL, signature BLOB NOT NULL);
@@ -326,18 +412,15 @@ class DiskBackedDeduplicator:
             bucket_ids.append(hashlib.sha256(raw).hexdigest())
         placeholders = ",".join("?" for _ in bucket_ids)
         candidate_cursor = self.db.execute(
-            f"SELECT DISTINCT clean_sha FROM bands WHERE bucket IN ({placeholders}) ORDER BY clean_sha", bucket_ids
+            f"SELECT DISTINCT d.clean_sha, d.signature, d.source_record, d.provenance_json "
+            f"FROM bands AS b JOIN documents AS d USING(clean_sha) "
+            f"WHERE b.bucket IN ({placeholders}) ORDER BY d.clean_sha", bucket_ids
         )
-        for (candidate,) in candidate_cursor:
-            candidate_signature = self.db.execute(
-                "SELECT signature FROM documents WHERE clean_sha=?", (candidate,)
-            ).fetchone()[0]
+        for candidate, candidate_signature, source_record, provenance_json in candidate_cursor:
             other_values = struct.unpack("<" + "Q" * self.num_perm, candidate_signature)
             similarity = sum(int(left) == right for left, right in zip(signature.hashvalues, other_values)) / self.num_perm
             if similarity >= self.threshold:
-                row = self.db.execute("SELECT source_record, provenance_json FROM documents WHERE clean_sha=?",
-                                      (candidate,)).fetchone()
-                return "near", str(row[0]), similarity, json.loads(row[1])
+                return "near", str(source_record), similarity, json.loads(provenance_json)
         self.db.execute("INSERT INTO documents VALUES(?,?,?,?)",
                         (clean_sha, str(provenance["source_record"]),
                          json.dumps(provenance, ensure_ascii=False, sort_keys=True), signature_blob))
@@ -356,6 +439,39 @@ class DiskBackedDeduplicator:
 
     def close(self) -> None:
         self.db.close()
+
+
+def _verify_resume_state_read_only(path: Path, expected_identity_sha256: str) -> None:
+    if not path.is_file():
+        raise DataIntegrityError(f"cannot resume cleaning without its deduplication state: {path}")
+    connection = None
+    try:
+        connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        row = connection.execute("SELECT state_json FROM pipeline_state WHERE id=1").fetchone()
+    except sqlite3.Error as exc:
+        raise DataIntegrityError(f"cannot inspect cleaning resume state read-only: {exc}") from exc
+    finally:
+        if connection is not None:
+            connection.close()
+    if row is None:
+        raise DataIntegrityError("partial cleaning has no committed SQLite resume checkpoint")
+    try:
+        state = json.loads(row[0])
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise DataIntegrityError("partial cleaning SQLite resume checkpoint is malformed") from exc
+    if state.get("identity_sha256") != expected_identity_sha256:
+        raise DataIntegrityError(
+            "partial cleaning was produced with different cleaning/quality semantics; "
+            "preserve it and use a new output directory"
+        )
+
+
+def _write_jsonl(handle, record: dict[str, Any]) -> int:
+    payload = json.dumps(record, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\n"
+    written = handle.write(payload)
+    if written != len(payload):
+        raise DataIntegrityError("short write while staging a clean-corpus JSONL record")
+    return written
 
 
 def _split_for(row: dict[str, Any], split_salt: str, fractions: dict[str, float]) -> str:
@@ -385,6 +501,8 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
         raise DataIntegrityError("minimum_free_gb cannot be negative")
     data_config = config["data"]
     cleaning = data_config["cleaning"]
+    quality = data_config["quality"]
+    performance = data_config["performance"]
     split_salt = split_salt or data_config["split_salt"]
     fractions = {
         "validation": float(data_config["splits"]["validation"] if validation_fraction is None else validation_fraction),
@@ -437,10 +555,25 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
     stage = output.parent / f".{output.name}.corpus-partial"
     snapshot_identity = [{"path": str(path.resolve()), "manifest_sha256": manifest["manifest_sha256"]}
                          for path, _, manifest in source_snapshots]
-    identity = {"inputs": snapshot_identity, "split_salt": split_salt, "fractions": fractions,
-                "normalization": normalization, "admission": admission,
-                "config_sha256": hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest(),
-                "dedup_threshold": threshold, "dedup_num_perm": num_perm}
+    semantic_contract = {
+        "pipeline_version": CLEANING_PIPELINE_VERSION,
+        "source_allowlist": data_config["sources"],
+        "split_salt": split_salt,
+        "fractions": fractions,
+        "normalization": normalization,
+        "admission": admission,
+        "cleaning": cleaning,
+        "quality": quality,
+        "deduplication": {
+            "threshold": threshold,
+            "num_perm": num_perm,
+            "bands": int(cleaning.get("near_dedup_bands", 16)),
+            "shingle_words": int(cleaning["near_dedup_shingle_words"]),
+        },
+    }
+    identity = {"inputs": snapshot_identity,
+                "semantic_contract_sha256": hashlib.sha256(
+                    json.dumps(semantic_contract, sort_keys=True).encode()).hexdigest()}
     identity_sha = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     if stage.exists() and not resume:
         raise DataIntegrityError(f"partial corpus preparation exists; pass --resume: {stage}")
@@ -450,9 +583,14 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
         if resume:
             raise DataIntegrityError(f"no partial corpus preparation exists to resume: {stage}")
         stage.mkdir()
+    if resume:
+        _verify_resume_state_read_only(stage / "dedup.sqlite3", identity_sha)
     deduper = DiskBackedDeduplicator(stage / "dedup.sqlite3", threshold=threshold, num_perm=num_perm,
                                      bands=int(cleaning.get("near_dedup_bands", 16)),
-                                     shingle_words=int(cleaning["near_dedup_shingle_words"]))
+                                     shingle_words=int(cleaning["near_dedup_shingle_words"]),
+                                     sqlite_cache_mib=int(performance["sqlite_cache_mib"]),
+                                     sqlite_mmap_mib=int(performance["sqlite_mmap_mib"]),
+                                     wal_autocheckpoint_pages=int(performance["sqlite_wal_autocheckpoint_pages"]))
     checkpoint = deduper.load_pipeline_state() if resume else None
     if checkpoint and checkpoint.get("identity_sha256") != identity_sha:
         deduper.close()
@@ -462,16 +600,18 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
         raise DataIntegrityError("deduplication database has no committed corpus resume state")
     counts = checkpoint["counts"] if checkpoint else {
         key: 0 for key in ("seen", "kept", "exact_duplicates", "near_duplicates", "quarantined",
+                           "quality_rejected",
                            "train", "validation", "blind")}
     language_counts = checkpoint["language_counts"] if checkpoint else {
         split: {language: 0 for language in cleaning["filter_languages"]}
         for split in ("train", "validation", "blind")}
     source_provenance = checkpoint["source_provenance"] if checkpoint else []
     cursor = checkpoint.get("cursor") if checkpoint else None
-    handles = {name: (stage / f"{name}.jsonl").open("a" if resume else "w", encoding="utf-8", newline="\n")
+    output_buffer_bytes = int(performance["output_buffer_bytes"])
+    handles = {name: (stage / f"{name}.jsonl").open("ab" if resume else "wb", buffering=output_buffer_bytes)
                for name in ("train", "validation", "blind")}
-    quarantine = (stage / "quarantine.jsonl").open("a" if resume else "w", encoding="utf-8", newline="\n")
-    duplicates = (stage / "duplicates.jsonl").open("a" if resume else "w", encoding="utf-8", newline="\n")
+    quarantine = (stage / "quarantine.jsonl").open("ab" if resume else "wb", buffering=output_buffer_bytes)
+    duplicates = (stage / "duplicates.jsonl").open("ab" if resume else "wb", buffering=output_buffer_bytes)
     if resume:
         offsets = checkpoint["output_offsets"]
         for name, handle in {**handles, "quarantine": quarantine, "duplicates": duplicates}.items():
@@ -482,32 +622,26 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
             handle.truncate(offset)
             handle.seek(0, os.SEEK_END)
     pending_rows = 0
+    pending_output_bytes = 0
+    processed_since_disk_check = 0
 
     def persist_corpus_state(committed_cursor: dict[str, int] | None) -> None:
+        nonlocal pending_output_bytes
         for handle in (*handles.values(), quarantine, duplicates):
             handle.flush()
             os.fsync(handle.fileno())
-        state = {"schema": "nullxes.shinra.corpus-build-state.v1", "identity_sha256": identity_sha,
+        state = {"schema": "nullxes.shinra.corpus-build-state.v2",
+                 "pipeline_version": CLEANING_PIPELINE_VERSION, "identity_sha256": identity_sha,
                  "cursor": committed_cursor, "counts": counts, "language_counts": language_counts,
                  "source_provenance": source_provenance,
                  "output_offsets": {name: handle.tell() for name, handle in
                                     {**handles, "quarantine": quarantine, "duplicates": duplicates}.items()}}
         deduper.save_pipeline_state(state)
+        pending_output_bytes = 0
 
-    def mark_processed(current_cursor: dict[str, int]) -> None:
-        nonlocal cursor, pending_rows
-        pending_rows += 1
-        if pending_rows >= int(cleaning["cleaning_checkpoint_records"]):
-            if reserve_gb:
-                available_gb = shutil.disk_usage(stage).free / (1024 ** 3)
-                if available_gb < reserve_gb:
-                    raise DataIntegrityError(
-                        f"pausing resumable corpus cleaning: free={available_gb:.2f} GiB, "
-                        f"configured minimum={reserve_gb:.2f} GiB"
-                    )
-            persist_corpus_state(current_cursor)
-            cursor = current_cursor
-            pending_rows = 0
+    def write_output(handle, record: dict[str, Any]) -> None:
+        nonlocal pending_output_bytes
+        pending_output_bytes += _write_jsonl(handle, record)
 
     def require_disk_headroom() -> None:
         if not reserve_gb:
@@ -518,6 +652,22 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
                 f"pausing resumable corpus cleaning: free={available_gb:.2f} GiB, "
                 f"configured minimum={reserve_gb:.2f} GiB"
             )
+
+    def mark_processed(current_cursor: dict[str, int]) -> None:
+        nonlocal cursor, pending_rows, processed_since_disk_check
+        pending_rows += 1
+        processed_since_disk_check += 1
+        needs_checkpoint = (pending_rows >= int(performance["clean_checkpoint_records"])
+                            or pending_output_bytes >= int(performance["clean_checkpoint_bytes"]))
+        needs_disk_check = (processed_since_disk_check >= int(performance["disk_check_records"])
+                            or needs_checkpoint)
+        if needs_disk_check and reserve_gb:
+            require_disk_headroom()
+            processed_since_disk_check = 0
+        if needs_checkpoint:
+            persist_corpus_state(current_cursor)
+            cursor = current_cursor
+            pending_rows = 0
 
     if not resume:
         persist_corpus_state(None)
@@ -549,32 +699,43 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
                 raw_text = row["text"]
                 if row.get("language", "").casefold() not in cleaning["filter_languages"]:
                     raise DataIntegrityError(f"{row['_input_record']}: language outside configured EN/RU set")
-                before = numeric_spans(raw_text)
                 source_cleaned = _clean_source_markup(raw_text, source)
-                text = clean_text(source_cleaned, normalization=normalization)
+                quality_reason, quality_metrics = _cheap_quality_reason(source_cleaned, quality, source)
+                provenance = {key: value for key, value in row.items()
+                              if not key.startswith("_") and key != "text"}
+                structural_reason = None if quality_reason else _quarantine_reason(source_cleaned, cleaning, source)
+                if quality_reason or structural_reason:
+                    provenance.update({"raw_sha256": row["raw_sha256"],
+                                       "quality_text_sha256": hashlib.sha256(
+                                           source_cleaned.encode("utf-8")).hexdigest(),
+                                       "transform_version": CLEANING_PIPELINE_VERSION,
+                                       "quality_metrics": quality_metrics})
+                    write_output(quarantine, {**provenance,
+                        "reason": quality_reason or structural_reason})
+                    counts["quarantined"] += 1
+                    counts["quality_rejected"] += int(quality_reason is not None)
+                    mark_processed(current_cursor)
+                    continue
+                before = numeric_spans(raw_text)
+                try:
+                    text = normalize_text(source_cleaned, normalization)
+                except ValueError as exc:
+                    raise DataIntegrityError(str(exc)) from exc
                 after = numeric_spans(text)
                 if before != after:
-                    provenance = {key: value for key, value in row.items() if not key.startswith("_") and key != "text"}
-                    quarantine.write(json.dumps({**provenance,
+                    write_output(quarantine, {**provenance,
                         "reason": "source_markup_cleanup_changes_numeric_spans",
-                        "numeric_spans_before": before, "numeric_spans_after": after},
-                        ensure_ascii=False, sort_keys=True) + "\n")
+                        "numeric_spans_before": before, "numeric_spans_after": after})
                     counts["quarantined"] += 1
                     mark_processed(current_cursor)
                     continue
                 if not text.strip():
                     raise DataIntegrityError(f"{row['_input_record']}: empty document after source-aware cleaning")
-                reason = _quarantine_reason(text, cleaning, source)
-                provenance = {key: value for key, value in row.items() if not key.startswith("_") and key != "text"}
                 provenance.update({"raw_sha256": row["raw_sha256"],
                                    "clean_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
-                                   "transform_version": "numeric-integrity.v4-source-aware-nfc",
-                                   "numeric_spans": after})
-                if reason:
-                    quarantine.write(json.dumps({**provenance, "reason": reason}, ensure_ascii=False, sort_keys=True) + "\n")
-                    counts["quarantined"] += 1
-                    mark_processed(current_cursor)
-                    continue
+                                   "transform_version": CLEANING_PIPELINE_VERSION,
+                                   "numeric_spans": after,
+                                   "quality_metrics": quality_metrics})
                 split = _split_for(row, split_salt, data_config["splits"])
                 provenance["split"] = split
                 kind, duplicate_of, similarity, duplicate_provenance = deduper.classify(
@@ -582,14 +743,14 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
                 if kind != "kept":
                     duplicate_key = "exact_duplicates" if kind == "exact" else "near_duplicates"
                     counts[duplicate_key] += 1
-                    duplicates.write(json.dumps({**provenance, "duplicate_type": kind,
+                    write_output(duplicates, {**provenance, "duplicate_type": kind,
                         "duplicate_of_source_record": duplicate_of, "minhash_similarity_estimate": similarity,
                         "duplicate_of_provenance": duplicate_provenance,
-                        "duplicate_text_sha256": provenance["clean_sha256"]}, ensure_ascii=False, sort_keys=True) + "\n")
+                        "duplicate_text_sha256": provenance["clean_sha256"]})
                     mark_processed(current_cursor)
                     continue
                 record = {**provenance, "text": text}
-                handles[split].write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
+                write_output(handles[split], record)
                 counts["kept"] += 1
                 counts[split] += 1
                 language_counts[split][row["language"].casefold()] += 1
@@ -640,9 +801,13 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
         "holdout_contamination_check": {"deduplicate_before_split": True,
                                          "near_duplicate_metric": cleaning["near_dedup_metric"],
                                          "split_unit": "source_work_or_document"},
-        "cleaning": {"transform_version": "numeric-integrity.v4-source-aware-nfc",
+        "cleaning": {"transform_version": CLEANING_PIPELINE_VERSION,
                      "unicode_normalization": cleaning["unicode_normalization"],
-                     "numeric_integrity": "ordered numeric spans must match exactly"},
+                     "numeric_integrity": "ordered numeric spans must match exactly",
+                     "quality_policy_version": quality["policy_version"],
+                     "quality_policy": quality,
+                     "quality_rejected": counts["quality_rejected"]},
+        "performance_profile": performance,
         "deduplication": {"backend": "sqlite_disk_backed_banded_minhash",
                           "similarity_metric": cleaning["near_dedup_metric"],
                           "threshold": threshold,
