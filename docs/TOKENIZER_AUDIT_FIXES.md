@@ -40,7 +40,7 @@ pytest и обучение токенизатора не запускались.
    метрики — всю validation, с обязательными EN и RU. Blind не используется для метрик.
 7. **Bundle:** новый `tokenizer/bundle.py` хеширует model, vocab, HF JSON, config,
    special map, template и два отчёта. Манифест связывает их с конфигурационным контрактом.
-8. **Связность:** packed v2 manifest + каждая строка содержат `tokenizer_bundle_sha256`.
+8. **Связность:** production packed v3 manifest + каждая строка содержат `tokenizer_bundle_sha256`; source token offsets относятся к неперекрывающимся окнам одного документа.
    Checkpoint копирует весь bundle без пересериализации и хранит identity в training state.
    Loader/resume отказывают при несовпадении. YAML `artifact_sha256` теперь означает
    self-hash всего bundle manifest, не hash одного tokenizer.json.
@@ -108,7 +108,7 @@ packing и checkpoint/resume в runtime не выполнялись.
 6. Старые packed v1/checkpoints несовместимы. Существующие тестовые fixtures packed v1
    также требуют переноса на новый контракт перед будущим запуском suite; здесь тесты,
    fixtures и mocks не запускались и не добавлялись.
-7. Generic lm-eval adapter, tool calls, reasoning channels и автоматическое chunking
+7. Generic lm-eval adapter, tool calls and reasoning channels; V1 data packing now defines explicit independent, non-overlapping continuation windows
    длинных документов недоступны. Это явно обозначено, а не имитируется.
 
 Никакого следующего запуска без разрешения Маги.

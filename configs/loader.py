@@ -107,18 +107,55 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         raise ConfigError("the approved packing policy must isolate documents")
     if packing.get("document_end_token_id") != tokenizer["end_of_document_id"]:
         raise ConfigError("packing document end ID differs from the tokenizer contract")
-    if packing.get("overlength_document_policy") != "reject_until_chunking_contract_is_approved":
-        raise ConfigError("unknown overlength document policy")
+    if packing.get("overlength_document_policy") != "non_overlapping_document_windows":
+        raise ConfigError("packing must use the approved non-overlapping document-window policy")
+    if packing.get("chunking_policy_version") != "isolated-continuation-windows.v1" \
+            or packing.get("chunking_window_semantics") != "independent_continuation_windows_without_overlap":
+        raise ConfigError("document chunking semantics/version are missing or unsupported")
+    if packing.get("max_chunk_tokens") != model.get("train_sequence_length") \
+            or packing.get("bos_per_window") is not True or packing.get("bos_loss") is not False \
+            or packing.get("eod_only_on_final_document_window") is not True:
+        raise ConfigError("chunk size and BOS/EOD window contracts are inconsistent")
+    if type(packing.get("parquet_row_group_rows")) is not int or packing["parquet_row_group_rows"] <= 0:
+        raise ConfigError("packed Parquet row-group size must be a positive integer")
     if packing.get("loss_on_bos") is not False or packing.get("loss_on_eod") is not True:
         raise ConfigError("BOS is context-only and EOD must be trained as a document-boundary target")
     if packing.get("loss_on_pad") is not False or packing.get("loss_on_first_token_after_pad") is not False:
         raise ConfigError("PAD and the first post-PAD target must be excluded from loss")
     if tokenizer["special_tokens"]["end_of_document"] not in {"<|end_of_text|>", "<|document_end|>"}:
         raise ConfigError("document termination token must remain a dedicated end-of-document control")
+    sources = config["data"].get("sources", [])
+    if config["data"].get("immutable_revision_required") is not True or not sources:
+        raise ConfigError("source acquisition requires an exact-revision allowlist")
+    for source in sources:
+        if not isinstance(source.get("revision"), str) or not re.fullmatch(r"[a-f0-9]{40}", source["revision"]):
+            raise ConfigError(f"source {source.get('id')!r} must pin an immutable 40-character revision")
+        required_source_fields = ("repo_type", "parquet_prefixes", "text_field", "document_id_field",
+                                  "license_claim", "cleaning_profile", "quarantine_profile", "upstream_url")
+        if any(not source.get(key) for key in required_source_fields):
+            raise ConfigError(f"source {source.get('id')!r} is missing adapter, license, or cleaning metadata")
+        if source["repo_type"] != "dataset" or not isinstance(source["parquet_prefixes"], list) \
+                or not source["parquet_prefixes"] or any(not isinstance(prefix, str) or not prefix
+                                                          for prefix in source["parquet_prefixes"]):
+            raise ConfigError(f"source {source.get('id')!r} must use a configured Hugging Face dataset adapter")
+        if not isinstance(source.get("language_by_subset"), dict) or not source["language_by_subset"]:
+            raise ConfigError(f"source {source.get('id')!r} must map every subset to EN or RU")
+        if any(language not in {"en", "ru"} for language in source["language_by_subset"].values()):
+            raise ConfigError(f"source {source.get('id')!r} contains a language outside EN/RU")
+        if source["cleaning_profile"] not in {"wikimedia_rendered_text", "plain_text_nfc"} \
+                or source["quarantine_profile"] not in {"table_and_markup", "ocr_book"}:
+            raise ConfigError(f"source {source.get('id')!r} uses an unsupported cleaning/quarantine profile")
+        if source.get("status") not in {"audit_only", "approved"}:
+            raise ConfigError(f"source {source.get('id')!r} has an unsupported admission status")
+        if source.get("rights_review_status") not in {"audit_only", "approved"} \
+                or source.get("provenance_review_status") not in {"audit_only", "approved"}:
+            raise ConfigError(f"source {source.get('id')!r} needs explicit rights and provenance review status")
+        if source.get("status") == "approved" and (source["rights_review_status"] != "approved"
+                or source["provenance_review_status"] != "approved"):
+            raise ConfigError(f"source {source.get('id')!r} cannot be admitted without both reviews")
     if config["data"].get("training_enabled") and config["training"].get("enabled"):
-        sources = config["data"].get("sources", [])
-        if not sources or any(s.get("status") != "approved" or not s.get("revision") for s in sources):
-            raise ConfigError("training requires audited sources with immutable revisions")
+        if not sources or any(s.get("status") != "approved" for s in sources):
+            raise ConfigError("training requires rights- and provenance-approved sources with immutable revisions")
         if not tokenizer.get("artifact_sha256"):
             raise ConfigError("training requires a frozen tokenizer artifact SHA256")
         if not config["data"].get("manifest_sha256"):
@@ -141,18 +178,49 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         raise ConfigError("global_tokens_per_update does not match sequence x micro batch x accumulation")
     if config["training"].get("diagnostic_tokens", 0) != 20_000_000:
         raise ConfigError("the initial diagnostic budget is fixed at 20M tokens")
+    foundation_tokens = config["training"].get("foundation_tokens")
+    if foundation_tokens is not None and (type(foundation_tokens) is not int or foundation_tokens <= 0):
+        raise ConfigError("training.foundation_tokens must be a positive integer or null pending approval")
+    if config["training"].get("budget_modes") != ["diagnostic", "foundation"]:
+        raise ConfigError("diagnostic and foundation token budgets must remain distinct selectable modes")
+    if config["training"].get("max_steps") is not None and (
+        type(config["training"]["max_steps"]) is not int or config["training"]["max_steps"] <= 0
+    ):
+        raise ConfigError("training.max_steps must be a positive integer or null until approved")
+    if config["training"].get("dataset_exhaustion_policy") != \
+            "cycle_language_permutations_with_schedule_epoch_counter":
+        raise ConfigError("training dataset exhaustion policy must be explicit")
+    resume_fields = config["checkpoint"].get("resume_requires_matching", [])
+    if "packed_data_manifests_sha256" not in resume_fields:
+        raise ConfigError("checkpoint resume identity must bind all packed split manifest hashes")
     if config["data"].get("splits") != {"train": 0.98, "validation": 0.01, "blind": 0.01}:
         raise ConfigError("document split fractions must be frozen at train=0.98, validation=0.01, blind=0.01")
     cleaning = config["data"].get("cleaning", {})
     if not 0.0 < float(cleaning.get("near_dedup_threshold", 0)) <= 1.0:
         raise ConfigError("near-deduplication threshold must be in (0, 1]")
+    if cleaning.get("near_dedup_metric") != "minhash_estimated_jaccard":
+        raise ConfigError("near-deduplication similarity metric must be explicit and supported")
     if int(cleaning.get("near_dedup_num_perm", 0)) <= 0:
         raise ConfigError("near-deduplication num_perm must be positive")
+    if int(cleaning.get("near_dedup_bands", 0)) <= 0 or int(cleaning["near_dedup_num_perm"]) % int(cleaning["near_dedup_bands"]):
+        raise ConfigError("near-deduplication MinHash dimensions must divide evenly into disk-backed LSH bands")
+    if type(cleaning.get("near_dedup_shingle_words")) is not int or cleaning["near_dedup_shingle_words"] <= 0:
+        raise ConfigError("near-deduplication shingle width must be a positive integer")
+    if type(config["data"].get("parquet_batch_rows")) is not int or config["data"]["parquet_batch_rows"] <= 0:
+        raise ConfigError("streaming Parquet batch size must be a positive integer")
+    mix = config["data"].get("mix", {})
+    if mix.get("unit") != "actual_shinra_tokens" or abs(float(mix.get("en", 0)) + float(mix.get("ru", 0)) - 1.0) > 1e-12:
+        raise ConfigError("language mix must define normalized actual-token weights")
+    if float(mix.get("en", 0)) != 0.5 or float(mix.get("ru", 0)) != 0.5:
+        raise ConfigError("the approved initial training mix is exactly 50/50 EN/RU supervised tokens")
     excluded = {str(source).casefold() for source in config["data"].get("excluded_sources", [])}
-    for source in config["data"].get("sources", []):
+    for source in sources:
         source_id = source.get("id", "").casefold()
         if any(term.casefold() in source_id for term in excluded):
             raise ConfigError(f"excluded source appears in source list: {source['id']}")
+    fsdp = config["precision"].get("fsdp", {})
+    if fsdp.get("enabled") is not False or fsdp.get("implementation_status") != "unavailable_single_process":
+        raise ConfigError("FSDP is not implemented by the current single-process trainer")
     if config["runtime"].get("colab_launch_allowed") and config.get("status") != "ready_for_training":
         raise ConfigError("Colab launch cannot be enabled before the configuration is ready")
     if config["training"].get("enabled") != config["data"].get("training_enabled"):

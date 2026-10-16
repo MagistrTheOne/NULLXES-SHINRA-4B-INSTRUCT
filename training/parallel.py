@@ -1,4 +1,4 @@
-"""FSDP wrapping for SHINRA on A100 nodes."""
+"""CUDA math settings for the current single-process trainer; FSDP is not implemented."""
 
 from __future__ import annotations
 

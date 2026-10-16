@@ -1,6 +1,6 @@
 # Single source of truth for SHINRA model, data policy, training, evaluation,
 # checkpointing, and runtime. Training stays disabled until all audit gates pass.
-schema_version: nullxes.shinra.v3
+schema_version: nullxes.shinra.v4
 status: data_tokenizer_and_runtime_audit_required
 
 identity:
@@ -108,11 +108,12 @@ tokenizer:
   numeric_rewrite: forbidden
 
 data:
-  acquisition: bounded_audit_slices_only
+  acquisition: pinned_huggingface_parquet_stream
   training_enabled: false
   source_manifest_required: true
   manifest_sha256: null
   immutable_revision_required: true
+  parquet_batch_rows: 512
   provenance_fields: [source_id, revision, document_id, url_or_archive_id, license, language, split, raw_sha256, transform_version, clean_sha256]
   split_salt: "NULLXES-SHINRA-AUDIT-2026-10-16-v1"
   splits: {train: 0.98, validation: 0.01, blind: 0.01}
@@ -120,30 +121,45 @@ data:
   packed_shard_tokens: 100000000
   sources:
     - id: Wikimedia/wikipedia
+      repo_type: dataset
       subsets: [20231101.en, 20231101.ru]
       languages: [en, ru]
+      language_by_subset: {20231101.en: en, 20231101.ru: ru}
+      parquet_prefixes: [20231101.en/, 20231101.ru/]
+      subset_by_path: {20231101.en: 20231101.en, 20231101.ru: 20231101.ru}
+      text_field: text
+      document_id_field: id
+      title_field: title
+      url_field: url
+      cleaning_profile: wikimedia_rendered_text
+      quarantine_profile: table_and_markup
+      license_claim: "CC-BY-SA-3.0 and GFDL-1.3; page-level terms may vary"
+      upstream_url: https://huggingface.co/datasets/wikimedia/wikipedia
       status: audit_only
-      revision: null
+      revision: b04c8d1ceb2f5cd4588862100d08de323dccfbaa
+      rights_review_status: audit_only
+      provenance_review_status: audit_only
       license_review_required: true
     - id: PleIAs/Russian-PD
+      repo_type: dataset
       subsets: [default]
       languages: [ru]
+      language_by_subset: {default: ru}
+      parquet_prefixes: [russian_pd_]
+      subset_by_path: {}
+      text_field: text
+      document_id_field: identifier
+      title_field: title
+      cleaning_profile: plain_text_nfc
+      quarantine_profile: ocr_book
+      license_claim: "Publisher claims worldwide public domain; each work remains subject to independent review"
+      upstream_url: https://huggingface.co/datasets/PleIAs/Russian-PD
       status: audit_only
-      revision: null
+      revision: 12e0ad67405dcf1e79154aa6a4c6cdb77947ab2d
+      rights_review_status: audit_only
+      provenance_review_status: audit_only
       ocr_review_required: true
       license_review_required: true
-    - id: common-pile/source-level-subsets
-      subsets: [project_gutenberg, arxiv_papers, usgpo, wikimedia]
-      languages: [en]
-      status: audit_only
-      revision: null
-      source_level_license_required: true
-    - id: open-web-math/open-web-math
-      subsets: [default]
-      languages: [en]
-      status: excluded_pending_rights_review
-      revision: null
-      common_crawl_terms_review_required: true
   excluded_sources: [FineWeb, FineWeb-Edu, FineWeb-2, SmolLM-Corpus]
   cleaning:
     strict_decode: true
@@ -155,10 +171,17 @@ data:
     exact_deduplication: true
     near_deduplication: true
     near_dedup_threshold: 0.80
+    near_dedup_metric: minhash_estimated_jaccard
     near_dedup_num_perm: 128
+    near_dedup_bands: 16
+    near_dedup_shingle_words: 5
     preserve_duplicate_provenance: true
     source_aware_markup_removal: true
     retain_table_context_or_quarantine: true
+    quarantine_table_documents: true
+    table_rows_quarantine_threshold: 2
+    max_control_character_ratio: 0.001
+    repeated_short_line_quarantine_threshold: 12
     filter_languages: [en, ru]
     holdout_contamination_check: true
   mix:
@@ -176,7 +199,14 @@ data:
   packing:
     policy: isolated_documents
     isolate_document_attention: true
-    overlength_document_policy: reject_until_chunking_contract_is_approved
+    overlength_document_policy: non_overlapping_document_windows
+    chunking_policy_version: isolated-continuation-windows.v1
+    chunking_window_semantics: independent_continuation_windows_without_overlap
+    max_chunk_tokens: 4096
+    parquet_row_group_rows: 128
+    bos_per_window: true
+    bos_loss: false
+    eod_only_on_final_document_window: true
     loss_on_bos: false
     loss_on_eod: true
     loss_on_pad: false
@@ -189,6 +219,8 @@ training:
   initialization: random
   diagnostic_tokens: 20000000
   foundation_tokens: null
+  budget_modes: [diagnostic, foundation]
+  dataset_exhaustion_policy: cycle_language_permutations_with_schedule_epoch_counter
   sequence_length: 4096
   micro_batch_size: 1
   gradient_accumulation_steps: 8
@@ -223,7 +255,8 @@ precision:
   attention_implementation: sdpa
   activation_checkpointing: true
   fsdp:
-    enabled: auto
+    enabled: false
+    implementation_status: unavailable_single_process
     cpu_offload: false
   memory:
     preflight_estimate_required: true
@@ -241,6 +274,7 @@ checkpoint:
     - architecture_sha256
     - tokenizer_bundle_sha256
     - data_manifest_sha256
+    - packed_data_manifests_sha256
     - objective
     - stage
     - training_config_sha256

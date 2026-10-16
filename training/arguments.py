@@ -12,6 +12,7 @@ from configs.loader import CONFIG_PATH, load_config
 @dataclass
 class TrainConfig:
     stage: str
+    budget_kind: str
     model_config: Path
     data_dir: Path
     tokenizer_path: Path
@@ -51,6 +52,8 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--resume-from", default=None)
     parser.add_argument("--run-dir", default=None)
     parser.add_argument("--heldout-dir", default=None)
+    parser.add_argument("--budget", choices=("diagnostic", "foundation"), default="diagnostic",
+                        help="selects the separate diagnostic or foundation token target in shinra.yaml")
 
 
 def build_train_config(stage: str, args: argparse.Namespace) -> TrainConfig:
@@ -61,9 +64,14 @@ def build_train_config(stage: str, args: argparse.Namespace) -> TrainConfig:
     max_steps = train.get("max_steps")
     if max_steps is None:
         raise ValueError("training.max_steps must be explicitly frozen before training")
-    output = Path(args.output_dir or raw["checkpoint"]["output_dir"])
+    budget_kind = getattr(args, "budget", "diagnostic")
+    budget_tokens = train.get(f"{budget_kind}_tokens")
+    if not isinstance(budget_tokens, int) or budget_tokens <= 0:
+        raise ValueError(f"training.{budget_kind}_tokens must be approved and positive before this budget can run")
+    output = Path(args.output_dir or (Path(raw["checkpoint"]["output_dir"]) / budget_kind))
     return TrainConfig(
         stage=stage,
+        budget_kind=budget_kind,
         model_config=config_path,
         data_dir=Path(args.data_dir),
         tokenizer_path=Path(args.tokenizer or raw["tokenizer"]["artifact_dir"]),
@@ -80,7 +88,7 @@ def build_train_config(stage: str, args: argparse.Namespace) -> TrainConfig:
         eps=float(opt["eps"]),
         warmup_steps=int(max_steps * float(sched["warmup_ratio"])),
         max_steps=int(max_steps),
-        max_tokens=int(train["diagnostic_tokens"]),
+        max_tokens=int(budget_tokens),
         fused_optimizer=opt.get("fused"),
         scheduler=str(sched["name"]),
         grad_clip=float(opt["max_grad_norm"]),

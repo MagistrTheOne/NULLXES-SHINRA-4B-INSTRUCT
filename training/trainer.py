@@ -29,7 +29,7 @@ from .collator import collate_lm, load_packed_dataset
 from .optim import build_optimizer
 from .parallel import enable_tf32
 from .schedule import build_scheduler
-from .sampler import StatefulRandomSampler
+from .sampler import StatefulTokenMixSampler
 from tokenizer import load_shinra_tokenizer
 from tokenizer.bundle import copy_bundle, verify_bundle
 
@@ -101,7 +101,7 @@ def estimate_training_memory(model: dict, training: dict) -> dict[str, int]:
 
 def save_checkpoint(accelerator: Accelerator, model, tokenizer, output_dir: Path, *, step: int, optimizer,
                     scheduler, consumed_tokens: int, sampler_state: dict, manifest: dict, stage: str,
-                    objective: str, training_config_sha256: str) -> Path:
+                    budget_kind: str, target_tokens: int, objective: str, training_config_sha256: str) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     final = output_dir / f"step-{step:08d}"
     if final.exists():
@@ -120,10 +120,12 @@ def save_checkpoint(accelerator: Accelerator, model, tokenizer, output_dir: Path
             state = {
                 "step": step, "consumed_tokens": consumed_tokens, "sampler": sampler_state,
                 "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(), "stage": stage,
-                "objective": objective, "training_config_sha256": training_config_sha256,
+                "objective": objective, "budget_kind": budget_kind, "target_tokens": target_tokens,
+                "training_config_sha256": training_config_sha256,
                 "architecture_sha256": _sha(manifest["architecture"]),
                 "tokenizer_bundle_sha256": manifest["tokenizer_bundle_sha256"],
                 "data_manifest_sha256": manifest["data_manifest_sha256"],
+                "packed_data_manifests_sha256": manifest["packed_data_manifests_sha256"],
                 "rng": torch.get_rng_state(), "cuda_rng": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
                 "python_rng": random.getstate(), "numpy_rng": np.random.get_state(),
             }
@@ -215,6 +217,8 @@ def run_lm_training(cfg: TrainConfig) -> dict:
     if not data_manifest_path.is_file():
         raise FileNotFoundError("training data manifest.json is required")
     data_manifest = json.loads(data_manifest_path.read_text(encoding="utf-8"))
+    if data_manifest.get("purpose") != "pretraining" or data_manifest.get("admission") != "production":
+        raise ShardIdentityError("training requires a production-admitted pretraining corpus manifest")
     manifest_without_self_hash = dict(data_manifest)
     manifest_sha = manifest_without_self_hash.pop("manifest_sha256", None)
     expected_manifest_sha = hashlib.sha256(json.dumps(manifest_without_self_hash, sort_keys=True).encode()).hexdigest()
@@ -228,8 +232,17 @@ def run_lm_training(cfg: TrainConfig) -> dict:
     if not heldout_dir.is_dir():
         raise FileNotFoundError("held-out validation data is required")
     train_dir = cfg.data_dir / "train"
+    blind_dir = cfg.data_dir / "blind"
+    blind_data = load_packed_dataset(blind_dir, config=approved, expected_split="blind")
+    if getattr(blind_data, "source_manifest_sha256", None) != manifest_sha:
+        raise ShardIdentityError("packed blind source manifest differs from the frozen corpus manifest")
     train_data = load_packed_dataset(train_dir, config=approved, expected_split="train")
     validation_data = load_packed_dataset(heldout_dir, config=approved, expected_split="validation")
+    packed_manifest_shas = {"train": train_data.packed_manifest_sha256,
+                            "validation": validation_data.packed_manifest_sha256,
+                            "blind": blind_data.packed_manifest_sha256}
+    packed_data_manifests_sha = _sha(packed_manifest_shas)
+    del blind_data
     if not data_manifest.get("train_hash") or not data_manifest.get("validation_hash") or not data_manifest.get("blind_hash"):
         raise ShardIdentityError("manifest missing frozen train/validation/blind split hashes")
     if len({data_manifest["train_hash"], data_manifest["validation_hash"], data_manifest["blind_hash"]}) != 3:
@@ -241,7 +254,13 @@ def run_lm_training(cfg: TrainConfig) -> dict:
     accelerator = Accelerator(gradient_accumulation_steps=cfg.gradient_accumulation_steps, mixed_precision="bf16")
     if accelerator.num_processes != 1:
         raise RuntimeError("multi-process training is unavailable; use one approved GPU per run")
-    training_config_sha = _sha(approved["training"])
+    if cfg.budget_kind not in {"diagnostic", "foundation"} or cfg.max_tokens <= 0:
+        raise RuntimeError("a positive diagnostic or foundation token budget must be selected")
+    if approved["data"]["mix"].get("en") != 0.5 or approved["data"]["mix"].get("ru") != 0.5:
+        raise RuntimeError("the current production trainer implements the approved EN/RU token mix at 50/50 only")
+    training_config_sha = _sha({"training": approved["training"], "budget_kind": cfg.budget_kind,
+                                "target_tokens": cfg.max_tokens, "language_mix": approved["data"]["mix"],
+                                "packed_data_manifests_sha256": packed_data_manifests_sha})
     resume_state = None
     if cfg.resume_from:
         state_file = cfg.resume_from / "trainer_state.pt"
@@ -252,6 +271,7 @@ def run_lm_training(cfg: TrainConfig) -> dict:
             "architecture_sha256": _sha(approved["model"]),
             "tokenizer_bundle_sha256": approved["tokenizer"]["artifact_sha256"],
             "data_manifest_sha256": manifest_sha,
+            "packed_data_manifests_sha256": packed_data_manifests_sha,
             "objective": approved["training"]["objective"],
             "stage": cfg.stage,
             "training_config_sha256": training_config_sha,
@@ -259,9 +279,11 @@ def run_lm_training(cfg: TrainConfig) -> dict:
         mismatched = [key for key, value in expected_state.items() if resume_state.get(key) != value]
         if mismatched:
             raise ShardIdentityError(f"resume checkpoint identity mismatch: {mismatched}")
+        if resume_state.get("budget_kind") != cfg.budget_kind or int(resume_state.get("target_tokens", -1)) != cfg.max_tokens:
+            raise ShardIdentityError("resume checkpoint uses a different diagnostic/foundation budget")
         if int(resume_state["consumed_tokens"]) >= cfg.max_tokens or int(resume_state["step"]) >= cfg.max_steps:
-            raise RuntimeError("resume checkpoint has already reached the configured diagnostic limit")
-    sampler = StatefulRandomSampler(train_data, cfg.seed)
+            raise RuntimeError("resume checkpoint has already reached the configured token or step limit")
+    sampler = StatefulTokenMixSampler(train_data, cfg.seed, approved["data"]["mix"])
     if resume_state:
         sampler.load_state_dict(resume_state["sampler"])
     loader = DataLoader(train_data, batch_size=cfg.micro_batch_size, sampler=sampler,
@@ -287,14 +309,16 @@ def run_lm_training(cfg: TrainConfig) -> dict:
         np.random.set_state(resume_state["numpy_rng"])
     tokenizer = load_shinra_tokenizer(cfg.tokenizer_path, approved)
     manifest = {"architecture": approved["model"], "tokenizer_bundle_sha256": approved["tokenizer"]["artifact_sha256"],
-                "data_manifest_sha256": manifest_sha}
+                "data_manifest_sha256": manifest_sha,
+                "packed_data_manifests_sha256": packed_data_manifests_sha}
     cfg.output_dir.mkdir(parents=True, exist_ok=True)
     cfg.run_dir.mkdir(parents=True, exist_ok=True)
     ledger = RunLedger(cfg.run_dir)
     model.train()
     step = int(resume_state["step"]) if resume_state else 0
     consumed = int(resume_state["consumed_tokens"]) if resume_state else 0
-    ledger.write_status({"status": "running", "step": step, "processed_tokens": consumed,
+    ledger.write_status({"status": "running", "budget_kind": cfg.budget_kind, "target_tokens": cfg.max_tokens,
+                         "step": step, "processed_tokens": consumed,
                          "optimizer_steps": step, "checkpoint": str(cfg.resume_from) if cfg.resume_from else None})
     iterator = iter(loader)
     started = time.monotonic()
@@ -308,7 +332,11 @@ def run_lm_training(cfg: TrainConfig) -> dict:
         try:
             batch = next(iterator)
         except StopIteration:
-            raise RuntimeError("training shard exhausted before configured diagnostic token budget")
+            iterator = iter(loader)
+            try:
+                batch = next(iterator)
+            except StopIteration as exc:
+                raise RuntimeError("training split is empty; configured exhaustion policy cannot cycle it") from exc
         with accelerator.accumulate(model):
             result = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], labels=batch["labels"], use_cache=False)
             if not torch.isfinite(result.loss):
@@ -318,7 +346,11 @@ def run_lm_training(cfg: TrainConfig) -> dict:
                 raise RuntimeError("training batch has no valid next-token targets")
             if torch.any(batch["labels"][:, 0] != -100):
                 raise RuntimeError("the first token of each isolated sequence must be masked from shifted loss")
-            accelerator.backward(result.loss)
+            # The model returns a per-target mean for each microbatch. Weight it by the
+            # actual supervised token count so long rows do not outweigh short rows.
+            microbatch_token_capacity = cfg.micro_batch_size * cfg.sequence_length
+            token_weighted_loss = result.loss * (target_tokens_this_batch / microbatch_token_capacity)
+            accelerator.backward(token_weighted_loss)
             if accelerator.sync_gradients:
                 norm = accelerator.clip_grad_norm_(model.parameters(), cfg.grad_clip)
                 if not torch.isfinite(norm):
@@ -345,7 +377,8 @@ def run_lm_training(cfg: TrainConfig) -> dict:
                        "loss": sum(window_losses[-cfg.logging_steps:]) / min(len(window_losses), cfg.logging_steps),
                         "tokens_per_second": (consumed - initial_consumed_tokens) / elapsed,
                         "learning_rate": scheduler.get_last_lr()[0],
-                       "peak_gpu_memory_bytes": torch.cuda.max_memory_allocated()}
+                       "peak_gpu_memory_bytes": torch.cuda.max_memory_allocated(),
+                       **sampler.mix_report()}
             ledger.log_metrics(metrics)
             ledger.write_status(metrics)
         if cfg.eval_steps and step and step % cfg.eval_steps == 0 and accelerator.sync_gradients:
@@ -355,6 +388,7 @@ def run_lm_training(cfg: TrainConfig) -> dict:
             last_checkpoint = save_checkpoint(accelerator, model, tokenizer, cfg.output_dir, step=step, optimizer=optimizer,
                             scheduler=scheduler, consumed_tokens=consumed, sampler_state=sampler.state_dict(),
                             manifest=manifest, stage=cfg.stage, objective=approved["training"]["objective"],
+                            budget_kind=cfg.budget_kind, target_tokens=cfg.max_tokens,
                             training_config_sha256=training_config_sha)
         if accelerator.sync_gradients and consumed >= cfg.max_tokens:
             break
@@ -367,10 +401,22 @@ def run_lm_training(cfg: TrainConfig) -> dict:
             accelerator, model, tokenizer, cfg.output_dir, step=step, optimizer=optimizer,
             scheduler=scheduler, consumed_tokens=consumed, sampler_state=sampler.state_dict(),
             manifest=manifest, stage=cfg.stage, objective=approved["training"]["objective"],
+            budget_kind=cfg.budget_kind, target_tokens=cfg.max_tokens,
             training_config_sha256=training_config_sha,
         )
-    result = {"step": step, "processed_tokens": consumed, "checkpoint": str(checkpoint), **final_eval}
-    ledger.write_status({"status": "complete", **result})
-    ledger.append({"event": "training_complete", **result})
+    mix_report = sampler.mix_report()
+    if mix_report["sampled_target_tokens"] != consumed:
+        raise RuntimeError("token-mix sampler accounting differs from tokens consumed by the training loop")
+    max_row_targets = int(train_data.target_tokens.max())
+    if consumed >= cfg.max_tokens and mix_report["absolute_token_imbalance"] > max_row_targets:
+        raise RuntimeError("actual EN/RU supervised-token mix exceeded one packed-row tolerance")
+    completed = consumed >= cfg.max_tokens
+    status = "complete" if completed else "budget_incomplete"
+    result = {"status": status, "budget_kind": cfg.budget_kind, "target_tokens": cfg.max_tokens,
+              "step": step, "processed_tokens": consumed, "token_budget_shortfall": max(cfg.max_tokens - consumed, 0),
+              "sampler_epoch": sampler.epoch, "language_mix": mix_report,
+              "checkpoint": str(checkpoint), **final_eval}
+    ledger.write_status(result)
+    ledger.append({"event": "training_complete" if completed else "training_budget_incomplete", **result})
     accelerator.end_training()
     return result
