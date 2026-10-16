@@ -31,6 +31,7 @@ dependencies = [
 data = [
   "huggingface_hub>=0.25.0",
   "fsspec>=2024.2.0",
+  "zstandard>=0.22.0",
 ]
 
 [project.scripts]
@@ -38,6 +39,7 @@ shinra-pretrain = "training.pretrain:main"
 shinra-acquire-data = "data.sources:main"
 shinra-prepare-data = "data.numeric_integrity:main"
 shinra-pack-data = "data.pack:main"
+shinra-build-corpus = "data.build_corpus:main"
 shinra-tokenize = "tokenizer.train_tokenizer:main"
 shinra-generate = "inference.generate:main"
 shinra-serve = "inference.server:main"

@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -18,7 +19,7 @@ from data.hashing import sha256_file
 from tokenizer import load_shinra_tokenizer
 from tokenizer.contract import encode_text, plain_text
 
-PACKER_VERSION = "shinra-pack.v3"
+PACKER_VERSION = "shinra-pack.v4"
 CHUNKING_POLICY_VERSION = "isolated-continuation-windows.v1"
 
 
@@ -294,8 +295,12 @@ def _load_journal(stage: Path, identity: dict[str, Any]) -> dict[str, Any]:
 def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequence_length: int,
                    shard_tokens: int, *, config_path: Path, required_split: str,
                    config: dict | None = None, smoke_test_documents: int | None = None,
-                   resume: bool = False) -> dict:
+                   resume: bool = False, minimum_free_gb: float | None = None) -> dict:
     config = config or load_config(config_path)
+    reserve_gb = (float(config["runtime"]["minimum_free_disk_gb"])
+                  if minimum_free_gb is None else float(minimum_free_gb))
+    if reserve_gb < 0:
+        raise PackContractError("minimum_free_gb cannot be negative")
     if smoke_test_documents is not None and smoke_test_documents <= 0:
         raise PackContractError("smoke_test_documents must be positive")
     if config["data"]["packing"]["policy"] != "isolated_documents":
@@ -369,7 +374,9 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
         stage.mkdir(parents=True)
         journal = {"identity": identity, "next_document_index": 0, "documents": 0, "chunks": 0,
                    "body_tokens": 0, "bos_tokens": 0, "eod_tokens": 0, "target_tokens": 0,
-                   "padded_slots": 0, "shard_files": [], "shard_sha256": {}}
+                   "padded_slots": 0, "shard_files": [], "shard_sha256": {},
+                   "language_target_tokens": {"en": 0, "ru": 0},
+                   "language_documents": {"en": 0, "ru": 0}}
         _write_journal(stage, journal)
     row_group_rows: list[dict] = []
     row_group_size = int(config["data"]["packing"]["parquet_row_group_rows"])
@@ -389,11 +396,22 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
     padded_slots = int(journal["padded_slots"])
     next_document_index = int(journal["next_document_index"])
     shard_index = len(shard_files)
+    language_target_tokens = {key: int(value) for key, value in journal.get(
+        "language_target_tokens", {"en": 0, "ru": 0}).items()}
+    language_documents = {key: int(value) for key, value in journal.get(
+        "language_documents", {"en": 0, "ru": 0}).items()}
 
     def flush_row_group() -> None:
         nonlocal writer, temporary_shard, row_group_rows
         if not row_group_rows:
             return
+        if reserve_gb:
+            available_gb = shutil.disk_usage(stage).free / (1024 ** 3)
+            if available_gb < reserve_gb:
+                raise PackContractError(
+                    f"pausing resumable split packing: free={available_gb:.2f} GiB, "
+                    f"configured minimum={reserve_gb:.2f} GiB"
+                )
         table = pa.Table.from_pylist(row_group_rows)
         if writer is None:
             temporary_shard = stage / f".packed-{shard_index:05d}.parquet.tmp"
@@ -433,7 +451,8 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
         _write_journal(stage, {"identity": identity, "next_document_index": next_index,
             "documents": documents, "chunks": chunks, "body_tokens": body_tokens, "bos_tokens": bos_tokens,
             "eod_tokens": eod_tokens, "target_tokens": target_tokens, "padded_slots": padded_slots,
-            "shard_files": shard_files, "shard_sha256": shard_hashes})
+            "shard_files": shard_files, "shard_sha256": shard_hashes,
+            "language_target_tokens": language_target_tokens, "language_documents": language_documents})
 
     try:
         for document_index, record in enumerate(tqdm(
@@ -447,6 +466,11 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
                 raise PackContractError(f"{record['document_id']}: tokenizer produced an empty sequence")
             pieces = chunk_token_ranges(len(ids), sequence_length)
             count = len(pieces)
+            language = record["language"].casefold()
+            if language not in language_target_tokens:
+                raise PackContractError(f"{record['document_id']}: language {language!r} is outside EN/RU contract")
+            language_target_tokens[language] += len(ids) + 1
+            language_documents[language] += 1
             for chunk_index, (token_start, token_end, final_window) in enumerate(pieces):
                 body = ids[token_start:token_end]
                 wrapped = wrap_pretrain_window(body, final_window=final_window, config=config)
@@ -492,6 +516,18 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
             commit_shard(next_document_index)
         if not documents:
             raise PackContractError("cannot publish an empty packed split")
+        if sum(language_target_tokens.values()) != target_tokens:
+            raise PackContractError(
+                "per-language supervised targets differ from packed row labels: "
+                f"languages={language_target_tokens}, rows={target_tokens}"
+            )
+        if reserve_gb:
+            available_gb = shutil.disk_usage(stage).free / (1024 ** 3)
+            if available_gb < reserve_gb:
+                raise PackContractError(
+                    f"pausing resumable split publication: free={available_gb:.2f} GiB, "
+                    f"configured minimum={reserve_gb:.2f} GiB"
+                )
         split_path = input_dir / f"{required_split}.jsonl"
         if sha256_file(split_path) != corpus_manifest["files"][f"{required_split}.jsonl"]:
             raise PackContractError("corpus split changed during packing")
@@ -503,6 +539,8 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
             "body_tokens": body_tokens, "bos_tokens": bos_tokens, "eod_tokens": eod_tokens,
             "input_tokens": body_tokens + bos_tokens + eod_tokens,
             "supervised_target_tokens": target_tokens,
+            "supervised_target_tokens_by_language": language_target_tokens,
+            "documents_by_language": language_documents,
             "sequence_length": sequence_length, "shards": len(shard_files),
             "shard_files": shard_files, "shard_sha256": shard_hashes,
             "padded_slots": padded_slots,
@@ -538,6 +576,8 @@ def main() -> None:
     parser.add_argument("--split", choices=("train", "validation", "blind", "all"), required=True)
     parser.add_argument("--config", default=str(CONFIG_PATH))
     parser.add_argument("--resume", action="store_true", help="verify the partial-split journal and resume safely")
+    parser.add_argument("--minimum-free-gb", type=float, default=None,
+                        help="pause while preserving completed shards below this free-space reserve")
     args = parser.parse_args()
     config = load_config(args.config)
     sequence_length = args.sequence_length or int(config["model"]["train_sequence_length"])
@@ -554,12 +594,13 @@ def main() -> None:
             results[split] = pack_documents(
                 input_dir, tokenizer_path, output_dir / split, sequence_length, shard_tokens,
                 config_path=config_path, required_split=split, config=config,
+                minimum_free_gb=args.minimum_free_gb,
             )
         print(json.dumps(results, indent=2, sort_keys=True))
         return
     result = pack_documents(input_dir, tokenizer_path, output_dir, sequence_length,
                             shard_tokens, config_path=config_path, required_split=args.split, resume=args.resume,
-                            config=config)
+                            config=config, minimum_free_gb=args.minimum_free_gb)
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

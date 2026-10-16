@@ -6,12 +6,12 @@ import argparse
 import hashlib
 import html
 import json
+import math
 import os
 import re
 import shutil
 import sqlite3
 import struct
-import tempfile
 from collections import Counter, deque
 from pathlib import Path
 from typing import Any, Iterable, Iterator
@@ -40,6 +40,8 @@ WIKI_LINK = re.compile(r"\[\[([^\]]+)\]\]")
 WIKI_EXTERNAL_LINK = re.compile(r"\[(?:https?://\S+)(?:\s+([^\]]+))?\]")
 WIKI_FILE_CATEGORY = re.compile(r"\[\[(?:file|image|category):[^\]]*\]\]", re.IGNORECASE)
 WIKI_FORMATTING = re.compile(r"'{2,5}")
+HTML_BLOCK = re.compile(r"<(script|style|noscript)\b[^>]*>.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
+HTML_TAG = re.compile(r"</?[A-Za-z][^>]*>")
 TABLE_ROW = re.compile(r"^\s*(?:\|.*\||\+[-=+]{3,}\+)\s*$")
 CONTROL_CHARACTER = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
@@ -62,6 +64,10 @@ def clean_text(text: str, *, normalization: str = "NFC") -> str:
 
 
 def _clean_source_markup(text: str, source: dict[str, Any]) -> str:
+    if source.get("cleaning_profile") == "web_crawl_text":
+        cleaned = html.unescape(text)
+        cleaned = HTML_BLOCK.sub(" ", cleaned)
+        return HTML_TAG.sub(" ", cleaned)
     if source.get("cleaning_profile") != "wikimedia_rendered_text":
         return text
     cleaned = html.unescape(text)
@@ -91,6 +97,9 @@ def _quarantine_reason(text: str, cleaning: dict[str, Any], source: dict[str, An
     if source.get("quarantine_profile") == "ocr_book" \
             and repeated >= int(cleaning.get("repeated_short_line_quarantine_threshold", 12)):
         return f"repeated_page_header_or_ocr_line:{repeated}"
+    if source.get("quarantine_profile") == "web_crawl" and repeated >= int(
+            cleaning.get("repeated_short_line_quarantine_threshold", 12)):
+        return f"repeated_web_boilerplate_line:{repeated}"
     return None
 
 
@@ -117,7 +126,7 @@ def _load_raw_manifest(path: Path) -> dict[str, Any]:
     records = path.parent / "records.jsonl"
     if sha256_file(records) != manifest.get("records_sha256"):
         raise DataIntegrityError(f"{records}: SHA-256 differs from the raw source manifest")
-    if manifest.get("schema") != "nullxes.shinra.raw-source.v2":
+    if manifest.get("schema") not in {"nullxes.shinra.raw-source.v2", "nullxes.shinra.raw-source.v3"}:
         raise DataIntegrityError(f"{path}: unsupported raw source manifest schema")
     accepted, scanned, rejected = (manifest.get(key) for key in ("accepted", "scanned", "rejected"))
     if any(type(value) is not int or value < 0 for value in (accepted, scanned, rejected)) \
@@ -125,10 +134,17 @@ def _load_raw_manifest(path: Path) -> dict[str, Any]:
         raise DataIntegrityError(f"{path}: accepted/scanned/rejected counters are inconsistent")
     bounded = manifest.get("bounded_slice")
     maximum = manifest.get("max_accepted_documents")
+    target_maximum = manifest.get("requested_max_target_tokens")
     if type(bounded) is not bool or manifest.get("admission") not in {"audit_only", "production"} \
-            or (bounded and (type(maximum) is not int or maximum <= 0 or accepted > maximum
-                             or manifest.get("admission") != "audit_only")) \
-            or (not bounded and maximum is not None):
+            or (maximum is not None and (type(maximum) is not int or maximum <= 0 or accepted > maximum)) \
+            or (target_maximum is not None and (type(target_maximum) is not int or target_maximum <= 0
+                or type(manifest.get("acquired_supervised_target_tokens")) is not int
+                or not manifest.get("tokenizer_bundle_sha256")
+                or manifest.get("admission") != "audit_only"
+                or manifest.get("target_limit_reached") is not (
+                    int(manifest.get("acquired_supervised_target_tokens", 0)) >= target_maximum))) \
+            or (bounded != (maximum is not None or target_maximum is not None)) \
+            or (bounded and manifest.get("admission") != "audit_only"):
         raise DataIntegrityError(f"{path}: bounded acquisition/admission metadata is inconsistent")
     rejection_name = manifest.get("rejections_file")
     if rejection_name != "rejections.jsonl":
@@ -138,7 +154,7 @@ def _load_raw_manifest(path: Path) -> dict[str, Any]:
         raise DataIntegrityError(f"{rejection_path}: rejection-ledger SHA-256 mismatch")
     files = manifest.get("files")
     if not isinstance(files, list) or not files:
-        raise DataIntegrityError(f"{path}: upstream Parquet file provenance is missing")
+        raise DataIntegrityError(f"{path}: upstream source file provenance is missing")
     valid_files = [item for item in files if isinstance(item, dict)
                    and isinstance(item.get("path"), str) and item.get("path")
                    and isinstance(item.get("sha256"), str)
@@ -196,6 +212,32 @@ def _records(path: Path, source: dict[str, Any], raw_manifest: dict[str, Any]) -
                 raise DataIntegrityError(f"{records_path}:{line_no}: upstream file SHA differs from the raw source manifest")
             if row.get("language") != source.get("language_by_subset", {}).get(row.get("subset")):
                 raise DataIntegrityError(f"{records_path}:{line_no}: subset/language mapping differs from the allowlist")
+            language = row["language"]
+            if source.get("language_field") and row.get("upstream_language_label") != source.get(
+                    "language_labels", {}).get(language):
+                raise DataIntegrityError(f"{records_path}:{line_no}: upstream language label differs from the allowlist")
+            if source.get("script_field") and row.get("upstream_script_label") != source.get(
+                    "script_labels", {}).get(language):
+                raise DataIntegrityError(f"{records_path}:{line_no}: upstream script label differs from the allowlist")
+            declared_language_profile = row.get("language_validation_profile")
+            if declared_language_profile is None and raw_manifest.get("schema") == "nullxes.shinra.raw-source.v2":
+                declared_language_profile = source.get("language_validation_profile")
+            if declared_language_profile != source.get("language_validation_profile"):
+                raise DataIntegrityError(f"{records_path}:{line_no}: language validation profile differs from the allowlist")
+            if source.get("language_validation_profile") == "english_source_latin_script_guard":
+                fraction = row.get("latin_script_fraction")
+                if isinstance(fraction, bool) or not isinstance(fraction, (int, float)) \
+                        or not math.isfinite(float(fraction)) \
+                        or float(fraction) < float(source["minimum_latin_script_fraction"]):
+                    raise DataIntegrityError(f"{records_path}:{line_no}: English source script guard was not met")
+            minimum_score = source.get("minimum_quality_score")
+            if minimum_score is not None:
+                score = row.get("quality_score")
+                if isinstance(score, bool) or not isinstance(score, (int, float)) \
+                        or not math.isfinite(float(score)) or float(score) < float(minimum_score):
+                    raise DataIntegrityError(f"{records_path}:{line_no}: upstream quality score fails its pinned threshold")
+            if row.get("quality_method") != source.get("quality_method"):
+                raise DataIntegrityError(f"{records_path}:{line_no}: quality method differs from the source allowlist")
             upstream_id = row.get("upstream_document_id")
             expected_document_id = hashlib.sha256(
                 f"{source['id']}\0{source['revision']}\0{row.get('subset')}\0{upstream_id}".encode("utf-8")
@@ -214,6 +256,7 @@ def _records(path: Path, source: dict[str, Any], raw_manifest: dict[str, Any]) -
             if not row.get("upstream_file_sha256") or not row.get("url_or_archive_id"):
                 raise DataIntegrityError(f"{records_path}:{line_no}: upstream file hash and URL/archive provenance are required")
             row["_input_record"] = f"{records_path}:{line_no}"
+            row["_source_line_number"] = line_no
             records_seen += 1
             yield row
     if records_seen != raw_manifest.get("records"):
@@ -257,11 +300,12 @@ class DiskBackedDeduplicator:
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA synchronous=FULL")
         self.db.executescript("""
-            CREATE TABLE documents (clean_sha TEXT PRIMARY KEY, source_record TEXT NOT NULL,
+            CREATE TABLE IF NOT EXISTS documents (clean_sha TEXT PRIMARY KEY, source_record TEXT NOT NULL,
                 provenance_json TEXT NOT NULL, signature BLOB NOT NULL);
-            CREATE TABLE bands (bucket TEXT NOT NULL, clean_sha TEXT NOT NULL,
+            CREATE TABLE IF NOT EXISTS bands (bucket TEXT NOT NULL, clean_sha TEXT NOT NULL,
                 PRIMARY KEY(bucket, clean_sha));
-            CREATE INDEX bands_by_digest ON bands(clean_sha);
+            CREATE INDEX IF NOT EXISTS bands_by_digest ON bands(clean_sha);
+            CREATE TABLE IF NOT EXISTS pipeline_state (id INTEGER PRIMARY KEY CHECK(id=1), state_json TEXT NOT NULL);
         """)
 
     def classify(self, clean_sha: str, text: str, provenance: dict[str, Any]
@@ -298,8 +342,17 @@ class DiskBackedDeduplicator:
                         (clean_sha, str(provenance["source_record"]),
                          json.dumps(provenance, ensure_ascii=False, sort_keys=True), signature_blob))
         self.db.executemany("INSERT INTO bands VALUES(?,?)", ((bucket, clean_sha) for bucket in bucket_ids))
-        self.db.commit()
         return "kept", None, None, None
+
+    def load_pipeline_state(self) -> dict[str, Any] | None:
+        row = self.db.execute("SELECT state_json FROM pipeline_state WHERE id=1").fetchone()
+        return json.loads(row[0]) if row else None
+
+    def save_pipeline_state(self, state: dict[str, Any]) -> None:
+        self.db.execute("INSERT INTO pipeline_state(id,state_json) VALUES(1,?) "
+                        "ON CONFLICT(id) DO UPDATE SET state_json=excluded.state_json",
+                        (json.dumps(state, ensure_ascii=False, sort_keys=True),))
+        self.db.commit()
 
     def close(self) -> None:
         self.db.close()
@@ -320,11 +373,16 @@ def _split_for(row: dict[str, Any], split_salt: str, fractions: dict[str, float]
 def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *, split_salt: str | None = None,
                          validation_fraction: float | None = None, blind_fraction: float | None = None,
                          normalization: str | None = None, config_path: str | Path = CONFIG_PATH,
-                         admission: str = "audit") -> dict[str, Any]:
+                         admission: str = "audit", resume: bool = False,
+                         minimum_free_gb: float | None = None) -> dict[str, Any]:
     """Prepare pinned raw source snapshots; splits and deduplication happen before token chunking."""
     if admission not in {"audit", "production"}:
         raise DataIntegrityError("admission must be audit or production")
     config = load_config(config_path)
+    reserve_gb = (float(config["runtime"]["minimum_free_disk_gb"])
+                  if minimum_free_gb is None else float(minimum_free_gb))
+    if reserve_gb < 0:
+        raise DataIntegrityError("minimum_free_gb cannot be negative")
     data_config = config["data"]
     cleaning = data_config["cleaning"]
     split_salt = split_salt or data_config["split_salt"]
@@ -352,6 +410,8 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
             raise DataIntegrityError(f"{raw_manifest_path}: source revision is outside the configured allowlist")
         if raw_manifest.get("purpose") != "pretraining-candidate-source-audit":
             raise DataIntegrityError(f"{raw_manifest_path}: input purpose is not a pretraining source snapshot")
+        if raw_manifest.get("stream_format", "parquet") != source.get("format", "parquet"):
+            raise DataIntegrityError(f"{raw_manifest_path}: stream format differs from the pinned source adapter")
         if raw_manifest.get("bounded_slice") and admission == "production":
             raise DataIntegrityError(f"{path}: bounded source slices cannot be production-admitted")
         if raw_manifest.get("license_claim") != source.get("license_claim") \
@@ -374,22 +434,96 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
     if output.exists():
         raise DataIntegrityError(f"refusing to overwrite existing corpus output: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
-    stage = Path(tempfile.mkdtemp(prefix=f".{output.name}.corpus-partial-", dir=output.parent))
-    handles = {name: (stage / f"{name}.jsonl").open("w", encoding="utf-8", newline="\n")
-               for name in ("train", "validation", "blind")}
-    quarantine = (stage / "quarantine.jsonl").open("w", encoding="utf-8", newline="\n")
-    duplicates = (stage / "duplicates.jsonl").open("w", encoding="utf-8", newline="\n")
+    stage = output.parent / f".{output.name}.corpus-partial"
+    snapshot_identity = [{"path": str(path.resolve()), "manifest_sha256": manifest["manifest_sha256"]}
+                         for path, _, manifest in source_snapshots]
+    identity = {"inputs": snapshot_identity, "split_salt": split_salt, "fractions": fractions,
+                "normalization": normalization, "admission": admission,
+                "config_sha256": hashlib.sha256(json.dumps(config, sort_keys=True).encode()).hexdigest(),
+                "dedup_threshold": threshold, "dedup_num_perm": num_perm}
+    identity_sha = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    if stage.exists() and not resume:
+        raise DataIntegrityError(f"partial corpus preparation exists; pass --resume: {stage}")
+    if resume and not stage.is_dir():
+        raise DataIntegrityError(f"no partial corpus preparation exists to resume: {stage}")
+    if not stage.exists():
+        if resume:
+            raise DataIntegrityError(f"no partial corpus preparation exists to resume: {stage}")
+        stage.mkdir()
     deduper = DiskBackedDeduplicator(stage / "dedup.sqlite3", threshold=threshold, num_perm=num_perm,
                                      bands=int(cleaning.get("near_dedup_bands", 16)),
                                      shingle_words=int(cleaning["near_dedup_shingle_words"]))
-    counts = {key: 0 for key in ("seen", "kept", "exact_duplicates", "near_duplicates", "quarantined",
-                                "train", "validation", "blind")}
-    language_counts = {split: {language: 0 for language in cleaning["filter_languages"]}
-                       for split in ("train", "validation", "blind")}
-    source_provenance = []
+    checkpoint = deduper.load_pipeline_state() if resume else None
+    if checkpoint and checkpoint.get("identity_sha256") != identity_sha:
+        deduper.close()
+        raise DataIntegrityError("corpus resume sources, split, cleaning config, dedup policy or admission differ")
+    if resume and not checkpoint:
+        deduper.close()
+        raise DataIntegrityError("deduplication database has no committed corpus resume state")
+    counts = checkpoint["counts"] if checkpoint else {
+        key: 0 for key in ("seen", "kept", "exact_duplicates", "near_duplicates", "quarantined",
+                           "train", "validation", "blind")}
+    language_counts = checkpoint["language_counts"] if checkpoint else {
+        split: {language: 0 for language in cleaning["filter_languages"]}
+        for split in ("train", "validation", "blind")}
+    source_provenance = checkpoint["source_provenance"] if checkpoint else []
+    cursor = checkpoint.get("cursor") if checkpoint else None
+    handles = {name: (stage / f"{name}.jsonl").open("a" if resume else "w", encoding="utf-8", newline="\n")
+               for name in ("train", "validation", "blind")}
+    quarantine = (stage / "quarantine.jsonl").open("a" if resume else "w", encoding="utf-8", newline="\n")
+    duplicates = (stage / "duplicates.jsonl").open("a" if resume else "w", encoding="utf-8", newline="\n")
+    if resume:
+        offsets = checkpoint["output_offsets"]
+        for name, handle in {**handles, "quarantine": quarantine, "duplicates": duplicates}.items():
+            offset = int(offsets[name])
+            handle.flush()
+            if handle.tell() < offset:
+                raise DataIntegrityError(f"corpus resume journal points beyond output file {name}")
+            handle.truncate(offset)
+            handle.seek(0, os.SEEK_END)
+    pending_rows = 0
+
+    def persist_corpus_state(committed_cursor: dict[str, int] | None) -> None:
+        for handle in (*handles.values(), quarantine, duplicates):
+            handle.flush()
+            os.fsync(handle.fileno())
+        state = {"schema": "nullxes.shinra.corpus-build-state.v1", "identity_sha256": identity_sha,
+                 "cursor": committed_cursor, "counts": counts, "language_counts": language_counts,
+                 "source_provenance": source_provenance,
+                 "output_offsets": {name: handle.tell() for name, handle in
+                                    {**handles, "quarantine": quarantine, "duplicates": duplicates}.items()}}
+        deduper.save_pipeline_state(state)
+
+    def mark_processed(current_cursor: dict[str, int]) -> None:
+        nonlocal cursor, pending_rows
+        pending_rows += 1
+        if pending_rows >= int(cleaning["cleaning_checkpoint_records"]):
+            if reserve_gb:
+                available_gb = shutil.disk_usage(stage).free / (1024 ** 3)
+                if available_gb < reserve_gb:
+                    raise DataIntegrityError(
+                        f"pausing resumable corpus cleaning: free={available_gb:.2f} GiB, "
+                        f"configured minimum={reserve_gb:.2f} GiB"
+                    )
+            persist_corpus_state(current_cursor)
+            cursor = current_cursor
+            pending_rows = 0
+
+    def require_disk_headroom() -> None:
+        if not reserve_gb:
+            return
+        available_gb = shutil.disk_usage(stage).free / (1024 ** 3)
+        if available_gb < reserve_gb:
+            raise DataIntegrityError(
+                f"pausing resumable corpus cleaning: free={available_gb:.2f} GiB, "
+                f"configured minimum={reserve_gb:.2f} GiB"
+            )
+
+    if not resume:
+        persist_corpus_state(None)
     try:
-        for path, source, raw_manifest in source_snapshots:
-            source_provenance.append({"source_id": source["id"], "revision": source["revision"],
+        for source_index, (path, source, raw_manifest) in enumerate(source_snapshots):
+            provenance_record = {"source_id": source["id"], "revision": source["revision"],
                                       "license_claim": source["license_claim"],
                                       "raw_manifest_sha256": raw_manifest["manifest_sha256"],
                                       "accepted": raw_manifest["accepted"],
@@ -397,9 +531,20 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
                                       "rejected": raw_manifest["rejected"],
                                       "rejected_by_reason": raw_manifest["rejected_by_reason"],
                                       "rejections_sha256": raw_manifest["rejections_sha256"],
+                                      "stream_format": raw_manifest.get("stream_format", "parquet"),
+                                      "candidate_tokenizer_bundle_sha256": raw_manifest.get("tokenizer_bundle_sha256"),
+                                      "acquired_supervised_target_tokens": raw_manifest.get(
+                                          "acquired_supervised_target_tokens"),
                                       "rights_review_status": raw_manifest.get("rights_review_status"),
-                                      "provenance_review_status": raw_manifest.get("provenance_review_status")})
+                                      "provenance_review_status": raw_manifest.get("provenance_review_status")}
+            if not any(item.get("raw_manifest_sha256") == raw_manifest["manifest_sha256"]
+                       for item in source_provenance):
+                source_provenance.append(provenance_record)
             for row in _records(path, source, raw_manifest):
+                current_cursor = {"source_index": source_index, "line_number": row["_source_line_number"]}
+                if cursor is not None and (source_index, current_cursor["line_number"]) <= (
+                        int(cursor["source_index"]), int(cursor["line_number"])):
+                    continue
                 counts["seen"] += 1
                 raw_text = row["text"]
                 if row.get("language", "").casefold() not in cleaning["filter_languages"]:
@@ -415,6 +560,7 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
                         "numeric_spans_before": before, "numeric_spans_after": after},
                         ensure_ascii=False, sort_keys=True) + "\n")
                     counts["quarantined"] += 1
+                    mark_processed(current_cursor)
                     continue
                 if not text.strip():
                     raise DataIntegrityError(f"{row['_input_record']}: empty document after source-aware cleaning")
@@ -427,6 +573,7 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
                 if reason:
                     quarantine.write(json.dumps({**provenance, "reason": reason}, ensure_ascii=False, sort_keys=True) + "\n")
                     counts["quarantined"] += 1
+                    mark_processed(current_cursor)
                     continue
                 split = _split_for(row, split_salt, data_config["splits"])
                 provenance["split"] = split
@@ -439,12 +586,20 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
                         "duplicate_of_source_record": duplicate_of, "minhash_similarity_estimate": similarity,
                         "duplicate_of_provenance": duplicate_provenance,
                         "duplicate_text_sha256": provenance["clean_sha256"]}, ensure_ascii=False, sort_keys=True) + "\n")
+                    mark_processed(current_cursor)
                     continue
                 record = {**provenance, "text": text}
                 handles[split].write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
                 counts["kept"] += 1
                 counts[split] += 1
                 language_counts[split][row["language"].casefold()] += 1
+                mark_processed(current_cursor)
+        if pending_rows:
+            require_disk_headroom()
+            persist_corpus_state(current_cursor)
+            cursor = current_cursor
+            pending_rows = 0
+        require_disk_headroom()
         empty_splits = [split for split, count in counts.items()
                         if split in {"train", "validation", "blind"} and count == 0]
         if admission == "production" and empty_splits:
@@ -461,22 +616,19 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
         quarantine.close()
         duplicates.close()
         deduper.close()
-        shutil.rmtree(stage, ignore_errors=True)
         raise
     for handle in handles.values():
         handle.close()
     quarantine.close()
     duplicates.close()
     deduper.close()
-    for suffix in ("", "-wal", "-shm"):
-        (stage / f"dedup.sqlite3{suffix}").unlink(missing_ok=True)
     split_hashes = {f"{name}.jsonl": sha256_file(stage / f"{name}.jsonl")
                     for name in handles}
     files = dict(split_hashes)
     files["duplicates.jsonl"] = sha256_file(stage / "duplicates.jsonl")
     files["quarantine.jsonl"] = sha256_file(stage / "quarantine.jsonl")
     for name in ("train", "validation", "blind"):
-        (stage / name).mkdir()
+        (stage / name).mkdir(exist_ok=True)
     admission_status = "production" if admission == "production" and production_admitted else "audit_only"
     manifest = {
         "schema": "nullxes.shinra.corpus.v2",
@@ -509,6 +661,8 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
     temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     os.replace(temporary, stage / "manifest.json")
     os.replace(stage, output)
+    for suffix in ("", "-wal", "-shm"):
+        (output / f"dedup.sqlite3{suffix}").unlink(missing_ok=True)
     return manifest
 
 
@@ -518,8 +672,14 @@ def main() -> None:
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--config", default=str(CONFIG_PATH))
     parser.add_argument("--admission", choices=("audit", "production"), default="audit")
+    parser.add_argument("--resume", action="store_true",
+                        help="continue from the committed JSONL cursor and SQLite dedup state")
+    parser.add_argument("--minimum-free-gb", type=float, default=None,
+                        help="pause while preserving the resumable stage below this free-space reserve")
     args = parser.parse_args()
-    result = prepare_local_corpus(args.input, args.output_dir, config_path=args.config, admission=args.admission)
+    result = prepare_local_corpus(args.input, args.output_dir, config_path=args.config,
+                                  admission=args.admission, resume=args.resume,
+                                  minimum_free_gb=args.minimum_free_gb)
     print(json.dumps(result, indent=2, sort_keys=True))
 
 

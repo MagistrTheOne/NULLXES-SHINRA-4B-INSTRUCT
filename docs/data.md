@@ -1,9 +1,9 @@
-# SHINRA Pretraining Data Pipeline V1
+# SHINRA Pretraining Data Pipeline V2
 
-Source adapters, cleaning, document split assignment, lossless token chunking and packed artifacts are specified in [`data_pipeline_v1.md`](data_pipeline_v1.md). FineWeb, FineWeb-Edu, FineWeb-2 and SmolLM-Corpus remain excluded.
+See [`data_pipeline_v2.md`](data_pipeline_v2.md) for pinned sources, integrity contracts, Colab build/resume command, and admission conditions.
 
-Wikimedia Wikipedia and PleIAs Russian-PD are pinned **candidates**. Their exact Hub commit IDs are recorded in `configs/shinra.yaml`; that pin freezes the bytes, not the legal status. Both candidate sources remain `audit_only` until separate rights and provenance reviews approve them. The configuration still keeps `data.training_enabled=false`, `training.enabled=false` and `runtime.colab_launch_allowed=false`.
+FineWeb-Edu and DCLM-Baseline-1.0 are configured as English candidates; FineWeb-2 `rus_Cyrl` is the Russian candidate. These exact-revision sources remain `audit_only`. The candidate source caps are not measured clean yields and do not establish legal permission to train. DCLM rights and PII review, source-level provenance, and near-dedup quality still require separate review.
 
-The corpus cleaner preserves ordered numeric spans, source metadata and duplicate provenance, quarantines configured table/OCR patterns, uses a SQLite-backed exact and approximate MinHash index, and assigns deterministic splits by whole work/document before tokenization. Near-dedup recall/precision still needs review on the actual corpus before admission. `data.pack` creates independent, non-overlapping continuation windows. It never combines documents, drops source tokens or repeats source-token ranges. BOS is added and masked for every window; EOD is added and trained only on the final window of each source document.
+The clean corpus is split by whole source work/document before tokenization and chunking. The Native SHINRA tokenizer is used without retraining. Packed training inventory must contain at least 500M actual supervised targets per language; the existing sampler handles 50/50 by presented target tokens and records any sequence reuse. Validation and blind stay in separate artifacts; training only opens train and validation.
 
-No production corpus has been admitted or assembled by this implementation. No source download, corpus processing, packing, smoke test, or training was run while implementing the pipeline.
+No source is admitted to production automatically. `data.training_enabled`, `training.enabled` and `runtime.colab_launch_allowed` remain false until separate approval.

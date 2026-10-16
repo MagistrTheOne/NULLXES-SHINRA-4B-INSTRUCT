@@ -108,10 +108,10 @@ tokenizer:
   numeric_rewrite: forbidden
 
 data:
-  acquisition: pinned_huggingface_parquet_stream
+  acquisition: pinned_huggingface_stream
   training_enabled: false
   source_manifest_required: true
-  manifest_sha256: c23fac085659e4896e67a9af03c29574f08ca160e5d86a6bf882ac3ee42d015c
+  manifest_sha256: null  # Must be frozen only after the new corpus is built and audited.
   immutable_revision_required: true
   parquet_batch_rows: 512
   provenance_fields: [source_id, revision, document_id, url_or_archive_id, license, language, split, raw_sha256, transform_version, clean_sha256]
@@ -119,12 +119,23 @@ data:
   splits: {train: 0.98, validation: 0.01, blind: 0.01}
   split_unit: source_document_or_work_before_chunking
   packed_shard_tokens: 100000000
+  target_build:
+    goal: 1000000000
+    unit: supervised_shinra_targets
+    per_language: {en: 500000000, ru: 500000000}
+    source_acquisition_is_candidate_only: true
+    target_accounting: packed_train_manifest
+    source_candidate_targets:
+      HuggingFaceFW/fineweb-edu: 400000000
+      mlfoundations/dclm-baseline-1.0: 400000000
+      HuggingFaceFW/fineweb-2: 800000000
   sources:
     - id: Wikimedia/wikipedia
       repo_type: dataset
       subsets: [20231101.en, 20231101.ru]
       languages: [en, ru]
       language_by_subset: {20231101.en: en, 20231101.ru: ru}
+      language_validation_profile: configured_subset_exact
       parquet_prefixes: [20231101.en/, 20231101.ru/]
       subset_by_path: {20231101.en: 20231101.en, 20231101.ru: 20231101.ru}
       text_field: text
@@ -145,6 +156,7 @@ data:
       subsets: [default]
       languages: [ru]
       language_by_subset: {default: ru}
+      language_validation_profile: configured_subset_exact
       parquet_prefixes: [russian_pd_]
       subset_by_path: {}
       text_field: text
@@ -160,7 +172,97 @@ data:
       provenance_review_status: audit_only
       ocr_review_required: true
       license_review_required: true
-  excluded_sources: [FineWeb, FineWeb-Edu, FineWeb-2, SmolLM-Corpus]
+    - id: HuggingFaceFW/fineweb-edu
+      repo_type: dataset
+      format: parquet
+      subsets: [CC-MAIN-2025-26]
+      languages: [en]
+      language_by_subset: {CC-MAIN-2025-26: en}
+      parquet_prefixes: [data/CC-MAIN-2025-26/]
+      max_source_files: 256
+      subset_by_path: {data/CC-MAIN-2025-26: CC-MAIN-2025-26}
+      text_field: text
+      document_id_field: id
+      title_field: null
+      url_field: url
+      language_field: language
+      language_validation_profile: upstream_language_label_exact
+      language_labels: {en: en}
+      quality_field: int_score
+      minimum_quality_score: 3
+      quality_method: FineWeb-Edu upstream educational classifier; documented keep threshold 3/5
+      cleaning_profile: web_crawl_text
+      quarantine_profile: web_crawl
+      license_claim: "ODC-By 1.0; Common Crawl terms also apply"
+      upstream_url: https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu
+      status: audit_only
+      revision: 87f09149ef4734204d70ed1d046ddc9ca3f2b8f9
+      rights_review_status: audit_only
+      provenance_review_status: audit_only
+      license_review_required: true
+      quality_review_required: true
+    - id: mlfoundations/dclm-baseline-1.0
+      repo_type: dataset
+      format: jsonl.zst
+      subsets: [default]
+      languages: [en]
+      language_by_subset: {default: en}
+      parquet_prefixes: [global-shard_]
+      max_source_files: 512
+      subset_by_path: {}
+      text_field: text
+      document_id_field: __source_file_row__
+      title_field: null
+      url_field: url
+      language_field: null
+      language_validation_profile: english_source_latin_script_guard
+      minimum_latin_script_fraction: 0.70
+      language_labels: {}
+      quality_field: null
+      quality_method: DCLM-Baseline upstream research filtering; source card requires research-only use
+      cleaning_profile: web_crawl_text
+      quarantine_profile: web_crawl
+      license_claim: "CC-BY-4.0 claimed by upstream; Common Crawl terms and source-level rights require review"
+      upstream_url: https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0
+      status: audit_only
+      revision: a3b142c183aebe5af344955ae20836eb34dcf69b
+      rights_review_status: audit_only
+      provenance_review_status: audit_only
+      license_review_required: true
+      pii_review_required: true
+      quality_review_required: true
+    - id: HuggingFaceFW/fineweb-2
+      repo_type: dataset
+      format: parquet
+      subsets: [rus_Cyrl]
+      languages: [ru]
+      language_by_subset: {rus_Cyrl: ru}
+      parquet_prefixes: [data/rus_Cyrl/train/]
+      max_source_files: 512
+      subset_by_path: {data/rus_Cyrl/train: rus_Cyrl}
+      text_field: text
+      document_id_field: id
+      title_field: null
+      url_field: url
+      language_field: language
+      language_validation_profile: upstream_language_and_script_exact
+      language_labels: {ru: rus}
+      script_field: language_script
+      script_labels: {ru: Cyrl}
+      quality_field: language_score
+      minimum_quality_score: 0.8
+      quality_method: FineWeb-2 upstream language ID and quality filtering; per-row score retained
+      cleaning_profile: web_crawl_text
+      quarantine_profile: web_crawl
+      license_claim: "ODC-By 1.0; source Common Crawl terms apply"
+      upstream_url: https://huggingface.co/datasets/HuggingFaceFW/fineweb-2
+      status: audit_only
+      revision: af9c13333eb981300149d5ca60a8e9d659b276b9
+      rights_review_status: audit_only
+      provenance_review_status: audit_only
+      license_review_required: true
+      quality_review_required: true
+  excluded_sources: [FineWeb, SmolLM-Corpus]
   cleaning:
     strict_decode: true
     unicode_normalization: NFC
@@ -182,6 +284,8 @@ data:
     table_rows_quarantine_threshold: 2
     max_control_character_ratio: 0.001
     repeated_short_line_quarantine_threshold: 12
+    cleaning_checkpoint_records: 512
+    disk_check_records: 32
     filter_languages: [en, ru]
     holdout_contamination_check: true
   mix:

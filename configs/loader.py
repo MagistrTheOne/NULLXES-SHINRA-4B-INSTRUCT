@@ -143,13 +143,37 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
                 or not source["parquet_prefixes"] or any(not isinstance(prefix, str) or not prefix
                                                           for prefix in source["parquet_prefixes"]):
             raise ConfigError(f"source {source.get('id')!r} must use a configured Hugging Face dataset adapter")
+        if source.get("max_source_files") is not None and (
+                type(source["max_source_files"]) is not int or source["max_source_files"] <= 0):
+            raise ConfigError(f"source {source.get('id')!r} max_source_files must be a positive integer")
         if not isinstance(source.get("language_by_subset"), dict) or not source["language_by_subset"]:
             raise ConfigError(f"source {source.get('id')!r} must map every subset to EN or RU")
         if any(language not in {"en", "ru"} for language in source["language_by_subset"].values()):
             raise ConfigError(f"source {source.get('id')!r} contains a language outside EN/RU")
-        if source["cleaning_profile"] not in {"wikimedia_rendered_text", "plain_text_nfc"} \
-                or source["quarantine_profile"] not in {"table_and_markup", "ocr_book"}:
+        if source.get("format", "parquet") not in {"parquet", "jsonl.zst"}:
+            raise ConfigError(f"source {source.get('id')!r} has an unsupported pinned stream format")
+        if source["cleaning_profile"] not in {"wikimedia_rendered_text", "plain_text_nfc", "web_crawl_text"} \
+                or source["quarantine_profile"] not in {"table_and_markup", "ocr_book", "web_crawl"}:
             raise ConfigError(f"source {source.get('id')!r} uses an unsupported cleaning/quarantine profile")
+        if source.get("language_field"):
+            if not isinstance(source.get("language_labels"), dict) \
+                    or set(source["language_labels"].keys()) != set(source["languages"]) \
+                    or any(not isinstance(label, str) or not label for label in source["language_labels"].values()):
+                raise ConfigError(f"source {source.get('id')!r} needs explicit upstream language labels")
+        if source.get("language_validation_profile") not in {
+                "upstream_language_label_exact", "upstream_language_and_script_exact",
+                "english_source_latin_script_guard", "configured_subset_exact"}:
+            raise ConfigError(f"source {source.get('id')!r} has no supported language-validation contract")
+        if source.get("language_validation_profile") == "english_source_latin_script_guard" and (
+                source.get("language_by_subset", {}).get("default") != "en"
+                or not 0 < float(source.get("minimum_latin_script_fraction", 0)) <= 1):
+            raise ConfigError(f"source {source.get('id')!r} has an invalid English script guard")
+        if source.get("script_field") and (not isinstance(source.get("script_labels"), dict)
+                or set(source["script_labels"]) != set(source["languages"])):
+            raise ConfigError(f"source {source.get('id')!r} needs explicit upstream script labels")
+        if source.get("minimum_quality_score") is not None and (
+                not isinstance(source.get("quality_field"), str) or not source["quality_field"]):
+            raise ConfigError(f"source {source.get('id')!r} needs a score field for its quality threshold")
         if source.get("status") not in {"audit_only", "approved"}:
             raise ConfigError(f"source {source.get('id')!r} has an unsupported admission status")
         if source.get("rights_review_status") not in {"audit_only", "approved"} \
@@ -218,10 +242,24 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         raise ConfigError("language mix must define normalized actual-token weights")
     if float(mix.get("en", 0)) != 0.5 or float(mix.get("ru", 0)) != 0.5:
         raise ConfigError("the approved initial training mix is exactly 50/50 EN/RU supervised tokens")
+    target_build = config["data"].get("target_build", {})
+    if target_build.get("unit") != "supervised_shinra_targets" \
+            or target_build.get("goal") != 1_000_000_000 \
+            or target_build.get("per_language") != {"en": 500_000_000, "ru": 500_000_000}:
+        raise ConfigError("the first corpus-build target must remain 500M supervised targets per language")
+    candidate_targets = target_build.get("source_candidate_targets", {})
+    if set(candidate_targets) != {"HuggingFaceFW/fineweb-edu", "mlfoundations/dclm-baseline-1.0",
+                                  "HuggingFaceFW/fineweb-2"} \
+            or any(type(value) is not int or value <= 0 for value in candidate_targets.values()):
+        raise ConfigError("source candidate token caps must be explicit positive integers for all selected sources")
+    if type(cleaning.get("cleaning_checkpoint_records")) is not int or cleaning["cleaning_checkpoint_records"] <= 0:
+        raise ConfigError("cleaning checkpoint cadence must be a positive integer")
+    if type(cleaning.get("disk_check_records")) is not int or cleaning["disk_check_records"] <= 0:
+        raise ConfigError("corpus disk headroom check cadence must be a positive integer")
     excluded = {str(source).casefold() for source in config["data"].get("excluded_sources", [])}
     for source in sources:
         source_id = source.get("id", "").casefold()
-        if any(term.casefold() in source_id for term in excluded):
+        if source_id in excluded:
             raise ConfigError(f"excluded source appears in source list: {source['id']}")
     fsdp = config["precision"].get("fsdp", {})
     if fsdp.get("enabled") is not False or fsdp.get("implementation_status") != "unavailable_single_process":
