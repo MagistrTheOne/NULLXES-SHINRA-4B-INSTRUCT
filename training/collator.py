@@ -23,8 +23,10 @@ class PackedParquetDataset(Dataset):
     LANGUAGE_CODES = {"en": 0, "ru": 1}
 
     def __init__(self, data_dir: str | Path, config: dict | None = None, expected_split: str | None = None,
-                 *, allow_smoke_test: bool = False, allow_audit_data: bool = False) -> None:
+                 *, allow_smoke_test: bool = False, allow_audit_data: bool = False,
+                 include_row_indices: bool = False) -> None:
         self.config = config or load_config()
+        self.include_row_indices = include_row_indices
         configured_bundle_sha = self.config["tokenizer"].get("artifact_sha256")
         root = Path(data_dir)
         self.files = sorted(root.glob("*.parquet"))
@@ -260,21 +262,28 @@ class PackedParquetDataset(Dataset):
         expected = pack_token_stream([ids[:active]], length, config=self.config)[0]
         if any(item.get(field) != expected[field] for field in ("input_ids", "attention_mask", "labels")):
             raise ShardError("packed row BOS/EOD/PAD or loss mask contract is invalid")
-        return {"input_ids": torch.tensor(item["input_ids"], dtype=torch.long),
-                "attention_mask": torch.tensor(item["attention_mask"], dtype=torch.long),
-                "labels": torch.tensor(item["labels"], dtype=torch.long)}
+        result = {"input_ids": torch.tensor(item["input_ids"], dtype=torch.long),
+                  "attention_mask": torch.tensor(item["attention_mask"], dtype=torch.long),
+                  "labels": torch.tensor(item["labels"], dtype=torch.long)}
+        if self.include_row_indices:
+            result["row_index"] = index
+        return result
 
 
-def collate_lm(batch: list[dict[str, torch.Tensor]]) -> dict[str, torch.Tensor]:
-    return {key: torch.stack([row[key] for row in batch], dim=0) for key in batch[0]}
+def collate_lm(batch: list[dict[str, Any]]) -> dict[str, Any]:
+    result = {key: torch.stack([row[key] for row in batch], dim=0)
+              for key in batch[0] if key != "row_index"}
+    if "row_index" in batch[0]:
+        result["row_indices"] = [int(row["row_index"]) for row in batch]
+    return result
 
 
 def load_packed_dataset(data_dir: str | Path, pad_id: int | None = None, *, config: dict | None = None,
                         expected_split: str | None = None, allow_smoke_test: bool = False,
-                        allow_audit_data: bool = False):
+                        allow_audit_data: bool = False, include_row_indices: bool = False):
     config = config or load_config()
     configured_pad = int(config["tokenizer"]["pad_id"])
     if pad_id is not None and pad_id != configured_pad:
         raise ShardError("loader pad ID differs from configs/shinra.yaml")
     return PackedParquetDataset(data_dir, config, expected_split, allow_smoke_test=allow_smoke_test,
-                                allow_audit_data=allow_audit_data)
+                                allow_audit_data=allow_audit_data, include_row_indices=include_row_indices)

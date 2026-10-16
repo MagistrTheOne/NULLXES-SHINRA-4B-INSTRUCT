@@ -321,7 +321,7 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
         raise FileNotFoundError("held-out validation data is required")
     train_dir = cfg.data_dir / "train"
     train_data = load_packed_dataset(train_dir, config=approved, expected_split="train",
-                                     allow_audit_data=diagnostic)
+                                     allow_audit_data=diagnostic, include_row_indices=True)
     validation_data = load_packed_dataset(heldout_dir, config=approved, expected_split="validation",
                                          allow_audit_data=diagnostic)
     if train_data.tokenizer_bundle_sha256 != bundle_sha or validation_data.tokenizer_bundle_sha256 != bundle_sha:
@@ -376,7 +376,12 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
             raise RuntimeError("resume checkpoint has already reached the configured token or step limit")
     sampler = StatefulTokenMixSampler(train_data, cfg.seed, approved["data"]["mix"])
     if resume_state:
-        sampler.load_state_dict(resume_state["sampler"])
+        sampler.load_state_dict(
+            resume_state["sampler"],
+            expected_consumed_tokens=int(resume_state["consumed_tokens"]),
+            expected_consumed_rows=int(resume_state["step"])
+            * cfg.gradient_accumulation_steps * cfg.micro_batch_size,
+        )
     loader = DataLoader(train_data, batch_size=cfg.micro_batch_size, sampler=sampler,
                         num_workers=cfg.dataloader_num_workers, pin_memory=True,
                         collate_fn=collate_lm, drop_last=False)
@@ -442,6 +447,9 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
                 batch = next(iterator)
             except StopIteration as exc:
                 raise RuntimeError("training split is empty; configured exhaustion policy cannot cycle it") from exc
+        row_indices = batch.pop("row_indices", None)
+        if not isinstance(row_indices, list) or len(row_indices) != cfg.micro_batch_size:
+            raise RuntimeError("training DataLoader did not provide the sampled row indices for accounting")
         with accelerator.accumulate(model):
             result = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], labels=batch["labels"], use_cache=False)
             if not torch.isfinite(result.loss):
@@ -451,6 +459,7 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
                 raise RuntimeError("training batch has no valid next-token targets")
             if torch.any(batch["labels"][:, 0] != -100):
                 raise RuntimeError("the first token of each isolated sequence must be masked from shifted loss")
+            batch_tokens = target_tokens_this_batch
             # Accumulate summed token loss; after Accelerator's fixed accumulation scaling,
             # normalize by the actual number of supervised targets in this optimizer update.
             accumulation_tokens += target_tokens_this_batch
@@ -474,7 +483,7 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
                 optimizer.zero_grad(set_to_none=True)
                 step += 1
                 progress.update(1)
-        batch_tokens = count_target_tokens_post_shift(batch["labels"])
+        sampler.mark_consumed(row_indices)
         consumed += batch_tokens
         if accelerator.sync_gradients:
             window_losses.append(accumulation_loss_sum / max(accumulation_tokens, 1))
@@ -527,7 +536,14 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
                              "checkpoint": str(checkpoint)})
     mix_report = sampler.mix_report()
     if mix_report["sampled_target_tokens"] != consumed:
-        raise RuntimeError("token-mix sampler accounting differs from tokens consumed by the training loop")
+        sampled_tokens = int(mix_report["sampled_target_tokens"])
+        difference = sampled_tokens - consumed
+        raise RuntimeError(
+            "token-mix sampler accounting differs from tokens consumed by the training loop: "
+            f"sampled_target_tokens={sampled_tokens}, consumed_tokens={consumed}, difference={difference}, "
+            f"en_target_tokens={mix_report['en_target_tokens']}, "
+            f"ru_target_tokens={mix_report['ru_target_tokens']}"
+        )
     if mix_report["absolute_token_imbalance"] > max_row_targets:
         raise RuntimeError("actual EN/RU supervised-token mix exceeded one packed-row tolerance")
     completed = consumed >= cfg.max_tokens

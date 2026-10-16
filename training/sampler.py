@@ -58,7 +58,7 @@ class StatefulRandomSampler(Sampler[int]):
 
 
 class StatefulTokenMixSampler(Sampler[int]):
-    """Deterministically schedule rows by accumulated supervised EN/RU target tokens."""
+    """Schedule rows by target tokens and separately account rows consumed by training."""
 
     LANGUAGE_CODES = {"en": 0, "ru": 1}
 
@@ -80,7 +80,10 @@ class StatefulTokenMixSampler(Sampler[int]):
         self.permutations: dict[int, torch.Tensor | None] = {code: None for code in self.weights}
         self.positions = {code: 0 for code in self.weights}
         self.epochs_by_language = {code: 0 for code in self.weights}
+        self.scheduled_tokens_by_language = {code: 0 for code in self.weights}
         self.tokens_by_language = {code: 0 for code in self.weights}
+        self.consumed_rows_by_language = {code: 0 for code in self.weights}
+        self.pending_indices: list[int] = []
         self.position = 0
         self.epoch = 0
         packed_identity = str(getattr(data_source, "packed_manifest_sha256", ""))
@@ -104,20 +107,39 @@ class StatefulTokenMixSampler(Sampler[int]):
         local_position = self.positions[code]
         self.positions[code] = local_position + 1
         dataset_index = int(self.indices[code][int(permutation[local_position])])
-        self.tokens_by_language[code] += int(self.target_counts[dataset_index])
+        self.scheduled_tokens_by_language[code] += int(self.target_counts[dataset_index])
+        self.pending_indices.append(dataset_index)
         return dataset_index
 
     def __iter__(self):
-        if self.position >= len(self.data_source):
+        # DataLoader implementations may request indices ahead of the batch being
+        # trained. On resume, replay those scheduled rows before advancing the cursor.
+        for index in list(self.pending_indices):
+            yield index
+        if self.position >= len(self.data_source) and not self.pending_indices:
             self.position = 0
             self.epoch += 1
         while self.position < len(self.data_source):
-            en_progress = self.tokens_by_language[0] / self.weights[0]
-            ru_progress = self.tokens_by_language[1] / self.weights[1]
+            en_progress = self.scheduled_tokens_by_language[0] / self.weights[0]
+            ru_progress = self.scheduled_tokens_by_language[1] / self.weights[1]
             code = 0 if en_progress <= ru_progress else 1
             index = self._next_index(code)
             self.position += 1
             yield index
+
+    def mark_consumed(self, indices: list[int]) -> None:
+        """Commit indices in delivery order after the training loop receives their batch."""
+        for raw_index in indices:
+            index = int(raw_index)
+            if not self.pending_indices or self.pending_indices[0] != index:
+                expected = self.pending_indices[0] if self.pending_indices else None
+                raise ValueError(f"training row order differs from sampler delivery: got {index}, expected {expected}")
+            self.pending_indices.pop(0)
+            language_code = int(self.data_source.language_codes[index])
+            if language_code not in self.weights:
+                raise ValueError(f"training row {index} has unsupported language code {language_code}")
+            self.tokens_by_language[language_code] += int(self.target_counts[index])
+            self.consumed_rows_by_language[language_code] += 1
 
     def mix_report(self) -> dict[str, int | float]:
         en, ru = self.tokens_by_language[0], self.tokens_by_language[1]
@@ -125,9 +147,7 @@ class StatefulTokenMixSampler(Sampler[int]):
         row_metrics: dict[str, int] = {}
         for code, name in ((0, "en"), (1, "ru")):
             pool_size = len(self.indices[code])
-            permutations = self.epochs_by_language[code]
-            current_position = self.positions[code]
-            presentations = (max(permutations - 1, 0) * pool_size + current_position) if permutations else 0
+            presentations = self.consumed_rows_by_language[code]
             unique_rows = min(presentations, pool_size)
             row_metrics[f"{name}_row_presentations"] = presentations
             row_metrics[f"{name}_unique_rows_presented"] = unique_rows
@@ -141,14 +161,20 @@ class StatefulTokenMixSampler(Sampler[int]):
                 + row_metrics["ru_reused_row_presentations"]}
 
     def state_dict(self) -> dict:
-        return {"dataset_length": len(self.data_source), "dataset_identity": self.dataset_identity,
+        return {"state_version": 2, "dataset_length": len(self.data_source),
+                "dataset_identity": self.dataset_identity,
                 "seed": self.seed,
                 "weights": self.weights, "generator_state": self.generator.get_state(),
                 "permutations": self.permutations, "positions": self.positions,
-                "epochs_by_language": self.epochs_by_language, "tokens_by_language": self.tokens_by_language,
+                "epochs_by_language": self.epochs_by_language,
+                "scheduled_tokens_by_language": self.scheduled_tokens_by_language,
+                "tokens_by_language": self.tokens_by_language,
+                "consumed_rows_by_language": self.consumed_rows_by_language,
+                "pending_indices": list(self.pending_indices),
                 "position": self.position, "epoch": self.epoch}
 
-    def load_state_dict(self, state: dict) -> None:
+    def load_state_dict(self, state: dict, *, expected_consumed_tokens: int | None = None,
+                        expected_consumed_rows: int | None = None) -> None:
         if int(state["dataset_length"]) != len(self.data_source) or state["dataset_identity"] != self.dataset_identity:
             raise ValueError("saved token-mix sampler dataset identity differs from the current training split")
         if int(state["seed"]) != self.seed:
@@ -167,11 +193,35 @@ class StatefulTokenMixSampler(Sampler[int]):
         self.generator.set_state(state["generator_state"])
         self.positions = {int(key): int(value) for key, value in state["positions"].items()}
         self.epochs_by_language = {int(key): int(value) for key, value in state["epochs_by_language"].items()}
-        self.tokens_by_language = {int(key): int(value) for key, value in state["tokens_by_language"].items()}
         self.position = int(state["position"])
         self.epoch = int(state["epoch"])
         if not 0 <= self.position <= len(self.data_source):
             raise ValueError("saved token-mix sampler cursor is invalid")
+        state_version = int(state.get("state_version", 1))
+        if state_version not in {1, 2}:
+            raise ValueError(f"unsupported token-mix sampler state version: {state_version}")
+
+        saved_tokens = {int(key): int(value) for key, value in state["tokens_by_language"].items()}
+        if state_version == 1:
+            # v1 counted sampled/yielded rows. It is safe to reinterpret as consumed
+            # only when its token and row totals match the training checkpoint.
+            self.scheduled_tokens_by_language = dict(saved_tokens)
+            self.tokens_by_language = dict(saved_tokens)
+            self.pending_indices = []
+            self.consumed_rows_by_language = {}
+        else:
+            self.scheduled_tokens_by_language = {
+                int(key): int(value) for key, value in state["scheduled_tokens_by_language"].items()
+            }
+            self.tokens_by_language = dict(saved_tokens)
+            self.consumed_rows_by_language = {
+                int(key): int(value) for key, value in state["consumed_rows_by_language"].items()
+            }
+            self.pending_indices = [int(index) for index in state["pending_indices"]]
+            if any(not 0 <= index < len(self.data_source) for index in self.pending_indices):
+                raise ValueError("saved pending sampler indices are outside the training dataset")
+
+        scheduled_rows_by_language: dict[int, int] = {}
         for code in self.weights:
             permutation = self.permutations[code]
             epochs = self.epochs_by_language[code]
@@ -181,6 +231,9 @@ class StatefulTokenMixSampler(Sampler[int]):
             if permutation is None:
                 if epochs != 0 or position != 0 or self.tokens_by_language[code] != 0:
                     raise ValueError("saved empty language sampler state has nonzero counters")
+                if self.scheduled_tokens_by_language[code] != 0:
+                    raise ValueError("saved empty language sampler has scheduled tokens")
+                scheduled_rows_by_language[code] = 0
                 continue
             if epochs <= 0 or not 0 <= position <= len(permutation):
                 raise ValueError("saved per-language sampler cursor is invalid")
@@ -189,5 +242,45 @@ class StatefulTokenMixSampler(Sampler[int]):
             current_dataset_indices = self.indices[code][local_prefix]
             current_cycle_tokens = int(np.sum(self.target_counts[current_dataset_indices], dtype=np.int64))
             expected_tokens = (epochs - 1) * completed_cycle_tokens + current_cycle_tokens
-            if self.tokens_by_language[code] != expected_tokens:
-                raise ValueError("saved language-token counters differ from the consumed row permutations")
+            if self.scheduled_tokens_by_language[code] != expected_tokens:
+                raise ValueError("saved scheduled-token counters differ from the row permutations")
+            scheduled_rows_by_language[code] = (epochs - 1) * len(self.indices[code]) + position
+
+        scheduled_tokens_from_rows = {code: 0 for code in self.weights}
+        scheduled_rows_from_pending = {code: 0 for code in self.weights}
+        for index in self.pending_indices:
+            code = int(self.data_source.language_codes[index])
+            if code not in self.weights:
+                raise ValueError(f"saved pending row {index} has unsupported language code {code}")
+            scheduled_tokens_from_rows[code] += int(self.target_counts[index])
+            scheduled_rows_from_pending[code] += 1
+
+        if state_version == 1:
+            scheduled_rows = sum(scheduled_rows_by_language.values())
+            consumed_tokens = sum(self.tokens_by_language.values())
+            if expected_consumed_tokens is not None and consumed_tokens != expected_consumed_tokens:
+                raise ValueError(
+                    "legacy sampler token total cannot resume safely: "
+                    f"sampler={consumed_tokens}, checkpoint={expected_consumed_tokens}"
+                )
+            if expected_consumed_rows is not None and scheduled_rows != expected_consumed_rows:
+                raise ValueError(
+                    "legacy sampler row cursor cannot resume safely: "
+                    f"sampler={scheduled_rows}, checkpoint={expected_consumed_rows}"
+                )
+            self.consumed_rows_by_language = dict(scheduled_rows_by_language)
+        else:
+            for code in self.weights:
+                if self.scheduled_tokens_by_language[code] != self.tokens_by_language[code] + scheduled_tokens_from_rows[code]:
+                    raise ValueError("scheduled and consumed language-token totals differ from pending rows")
+                if self.consumed_rows_by_language[code] + scheduled_rows_from_pending[code] \
+                        != scheduled_rows_by_language[code]:
+                    raise ValueError("scheduled and consumed row totals differ from pending rows")
+            if expected_consumed_tokens is not None and sum(self.tokens_by_language.values()) != expected_consumed_tokens:
+                raise ValueError("sampler consumed-token total differs from the training checkpoint")
+            if expected_consumed_rows is not None and sum(self.consumed_rows_by_language.values()) != expected_consumed_rows:
+                raise ValueError("sampler consumed-row total differs from the training checkpoint")
+
+        scheduled_rows = sum(scheduled_rows_by_language.values())
+        if scheduled_rows != self.epoch * len(self.data_source) + self.position:
+            raise ValueError("global and per-language sampler cursors disagree")
