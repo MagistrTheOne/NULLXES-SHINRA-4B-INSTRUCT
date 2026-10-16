@@ -8,8 +8,10 @@ import math
 import os
 import random
 import shutil
+import sys
 import tempfile
 import time
+import traceback
 from pathlib import Path
 
 import numpy as np
@@ -231,7 +233,7 @@ def evaluate(model, loader, max_batches: int | None = None) -> dict:
     return {"heldout_loss": ce, "heldout_perplexity": math.exp(min(ce, 20)), "heldout_tokens": tokens}
 
 
-def run_lm_training(cfg: TrainConfig) -> dict:
+def _run_lm_training(cfg: TrainConfig) -> dict:
     diagnostic = cfg.admission == "diagnostic_audit"
     if cfg.admission not in {"production", "diagnostic_audit"}:
         raise RuntimeError(f"unsupported training admission: {cfg.admission}")
@@ -428,7 +430,7 @@ def run_lm_training(cfg: TrainConfig) -> dict:
     accumulation_loss_sum = 0.0
     accumulation_tokens = 0
     progress = tqdm(total=cfg.max_steps, initial=step, disable=not accelerator.is_local_main_process, desc="SHINRA pretrain")
-    last_checkpoint = None
+    last_checkpoint = cfg.resume_from
     initial_consumed_tokens = consumed
     max_row_targets = int(train_data.target_tokens.max())
     while step < cfg.max_steps:
@@ -500,6 +502,10 @@ def run_lm_training(cfg: TrainConfig) -> dict:
                             manifest=manifest, stage=cfg.stage, objective=approved["training"]["objective"],
                             budget_kind=cfg.budget_kind, target_tokens=cfg.max_tokens,
                             training_config_sha256=training_config_sha, admission=cfg.admission)
+            ledger.write_status({"status": "running", "admission": cfg.admission,
+                                 "budget_kind": cfg.budget_kind, "target_tokens": cfg.max_tokens,
+                                 "step": step, "processed_tokens": consumed, "optimizer_steps": step,
+                                 "checkpoint": str(last_checkpoint)})
         if accelerator.sync_gradients and consumed >= cfg.max_tokens:
             break
     progress.close()
@@ -515,6 +521,10 @@ def run_lm_training(cfg: TrainConfig) -> dict:
             budget_kind=cfg.budget_kind, target_tokens=cfg.max_tokens,
             training_config_sha256=training_config_sha, admission=cfg.admission,
         )
+        ledger.write_status({"status": "running", "admission": cfg.admission,
+                             "budget_kind": cfg.budget_kind, "target_tokens": cfg.max_tokens,
+                             "step": step, "processed_tokens": consumed, "optimizer_steps": step,
+                             "checkpoint": str(checkpoint)})
     mix_report = sampler.mix_report()
     if mix_report["sampled_target_tokens"] != consumed:
         raise RuntimeError("token-mix sampler accounting differs from tokens consumed by the training loop")
@@ -542,3 +552,19 @@ def run_lm_training(cfg: TrainConfig) -> dict:
     ledger.append({"event": "training_complete" if completed else "training_budget_incomplete", **result})
     accelerator.end_training()
     return result
+
+
+def run_lm_training(cfg: TrainConfig) -> dict:
+    """Run training and persist any Python failure with the latest recorded progress."""
+    try:
+        return _run_lm_training(cfg)
+    except Exception as exc:
+        failure_traceback = traceback.format_exc()
+        try:
+            ledger = RunLedger(cfg.run_dir)
+            failure_path = ledger.record_failure(type(exc).__name__, str(exc), failure_traceback)
+            print(f"Training failure details recorded in {failure_path}", file=sys.stderr)
+        except Exception as logging_error:
+            print(f"Could not persist training failure details: {logging_error}", file=sys.stderr)
+            sys.stderr.write(failure_traceback)
+        raise

@@ -45,6 +45,55 @@ class RunLedger:
             if os.path.exists(tmp):
                 os.unlink(tmp)
 
+    def record_failure(self, exception_type: str, message: str, traceback_text: str) -> Path:
+        """Atomically preserve the latest Python exception and mark the run failed."""
+        current: dict[str, Any] = {}
+        if self.status_path.is_file():
+            try:
+                loaded = json.loads(self.status_path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    current = loaded
+            except (OSError, json.JSONDecodeError):
+                current = {}
+        current.pop("updated_at", None)
+
+        failures_dir = self.root / "failures"
+        failures_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+        fd, tmp = tempfile.mkstemp(prefix=".failure-", suffix=".tmp", dir=failures_dir)
+        temp_token = Path(tmp).name.removeprefix(".failure-").removesuffix(".tmp")
+        failure_path = failures_dir / f"failure-{timestamp}-{os.getpid()}-{temp_token}.json"
+        record = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "exception_type": exception_type,
+            "message": message,
+            "traceback": traceback_text,
+            "last_checkpoint": current.get("checkpoint"),
+            "step": current.get("step"),
+            "processed_tokens": current.get("processed_tokens"),
+        }
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+                json.dump(record, handle, ensure_ascii=False, sort_keys=True, indent=2)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, failure_path)
+        finally:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+
+        failed_status = {
+            **current,
+            "status": "failed",
+            "error_type": exception_type,
+            "error_message": message,
+            "failure_record": str(failure_path),
+            "last_checkpoint": current.get("checkpoint"),
+        }
+        self.write_status(failed_status)
+        return failure_path
+
     def consumed_tokens(self) -> int:
         if not self.status_path.exists():
             return 0
