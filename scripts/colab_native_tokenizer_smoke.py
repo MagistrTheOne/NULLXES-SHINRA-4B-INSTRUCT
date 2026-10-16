@@ -32,6 +32,7 @@ sys.path.insert(0, str(REPO))
 
 from configs.loader import load_config
 from data.pack import file_sha256, iter_clean_records, pack_documents
+from scripts.native_packing_smoke import select_packable_validation_records, write_selected_validation_corpus
 from tokenizer import load_shinra_tokenizer
 from tokenizer.bundle import _digest, verify_bundle, write_manifest, write_native_metadata
 from tokenizer.contract import encode_text
@@ -100,6 +101,14 @@ if validation["tokens"] != EXPECTED_VALIDATION_TOKENS:
     raise ValueError(f"Unexpected Native token count: {validation['tokens']}")
 if set(validation["languages"]) != {"en", "ru"} or min(validation["languages"].values()) == 0:
     raise ValueError("Held-out corpus must contain English and Russian documents")
+
+selected_documents, selection_stats = select_packable_validation_records(
+    iter_clean_records(CORPUS, "validation", corpus_manifest),
+    lambda text: processor.encode(text, out_type=int),
+    int(config["model"]["train_sequence_length"]),
+    SMOKE_DOCUMENT_LIMIT,
+)
+validation["packing_selection"] = selection_stats
 
 # All source checks passed. Create a new bundle now; source artifacts remain read-only.
 bundle_root = VERIFIED.parent / f"shinra_native_unigram_65k_bundle_{uuid.uuid4().hex[:10]}"
@@ -171,17 +180,44 @@ tokenizer = load_shinra_tokenizer(bundle_root, config)
 
 # The smoke output is disposable and explicitly marked so training/evaluation loaders reject it.
 smoke_root = Path(tempfile.mkdtemp(prefix="shinra-native-packing-smoke-", dir="/content"))
+selected_corpus = smoke_root / "selected_validation_corpus"
+selected_manifest = write_selected_validation_corpus(
+    selected_corpus, corpus_manifest, corpus_hash, selected_documents, selection_stats
+)
+config["data"]["manifest_sha256"] = selected_manifest["manifest_sha256"]
 packed_dir = smoke_root / "packed" / "validation"
 report = pack_documents(
-    CORPUS, bundle_root, packed_dir,
+    selected_corpus, bundle_root, packed_dir,
     int(config["model"]["train_sequence_length"]), int(config["data"]["packed_shard_tokens"]),
     config_path=REPO / "configs" / "shinra.yaml", required_split="validation",
     config=config, smoke_test_documents=SMOKE_DOCUMENT_LIMIT,
 )
-if not report["smoke_test_only"] or report["documents"] > SMOKE_DOCUMENT_LIMIT:
+if not report["smoke_test_only"] or report["documents"] != SMOKE_DOCUMENT_LIMIT:
     raise AssertionError("Packing smoke run escaped its bounded test contract")
+import pyarrow.parquet as pq
+packed_rows = []
+for shard_name in report["shard_files"]:
+    packed_rows.extend(pq.read_table(packed_dir / shard_name).to_pylist())
+if len(packed_rows) != len(selected_documents):
+    raise AssertionError("Packed shard row count differs from the selected smoke documents")
+for index, ((record, token_ids), packed_row) in enumerate(zip(selected_documents, packed_rows)):
+    active_length = len(token_ids) + 2
+    sequence_length = int(config["model"]["train_sequence_length"])
+    expected_ids = [int(config["tokenizer"]["bos_id"]), *token_ids,
+                    int(config["tokenizer"]["end_of_document_id"])]
+    expected_ids.extend([int(config["tokenizer"]["pad_id"])] * (sequence_length - active_length))
+    if packed_row["input_ids"] != expected_ids:
+        raise AssertionError(f"Packed row {index} does not contain selected source document {record['clean_sha256']}")
+    if packed_row["attention_mask"] != [1] * active_length + [0] * (sequence_length - active_length):
+        raise AssertionError(f"Packed row {index} attention mask violates document isolation")
+    if packed_row["labels"] != [-100, *token_ids, int(config["tokenizer"]["end_of_document_id"]),
+                                *([-100] * (sequence_length - active_length))]:
+        raise AssertionError(f"Packed row {index} loss labels violate BOS/PAD/EOD policy")
+    if packed_row["source_manifest_sha256"] != selected_manifest["manifest_sha256"]:
+        raise AssertionError(f"Packed row {index} does not reference the selected validation manifest")
 os.environ["SHINRA_NATIVE_BUNDLE"] = str(bundle_root)
-os.environ["SHINRA_TOKENIZER_CORPUS"] = str(CORPUS)
+os.environ["SHINRA_TOKENIZER_CORPUS"] = str(selected_corpus)
+os.environ["SHINRA_SOURCE_TOKENIZER_CORPUS"] = str(CORPUS)
 os.environ["SHINRA_PACKED_SMOKE_DIR"] = str(packed_dir)
 
 # Run the real-artifact integration tests in Colab only. No model or training code is imported.
@@ -194,6 +230,7 @@ final_report = {
     "native_bundle_sha256": bundle_sha,
     "bundle_directory": str(bundle_root),
     "validation": validation,
+    "packing_selection": selection_stats,
     "packing_smoke": report,
     "packed_smoke_directory": str(packed_dir),
     "training_started": False,

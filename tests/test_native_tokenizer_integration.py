@@ -12,6 +12,7 @@ from transformers import PreTrainedTokenizer
 
 from configs.loader import load_config
 from data.pack import PackContractError, iter_clean_records, pack_token_stream, resolve_pretrain_special_ids, wrap_pretrain_document
+from scripts.native_packing_smoke import select_packable_validation_records
 from tokenizer import load_shinra_tokenizer
 from tokenizer.bundle import verify_bundle
 from tokenizer.contract import encode_chat, encode_text, plain_text
@@ -22,27 +23,37 @@ from training.collator import PackedParquetDataset, collate_lm
 def native_runtime():
     bundle_value = os.environ.get("SHINRA_NATIVE_BUNDLE")
     corpus_value = os.environ.get("SHINRA_TOKENIZER_CORPUS")
+    source_corpus_value = os.environ.get("SHINRA_SOURCE_TOKENIZER_CORPUS")
     packed_value = os.environ.get("SHINRA_PACKED_SMOKE_DIR")
-    if not bundle_value or not corpus_value or not packed_value:
-        pytest.skip("Colab integration requires bundle, real clean corpus and packed smoke output environment paths")
+    if not bundle_value or not corpus_value or not source_corpus_value or not packed_value:
+        pytest.skip("Colab integration requires bundle, selected/source corpora and packed smoke output paths")
     bundle = Path(bundle_value)
     corpus = Path(corpus_value)
+    source_corpus = Path(source_corpus_value)
     packed = Path(packed_value)
     config = load_config()
     manifest = json.loads((corpus / "manifest.json").read_text(encoding="utf-8"))
     claim = manifest.pop("manifest_sha256", None)
     from tokenizer.bundle import _digest
     if claim != _digest(manifest):
-        raise AssertionError("real clean corpus manifest self-hash mismatch")
+        raise AssertionError("selected smoke corpus manifest self-hash mismatch")
     manifest["manifest_sha256"] = claim
+    source_manifest = json.loads((source_corpus / "manifest.json").read_text(encoding="utf-8"))
+    source_claim = source_manifest.pop("manifest_sha256", None)
+    if source_claim != _digest(source_manifest):
+        raise AssertionError("source clean corpus manifest self-hash mismatch")
+    source_manifest["manifest_sha256"] = source_claim
     config["tokenizer"]["artifact_sha256"] = json.loads(
         (bundle / "tokenizer_manifest.json").read_text(encoding="utf-8")
     )["manifest_sha256"]
     config["data"]["manifest_sha256"] = claim
     tokenizer = load_shinra_tokenizer(bundle, config)
+    selected_records = list(iter_clean_records(corpus, "validation", manifest))
+    if len(selected_records) != 32:
+        raise AssertionError(f"selected smoke corpus must contain 32 documents, found {len(selected_records)}")
     rows = []
     per_language = {"en": None, "ru": None}
-    for row in iter_clean_records(corpus, "validation", manifest):
+    for row in iter_clean_records(source_corpus, "validation", source_manifest):
         lang = row.get("language")
         if lang in per_language and per_language[lang] is None:
             ids = encode_text(tokenizer, row["text"], config)
@@ -53,8 +64,10 @@ def native_runtime():
         rows.append(row)
     if not all(per_language.values()):
         raise AssertionError("real held-out EN and RU documents fitting the 4096-token contract are required")
-    return {"bundle": bundle, "corpus": corpus, "packed": packed, "config": config,
-            "manifest": manifest, "tokenizer": tokenizer, "per_language": per_language, "rows": rows}
+    return {"bundle": bundle, "corpus": corpus, "source_corpus": source_corpus,
+            "packed": packed, "config": config, "manifest": manifest,
+            "source_manifest": source_manifest, "tokenizer": tokenizer,
+            "per_language": per_language, "rows": rows, "selected_records": selected_records}
 
 
 def test_native_loader_keeps_existing_vocabulary_and_special_ids(native_runtime):
@@ -116,6 +129,24 @@ def test_real_english_and_russian_native_roundtrip(native_runtime):
         actual = encode_text(tokenizer, text, native_runtime["config"])
         assert actual == expected_native_ids
         assert tokenizer.decode(actual, skip_special_tokens=False) == text
+
+
+def test_smoke_selection_filters_overlength_and_preserves_real_source_documents(native_runtime):
+    tokenizer = native_runtime["tokenizer"]
+    config = native_runtime["config"]
+    selected, stats = select_packable_validation_records(
+        iter_clean_records(native_runtime["source_corpus"], "validation", native_runtime["source_manifest"]),
+        lambda text: encode_text(tokenizer, text, config),
+        int(config["model"]["train_sequence_length"]), 32,
+    )
+    assert stats["documents_examined"] == native_runtime["manifest"]["smoke_subset"]["documents_examined"]
+    assert stats["documents_packable"] == native_runtime["manifest"]["smoke_subset"]["documents_packable"]
+    assert stats["documents_accepted"] == 32
+    assert stats["documents_skipped_overlength"] == native_runtime["manifest"]["smoke_subset"]["documents_skipped_overlength"]
+    assert len(selected) == len(native_runtime["selected_records"]) == 32
+    for (selected_record, token_ids), stored_record in zip(selected, native_runtime["selected_records"]):
+        assert selected_record == stored_record
+        assert len(token_ids) + 2 <= config["model"]["train_sequence_length"]
 
 
 def test_native_chat_template_has_one_bos_and_reserved_controls_fail(native_runtime):
@@ -186,8 +217,8 @@ def test_real_documents_pack_with_bos_eod_pad_loss_and_isolation(native_runtime)
 def test_real_overlength_document_is_rejected_without_truncation(native_runtime):
     tokenizer = native_runtime["tokenizer"]
     cfg = native_runtime["config"]
-    manifest = native_runtime["manifest"]
-    for row in iter_clean_records(native_runtime["corpus"], "validation", manifest):
+    manifest = native_runtime["source_manifest"]
+    for row in iter_clean_records(native_runtime["source_corpus"], "validation", manifest):
         body = encode_text(tokenizer, row["text"], cfg)
         if len(body) + 2 > 4096:
             wrapped = wrap_pretrain_document(body, config=cfg)
@@ -205,6 +236,12 @@ def test_packed_parquet_smoke_loads_real_shards_and_collates(native_runtime):
     assert batch["input_ids"].shape == (1, 4096)
     assert batch["labels"].shape == (1, 4096)
     assert torch.all(batch["labels"][0, 0] == -100)
+    for index, record in enumerate(native_runtime["selected_records"]):
+        token_ids = encode_text(native_runtime["tokenizer"], record["text"], native_runtime["config"])
+        expected_ids = [1, *token_ids, 4] + [3] * (4096 - len(token_ids) - 2)
+        packed = dataset[index]
+        assert packed["input_ids"].tolist() == expected_ids
+        assert packed["labels"].tolist() == [-100, *token_ids, 4] + [-100] * (4096 - len(token_ids) - 2)
 
 
 def test_packed_loader_rejects_corpus_or_bundle_identity_mismatch(native_runtime):
