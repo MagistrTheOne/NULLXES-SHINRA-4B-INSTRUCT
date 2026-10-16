@@ -9,6 +9,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import os
 import shutil
 import sys
@@ -18,6 +19,7 @@ from pathlib import Path
 
 REPO = Path("/content/NULLXES-SHINRA-4B-INSTRUCT")
 VERIFIED = Path("/content/drive/MyDrive/NULLXES/SHINRA/tokenizer/artifacts/shinra_unigram_65k_v1_verified")
+ORIGINAL_NATIVE = Path("/content/drive/MyDrive/NULLXES/SHINRA/tokenizer/artifacts/shinra_unigram_65k_v1_native")
 CORPUS = Path("/content/drive/MyDrive/NULLXES/SHINRA/datasets/clean/tokenizer_wiki_v2")
 EXPECTED_NATIVE_MODEL_SHA256 = "372eb8e5b82a950af7db3fd54d1ded4a36116016af6103076074ef99d9a0d83c"
 EXPECTED_VALIDATION_DOCUMENTS = 19_829
@@ -26,8 +28,8 @@ SMOKE_DOCUMENT_LIMIT = 32
 
 if not REPO.is_dir():
     raise FileNotFoundError(f"Repository checkout unavailable: {REPO}")
-if not VERIFIED.is_dir() or not CORPUS.is_dir():
-    raise FileNotFoundError("Mount Google Drive and check the verified tokenizer and clean corpus paths")
+if not VERIFIED.is_dir() or not ORIGINAL_NATIVE.is_dir() or not CORPUS.is_dir():
+    raise FileNotFoundError("Mount Google Drive and check both tokenizer artifact paths and the clean corpus path")
 sys.path.insert(0, str(REPO))
 
 from configs.loader import load_config
@@ -37,43 +39,98 @@ from tokenizer.bundle import _digest, verify_bundle, write_manifest, write_nativ
 from tokenizer.contract import encode_text
 
 config = copy.deepcopy(load_config())
-model_path = VERIFIED / "tokenizer.model"
-if file_sha256(model_path) != EXPECTED_NATIVE_MODEL_SHA256:
-    raise ValueError("Verified SentencePiece model SHA256 differs from the approved baseline")
+verified_model_path = VERIFIED / "tokenizer.model"
+original_model_path = ORIGINAL_NATIVE / "tokenizer.model"
+original_vocab_path = ORIGINAL_NATIVE / "tokenizer.vocab"
+for required_path in (verified_model_path, original_model_path, original_vocab_path):
+    if not required_path.is_file():
+        raise FileNotFoundError(f"Required Native tokenizer source file is missing: {required_path}")
+
+verified_model_sha256 = file_sha256(verified_model_path)
+if verified_model_sha256 != EXPECTED_NATIVE_MODEL_SHA256:
+    raise ValueError(
+        "Verified SentencePiece model SHA256 differs from the approved baseline: "
+        f"expected={EXPECTED_NATIVE_MODEL_SHA256}, actual={verified_model_sha256}"
+    )
+original_model_sha256 = file_sha256(original_model_path)
+if original_model_sha256 != EXPECTED_NATIVE_MODEL_SHA256:
+    raise ValueError(
+        "Original Native SentencePiece model SHA256 differs from the approved baseline: "
+        f"expected={EXPECTED_NATIVE_MODEL_SHA256}, actual={original_model_sha256}"
+    )
+if verified_model_sha256 != original_model_sha256:
+    raise ValueError(
+        "Verified and Original Native SentencePiece model SHA256 differ: "
+        f"verified={verified_model_sha256}, original={original_model_sha256}"
+    )
 if not (CORPUS / "manifest.json").is_file() or not (CORPUS / "validation.jsonl").is_file():
     raise FileNotFoundError("Clean corpus must provide manifest.json and validation.jsonl")
 import sentencepiece as spm
-processor = spm.SentencePieceProcessor(model_file=str(model_path))
+processor = spm.SentencePieceProcessor(model_file=str(verified_model_path))
+
+
+def validate_vocab_companion(vocab_path: Path, sentencepiece_processor) -> None:
+    """Fail with the exact model-vs-vocab values before creating a bundle directory."""
+    piece_count = sentencepiece_processor.get_piece_size()
+    count = 0
+    with vocab_path.open("r", encoding="utf-8", errors="strict") as stream:
+        for index, line in enumerate(stream):
+            expected_piece = sentencepiece_processor.id_to_piece(index) if index < piece_count else "<no piece>"
+            expected_score = sentencepiece_processor.get_score(index) if index < piece_count else None
+            actual_piece, separator, actual_score_text = line.rstrip("\r\n").rpartition("\t")
+            if index >= piece_count:
+                raise ValueError(
+                    f"SentencePiece vocab mismatch at ID {index}: expected no entry, "
+                    f"actual piece={actual_piece!r}, score={actual_score_text!r}"
+                )
+            if not separator:
+                raise ValueError(
+                    f"SentencePiece vocab mismatch at ID {index}: expected piece={expected_piece!r}, "
+                    f"score={expected_score!r}; actual line has no tab-separated score: {line.rstrip()!r}"
+                )
+            try:
+                actual_score = float(actual_score_text)
+            except ValueError as exc:
+                raise ValueError(
+                    f"SentencePiece vocab mismatch at ID {index}: expected piece={expected_piece!r}, "
+                    f"score={expected_score!r}; actual piece={actual_piece!r}, "
+                    f"score={actual_score_text!r} (invalid number)"
+                ) from exc
+            if actual_piece != expected_piece:
+                raise ValueError(
+                    f"SentencePiece vocab piece mismatch at ID {index}: "
+                    f"expected={expected_piece!r}, actual={actual_piece!r}; "
+                    f"expected score={expected_score!r}, actual score={actual_score!r}"
+                )
+            if abs(actual_score - expected_score) > max(1e-6, abs(expected_score) * 1e-5):
+                raise ValueError(
+                    f"SentencePiece vocab score mismatch at ID {index}: "
+                    f"expected piece={expected_piece!r}, actual piece={actual_piece!r}; "
+                    f"expected score={expected_score!r}, actual score={actual_score!r}"
+                )
+            if not math.isfinite(actual_score):
+                raise ValueError(
+                    f"SentencePiece vocab score mismatch at ID {index}: "
+                    f"expected piece={expected_piece!r}, actual piece={actual_piece!r}; "
+                    f"expected finite score={expected_score!r}, actual score={actual_score!r}"
+                )
+            count = index + 1
+    if count != piece_count:
+        missing_id = count
+        raise ValueError(
+            f"SentencePiece vocab mismatch at ID {missing_id}: "
+            f"expected piece={sentencepiece_processor.id_to_piece(missing_id)!r}, "
+            f"score={sentencepiece_processor.get_score(missing_id)!r}; actual=<missing>"
+        )
+
+
+validate_vocab_companion(original_vocab_path, processor)
+
 corpus_manifest = json.loads((CORPUS / "manifest.json").read_text(encoding="utf-8"))
 corpus_hash = corpus_manifest.pop("manifest_sha256", None)
 if corpus_hash != _digest(corpus_manifest):
     raise ValueError("Clean corpus manifest self-hash mismatch")
 corpus_manifest["manifest_sha256"] = corpus_hash
-
-# A new, unique destination is created. Existing verified artifacts are never opened for writing.
-bundle_root = VERIFIED.parent / f"shinra_native_unigram_65k_bundle_{uuid.uuid4().hex[:10]}"
-bundle_root.mkdir(parents=False, exist_ok=False)
-shutil.copy2(model_path, bundle_root / "tokenizer.model")
-vocab_source = VERIFIED / "tokenizer.vocab"
-if vocab_source.is_file():
-    shutil.copy2(vocab_source, bundle_root / "tokenizer.vocab")
-else:
-    # Derived vocab is written only into the new bundle directory.
-    with (bundle_root / "tokenizer.vocab").open("w", encoding="utf-8", newline="\n") as stream:
-        for index in range(processor.get_piece_size()):
-            stream.write(f"{processor.id_to_piece(index)}\t{processor.get_score(index):.9g}\n")
-
-vocab_count = 0
-with (bundle_root / "tokenizer.vocab").open("r", encoding="utf-8", errors="strict") as stream:
-    for index, line in enumerate(stream):
-        piece, separator, score = line.rstrip("\r\n").rpartition("\t")
-        if index >= processor.get_piece_size() or not separator or piece != processor.id_to_piece(index):
-            raise ValueError(f"SentencePiece vocab companion differs from model at ID {index}")
-        if abs(float(score) - processor.get_score(index)) > max(1e-6, abs(processor.get_score(index)) * 1e-5):
-            raise ValueError(f"SentencePiece vocab score differs from model at ID {index}")
-        vocab_count = index + 1
-if vocab_count != processor.get_piece_size():
-    raise ValueError("SentencePiece vocab companion has a different vocabulary size")
 
 # Validate the entire real held-out split against SentencePiece and the production wrapper.
 validation = {"documents": 0, "tokens": 0, "bytes": 0, "languages": {"en": 0, "ru": 0}}
@@ -93,6 +150,12 @@ if validation["tokens"] != EXPECTED_VALIDATION_TOKENS:
     raise ValueError(f"Unexpected Native token count: {validation['tokens']}")
 if set(validation["languages"]) != {"en", "ru"} or min(validation["languages"].values()) == 0:
     raise ValueError("Held-out corpus must contain English and Russian documents")
+
+# All source checks passed. Create a new bundle now; source artifacts remain read-only.
+bundle_root = VERIFIED.parent / f"shinra_native_unigram_65k_bundle_{uuid.uuid4().hex[:10]}"
+bundle_root.mkdir(parents=False, exist_ok=False)
+shutil.copy2(verified_model_path, bundle_root / "tokenizer.model")
+shutil.copy2(original_vocab_path, bundle_root / "tokenizer.vocab")
 
 # The wrapper requires a signed bundle before loading. First stage real provenance/statistics,
 # then write the manifest and freeze only the in-memory smoke-test configuration.
