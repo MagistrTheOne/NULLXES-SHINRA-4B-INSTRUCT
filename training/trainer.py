@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from accelerate import Accelerator
-from accelerate.utils import set_seed
+from accelerate.utils import GradientAccumulationPlugin, set_seed
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -146,7 +146,26 @@ def estimate_training_memory(model: dict, training: dict) -> dict[str, int]:
 def save_checkpoint(accelerator: Accelerator, model, tokenizer, output_dir: Path, *, step: int, optimizer,
                     scheduler, consumed_tokens: int, sampler_state: dict, manifest: dict, stage: str,
                     budget_kind: str, target_tokens: int, objective: str, training_config_sha256: str,
-                    admission: str) -> Path:
+                    admission: str, optimizer_step_complete: bool, expected_consumed_rows: int) -> Path:
+    if not optimizer_step_complete:
+        raise RuntimeError("checkpoint publication requires a completed optimizer step")
+    if int(sampler_state.get("state_version", 0)) != 3 \
+            or sampler_state.get("delivery_contract") != "direct-dataloader-no-prefetch.v1":
+        raise RuntimeError("checkpoint requires the current direct DataLoader sampler contract")
+    if sampler_state.get("pending_indices"):
+        raise RuntimeError("checkpoint cannot include unconsumed sampler rows")
+    sampler_consumed = sum(int(value) for value in sampler_state["tokens_by_language"].values())
+    if sampler_consumed != consumed_tokens:
+        raise RuntimeError(
+            f"checkpoint sampler/trainer token accounting differs: sampler={sampler_consumed}, "
+            f"trainer={consumed_tokens}"
+        )
+    sampler_rows = sum(int(value) for value in sampler_state["consumed_rows_by_language"].values())
+    if sampler_rows != expected_consumed_rows:
+        raise RuntimeError(
+            f"checkpoint sampler/trainer row accounting differs: sampler={sampler_rows}, "
+            f"trainer={expected_consumed_rows}"
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
     final = output_dir / f"step-{step:08d}"
     if final.exists():
@@ -166,6 +185,8 @@ def save_checkpoint(accelerator: Accelerator, model, tokenizer, output_dir: Path
             export_code(temporary)
             state = {
                 "step": step, "consumed_tokens": consumed_tokens, "sampler": sampler_state,
+                "resume_contract": "optimizer-boundary.direct-dataloader.v1",
+                "resume_exactness": "exact",
                 "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(), "stage": stage,
                 "admission": admission,
                 "objective": objective, "budget_kind": budget_kind, "target_tokens": target_tokens,
@@ -211,11 +232,13 @@ def save_checkpoint(accelerator: Accelerator, model, tokenizer, output_dir: Path
 @torch.no_grad()
 def evaluate(model, loader, max_batches: int | None = None) -> dict:
     model.eval()
+    device = next(model.parameters()).device
     total_loss = 0.0
     tokens = 0
     for index, batch in enumerate(loader):
         if max_batches is not None and index >= max_batches:
             break
+        batch = {key: value.to(device, non_blocking=True) for key, value in batch.items()}
         n_tokens = count_target_tokens_post_shift(batch["labels"])
         if not n_tokens:
             continue
@@ -340,11 +363,17 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
         raise ShardIdentityError("packed train source manifest differs from frozen manifest")
     if getattr(validation_data, "source_manifest_sha256", None) != manifest_sha:
         raise ShardIdentityError("packed validation source manifest differs from frozen manifest")
-    accelerator = Accelerator(gradient_accumulation_steps=cfg.gradient_accumulation_steps, mixed_precision="bf16")
+    accumulation = GradientAccumulationPlugin(
+        num_steps=cfg.gradient_accumulation_steps,
+        sync_with_dataloader=False,
+    )
+    accelerator = Accelerator(gradient_accumulation_plugin=accumulation, mixed_precision="bf16")
     if accelerator.num_processes != 1:
         raise RuntimeError("multi-process training is unavailable; use one approved GPU per run")
     if cfg.budget_kind not in {"diagnostic", "foundation"} or cfg.max_tokens <= 0:
         raise RuntimeError("a positive diagnostic or foundation token budget must be selected")
+    if cfg.dataloader_num_workers != 0:
+        raise RuntimeError("exact-resume data delivery requires dataloader_num_workers=0")
     if approved["data"]["mix"].get("en") != 0.5 or approved["data"]["mix"].get("ru") != 0.5:
         raise RuntimeError("the current production trainer implements the approved EN/RU token mix at 50/50 only")
     training_config_sha = _sha({"training": approved["training"], "budget_kind": cfg.budget_kind,
@@ -357,6 +386,17 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
         if not state_file.is_file():
             raise FileNotFoundError("resume checkpoint is missing trainer_state.pt")
         resume_state = torch.load(state_file, map_location="cpu", weights_only=False)
+        sampler_state_version = int(resume_state.get("sampler", {}).get("state_version", 1))
+        if sampler_state_version < 2:
+            raise ShardIdentityError(
+                f"{cfg.resume_from}: legacy checkpoint exact resume unavailable; sampler state v1 "
+                "does not contain consumed-row accounting or the pending DataLoaderShard queue. "
+                "The checkpoint is preserved; start a new diagnostic run or select a separately verified checkpoint."
+            )
+        if sampler_state_version >= 3 and resume_state.get("resume_contract") != (
+            "optimizer-boundary.direct-dataloader.v1"
+        ):
+            raise ShardIdentityError("checkpoint sampler and trainer resume contracts do not match")
         expected_state = {
             "architecture_sha256": _sha(approved["model"]),
             "tokenizer_bundle_sha256": bundle_sha,
@@ -384,9 +424,11 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
         )
     loader = DataLoader(train_data, batch_size=cfg.micro_batch_size, sampler=sampler,
                         num_workers=cfg.dataloader_num_workers, pin_memory=True,
-                        collate_fn=collate_lm, drop_last=False)
+                        collate_fn=collate_lm, drop_last=False,
+                        generator=torch.Generator().manual_seed(cfg.seed))
     validation_loader = DataLoader(validation_data, batch_size=cfg.micro_batch_size, shuffle=False,
-                                   num_workers=0, collate_fn=collate_lm)
+                                   num_workers=0, collate_fn=collate_lm,
+                                   generator=torch.Generator().manual_seed(cfg.seed + 1))
     enable_tf32()
     set_seed(cfg.seed)
     model = load_model(cfg)
@@ -404,8 +446,7 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
                                 fused=cfg.fused_optimizer)
     scheduler = build_scheduler(optimizer, cfg.scheduler, cfg.warmup_steps, cfg.schedule_steps,
                                 cfg.stable_ratio, cfg.min_lr_ratio)
-    model, optimizer, loader, scheduler = accelerator.prepare(model, optimizer, loader, scheduler)
-    validation_loader = accelerator.prepare(validation_loader)
+    model, optimizer, scheduler = accelerator.prepare(model, optimizer, scheduler)
     if resume_state:
         optimizer.load_state_dict(resume_state["optimizer"])
         scheduler.load_state_dict(resume_state["scheduler"])
@@ -450,6 +491,7 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
         row_indices = batch.pop("row_indices", None)
         if not isinstance(row_indices, list) or len(row_indices) != cfg.micro_batch_size:
             raise RuntimeError("training DataLoader did not provide the sampled row indices for accounting")
+        batch = {key: value.to(accelerator.device, non_blocking=True) for key, value in batch.items()}
         with accelerator.accumulate(model):
             result = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], labels=batch["labels"], use_cache=False)
             if not torch.isfinite(result.loss):
@@ -510,7 +552,9 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
                             scheduler=scheduler, consumed_tokens=consumed, sampler_state=sampler.state_dict(),
                             manifest=manifest, stage=cfg.stage, objective=approved["training"]["objective"],
                             budget_kind=cfg.budget_kind, target_tokens=cfg.max_tokens,
-                            training_config_sha256=training_config_sha, admission=cfg.admission)
+                            training_config_sha256=training_config_sha, admission=cfg.admission,
+                            optimizer_step_complete=accelerator.sync_gradients,
+                            expected_consumed_rows=step * cfg.gradient_accumulation_steps * cfg.micro_batch_size)
             ledger.write_status({"status": "running", "admission": cfg.admission,
                                  "budget_kind": cfg.budget_kind, "target_tokens": cfg.max_tokens,
                                  "step": step, "processed_tokens": consumed, "optimizer_steps": step,
@@ -529,6 +573,8 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
             manifest=manifest, stage=cfg.stage, objective=approved["training"]["objective"],
             budget_kind=cfg.budget_kind, target_tokens=cfg.max_tokens,
             training_config_sha256=training_config_sha, admission=cfg.admission,
+            optimizer_step_complete=accumulation_tokens == 0,
+            expected_consumed_rows=step * cfg.gradient_accumulation_steps * cfg.micro_batch_size,
         )
         ledger.write_status({"status": "running", "admission": cfg.admission,
                              "budget_kind": cfg.budget_kind, "target_tokens": cfg.max_tokens,
