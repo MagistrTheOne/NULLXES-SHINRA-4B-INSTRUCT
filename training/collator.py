@@ -88,7 +88,7 @@ class PackedParquetDataset(Dataset):
                 raise ShardError(f"{path}: required tokenizer, corpus or sequence fields are missing")
             row_metadata_fields = {"source_id", "revision", "document_id", "upstream_document_id", "source_record",
                 "subset", "license", "url_or_archive_id", "window_semantics",
-                "rights_status",
+                "rights_status", "language",
                 "chunk_index", "chunk_count",
                 "token_start", "token_end", "document_token_count", "split", "raw_sha256", "clean_sha256", "upstream_file_sha256",
                 "is_final_document_window"}
@@ -98,7 +98,7 @@ class PackedParquetDataset(Dataset):
                 metadata = parquet.metadata.row_group(row_group_idx)
                 row_count = metadata.num_rows
                 self._row_group_starts.append(total_rows)
-                columns = ["language", "labels", "tokenizer_bundle_sha256", "source_manifest_sha256",
+                columns = ["labels", "tokenizer_bundle_sha256", "source_manifest_sha256",
                            *sorted(row_metadata_fields)]
                 table = parquet.read_row_group(row_group_idx, columns=columns)
                 if set(table.column("tokenizer_bundle_sha256").to_pylist()) != {bundle_sha}:
