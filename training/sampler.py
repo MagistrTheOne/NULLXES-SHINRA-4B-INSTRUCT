@@ -129,15 +129,21 @@ class StatefulTokenMixSampler(Sampler[int]):
 
     def mark_consumed(self, indices: list[int]) -> None:
         """Commit indices in delivery order after the training loop receives their batch."""
-        for raw_index in indices:
-            index = int(raw_index)
-            if not self.pending_indices or self.pending_indices[0] != index:
-                expected = self.pending_indices[0] if self.pending_indices else None
-                raise ValueError(f"training row order differs from sampler delivery: got {index}, expected {expected}")
-            self.pending_indices.pop(0)
-            language_code = int(self.data_source.language_codes[index])
+        delivered = [int(raw_index) for raw_index in indices]
+        if not delivered:
+            raise ValueError("cannot acknowledge an empty training batch")
+        expected = self.pending_indices[:len(delivered)]
+        if delivered != expected:
+            raise ValueError(
+                "training batch rows differ from the outstanding sampler delivery: "
+                f"got={delivered}, expected_prefix={expected}, pending={len(self.pending_indices)}"
+            )
+        languages = [int(self.data_source.language_codes[index]) for index in delivered]
+        for index, language_code in zip(delivered, languages):
             if language_code not in self.weights:
                 raise ValueError(f"training row {index} has unsupported language code {language_code}")
+        del self.pending_indices[:len(delivered)]
+        for index, language_code in zip(delivered, languages):
             self.tokens_by_language[language_code] += int(self.target_counts[index])
             self.consumed_rows_by_language[language_code] += 1
 
@@ -165,6 +171,34 @@ class StatefulTokenMixSampler(Sampler[int]):
             raise RuntimeError(
                 "cannot checkpoint token-mix sampler while unconsumed rows are pending: "
                 f"pending_rows={len(self.pending_indices)}"
+            )
+        scheduled_rows_total = 0
+        for code in self.weights:
+            if self.scheduled_tokens_by_language[code] != self.tokens_by_language[code]:
+                raise RuntimeError(
+                    "cannot checkpoint token-mix sampler with unacknowledged scheduled targets: "
+                    f"language_code={code}, scheduled={self.scheduled_tokens_by_language[code]}, "
+                    f"consumed={self.tokens_by_language[code]}"
+                )
+            permutation = self.permutations[code]
+            if permutation is None:
+                if self.epochs_by_language[code] != 0 or self.positions[code] != 0:
+                    raise RuntimeError("sampler has an uninitialized permutation with nonzero counters")
+                scheduled_rows = 0
+            else:
+                scheduled_rows = (self.epochs_by_language[code] - 1) * len(self.indices[code])
+                scheduled_rows += self.positions[code]
+            scheduled_rows_total += scheduled_rows
+            if self.consumed_rows_by_language[code] != scheduled_rows:
+                raise RuntimeError(
+                    "cannot checkpoint token-mix sampler with unacknowledged scheduled rows: "
+                    f"language_code={code}, scheduled={scheduled_rows}, "
+                    f"consumed={self.consumed_rows_by_language[code]}"
+                )
+        if scheduled_rows_total != self.epoch * len(self.data_source) + self.position:
+            raise RuntimeError(
+                "cannot checkpoint token-mix sampler with inconsistent global and per-language cursors: "
+                f"scheduled_rows={scheduled_rows_total}, epoch={self.epoch}, position={self.position}"
             )
         return {"state_version": 3, "delivery_contract": "direct-dataloader-no-prefetch.v1",
                 "dataset_length": len(self.data_source),

@@ -32,7 +32,29 @@ class RunLedger:
             os.fsync(handle.fileno())
 
     def write_status(self, status: dict[str, Any]) -> None:
-        payload = {"updated_at": datetime.now(timezone.utc).isoformat(), **status}
+        current: dict[str, Any] = {}
+        if self.status_path.is_file():
+            try:
+                loaded = json.loads(self.status_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                raise RuntimeError(f"existing run status is unreadable; refusing to discard it: {exc}") from exc
+            if not isinstance(loaded, dict):
+                raise RuntimeError("existing run status is not a JSON object; refusing to discard it")
+            current = loaded
+            current.pop("updated_at", None)
+        merged = {**current, **status}
+        if status.get("status") == "running":
+            for key in ("error_type", "error_message", "failure_record"):
+                merged.pop(key, None)
+        if "processed_tokens" in merged and "consumed_tokens" not in status:
+            merged["consumed_tokens"] = merged["processed_tokens"]
+        if "consumed_tokens" in merged and "processed_tokens" not in status:
+            merged["processed_tokens"] = merged["consumed_tokens"]
+        if "checkpoint" in status and status["checkpoint"] is not None:
+            merged["last_checkpoint"] = status["checkpoint"]
+        elif "checkpoint" not in merged and merged.get("last_checkpoint") is not None:
+            merged["checkpoint"] = merged["last_checkpoint"]
+        payload = {"updated_at": datetime.now(timezone.utc).isoformat(), **merged}
         fd, tmp = tempfile.mkstemp(prefix=".status-", suffix=".tmp", dir=self.root)
         try:
             with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:

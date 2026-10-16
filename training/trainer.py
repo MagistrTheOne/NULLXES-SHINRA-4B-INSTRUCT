@@ -17,7 +17,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from accelerate import Accelerator
-from accelerate.utils import GradientAccumulationPlugin, set_seed
+from accelerate.utils import set_seed
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
@@ -184,7 +184,10 @@ def save_checkpoint(accelerator: Accelerator, model, tokenizer, output_dir: Path
 
             export_code(temporary)
             state = {
-                "step": step, "consumed_tokens": consumed_tokens, "sampler": sampler_state,
+                "step": step, "consumed_tokens": consumed_tokens, "consumed_rows": sampler_rows,
+                "micro_batches_in_update": 0, "optimizer_step_boundary": "complete",
+                "training_loop_contract": "explicit-optimizer-boundary-ack.v1",
+                "sampler": sampler_state,
                 "resume_contract": "optimizer-boundary.direct-dataloader.v1",
                 "resume_exactness": "exact",
                 "optimizer": optimizer.state_dict(), "scheduler": scheduler.state_dict(), "stage": stage,
@@ -363,17 +366,21 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
         raise ShardIdentityError("packed train source manifest differs from frozen manifest")
     if getattr(validation_data, "source_manifest_sha256", None) != manifest_sha:
         raise ShardIdentityError("packed validation source manifest differs from frozen manifest")
-    accumulation = GradientAccumulationPlugin(
-        num_steps=cfg.gradient_accumulation_steps,
-        sync_with_dataloader=False,
-    )
-    accelerator = Accelerator(gradient_accumulation_plugin=accumulation, mixed_precision="bf16")
+    # Gradient accumulation is advanced explicitly below. Keeping the Accelerator
+    # unaware of DataLoaders and accumulation phases avoids hidden lookahead or
+    # phase state that would have to be reconstructed after a Colab disconnect.
+    accelerator = Accelerator(mixed_precision="bf16")
     if accelerator.num_processes != 1:
         raise RuntimeError("multi-process training is unavailable; use one approved GPU per run")
     if cfg.budget_kind not in {"diagnostic", "foundation"} or cfg.max_tokens <= 0:
         raise RuntimeError("a positive diagnostic or foundation token budget must be selected")
     if cfg.dataloader_num_workers != 0:
         raise RuntimeError("exact-resume data delivery requires dataloader_num_workers=0")
+    if len(train_data) % cfg.micro_batch_size:
+        raise RuntimeError(
+            "exact-resume token-mix sampling requires the train split row count to be divisible by "
+            f"micro_batch_size; rows={len(train_data)}, micro_batch_size={cfg.micro_batch_size}"
+        )
     if approved["data"]["mix"].get("en") != 0.5 or approved["data"]["mix"].get("ru") != 0.5:
         raise RuntimeError("the current production trainer implements the approved EN/RU token mix at 50/50 only")
     training_config_sha = _sha({"training": approved["training"], "budget_kind": cfg.budget_kind,
@@ -387,16 +394,23 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
             raise FileNotFoundError("resume checkpoint is missing trainer_state.pt")
         resume_state = torch.load(state_file, map_location="cpu", weights_only=False)
         sampler_state_version = int(resume_state.get("sampler", {}).get("state_version", 1))
-        if sampler_state_version < 2:
+        if sampler_state_version != 3:
             raise ShardIdentityError(
-                f"{cfg.resume_from}: legacy checkpoint exact resume unavailable; sampler state v1 "
-                "does not contain consumed-row accounting or the pending DataLoaderShard queue. "
-                "The checkpoint is preserved; start a new diagnostic run or select a separately verified checkpoint."
+                f"{cfg.resume_from}: exact resume requires sampler state v3; found v{sampler_state_version}. "
+                "Legacy queued-delivery state cannot be proven against the rows consumed by the training loop. "
+                "The checkpoint is preserved and must not be heuristically migrated."
             )
-        if sampler_state_version >= 3 and resume_state.get("resume_contract") != (
+        if resume_state.get("resume_contract") != (
             "optimizer-boundary.direct-dataloader.v1"
         ):
             raise ShardIdentityError("checkpoint sampler and trainer resume contracts do not match")
+        if resume_state.get("optimizer_step_boundary", "complete") != "complete" \
+                or int(resume_state.get("micro_batches_in_update", 0)) != 0:
+            raise ShardIdentityError("resume checkpoint was not saved at a complete optimizer-step boundary")
+        if resume_state.get("training_loop_contract", "explicit-optimizer-boundary-ack.v1") != (
+            "explicit-optimizer-boundary-ack.v1"
+        ):
+            raise ShardIdentityError("resume checkpoint uses an unsupported training-loop boundary contract")
         expected_state = {
             "architecture_sha256": _sha(approved["model"]),
             "tokenizer_bundle_sha256": bundle_sha,
@@ -446,6 +460,8 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
                                 fused=cfg.fused_optimizer)
     scheduler = build_scheduler(optimizer, cfg.scheduler, cfg.warmup_steps, cfg.schedule_steps,
                                 cfg.stable_ratio, cfg.min_lr_ratio)
+    # Only model/optimizer/scheduler are prepared; train and validation DataLoaders
+    # stay ordinary single-process loaders and are never wrapped by Accelerate.
     model, optimizer, scheduler = accelerator.prepare(model, optimizer, scheduler)
     if resume_state:
         optimizer.load_state_dict(resume_state["optimizer"])
@@ -466,15 +482,25 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
     model.train()
     step = int(resume_state["step"]) if resume_state else 0
     consumed = int(resume_state["consumed_tokens"]) if resume_state else 0
+    consumed_rows = int(resume_state.get("consumed_rows", sum(
+        int(value) for value in resume_state["sampler"]["consumed_rows_by_language"].values()
+    ))) if resume_state else 0
+    if resume_state and consumed_rows != sum(
+        int(value) for value in resume_state["sampler"]["consumed_rows_by_language"].values()
+    ):
+        raise ShardIdentityError("checkpoint trainer and sampler consumed-row counts differ")
     ledger.write_status({"status": "running", "admission": cfg.admission, "budget_kind": cfg.budget_kind,
                          "target_tokens": cfg.max_tokens,
                          "step": step, "processed_tokens": consumed,
-                         "optimizer_steps": step, "checkpoint": str(cfg.resume_from) if cfg.resume_from else None})
+                         "consumed_rows": consumed_rows,
+                         "optimizer_steps": step, "checkpoint": str(cfg.resume_from) if cfg.resume_from else None,
+                         "optimizer_step_boundary": "complete"})
     iterator = iter(loader)
     started = time.monotonic()
     window_losses: list[float] = []
     accumulation_loss_sum = 0.0
     accumulation_tokens = 0
+    micro_batches_in_update = 0
     progress = tqdm(total=cfg.max_steps, initial=step, disable=not accelerator.is_local_main_process, desc="SHINRA pretrain")
     last_checkpoint = cfg.resume_from
     initial_consumed_tokens = consumed
@@ -492,51 +518,66 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
         if not isinstance(row_indices, list) or len(row_indices) != cfg.micro_batch_size:
             raise RuntimeError("training DataLoader did not provide the sampled row indices for accounting")
         batch = {key: value.to(accelerator.device, non_blocking=True) for key, value in batch.items()}
-        with accelerator.accumulate(model):
+        optimizer_step_complete = False
+        with accelerator.autocast():
             result = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], labels=batch["labels"], use_cache=False)
-            if not torch.isfinite(result.loss):
-                raise FloatingPointError("non-finite training loss")
-            target_tokens_this_batch = count_target_tokens_post_shift(batch["labels"])
-            if target_tokens_this_batch <= 0:
-                raise RuntimeError("training batch has no valid next-token targets")
-            if torch.any(batch["labels"][:, 0] != -100):
-                raise RuntimeError("the first token of each isolated sequence must be masked from shifted loss")
-            batch_tokens = target_tokens_this_batch
-            # Accumulate summed token loss; after Accelerator's fixed accumulation scaling,
-            # normalize by the actual number of supervised targets in this optimizer update.
-            accumulation_tokens += target_tokens_this_batch
-            accumulation_loss_sum += float(result.loss.detach()) * target_tokens_this_batch
-            accelerator.backward(result.loss * target_tokens_this_batch)
-            if accelerator.sync_gradients:
-                if accumulation_tokens <= 0:
-                    raise RuntimeError("gradient accumulation window contains no supervised target tokens")
-                gradient_scale = cfg.gradient_accumulation_steps / accumulation_tokens
-                for parameter in model.parameters():
-                    if parameter.grad is not None:
-                        parameter.grad.mul_(gradient_scale)
-                norm = accelerator.clip_grad_norm_(model.parameters(), cfg.grad_clip)
-                if not torch.isfinite(norm):
-                    raise FloatingPointError("non-finite gradient norm")
-                for parameter in model.parameters():
-                    if parameter.grad is not None and not torch.isfinite(parameter.grad).all():
-                        raise FloatingPointError("non-finite gradient")
-                optimizer.step()
-                scheduler.step()
-                optimizer.zero_grad(set_to_none=True)
-                step += 1
-                progress.update(1)
+        if not torch.isfinite(result.loss):
+            raise FloatingPointError("non-finite training loss")
+        target_tokens_this_batch = count_target_tokens_post_shift(batch["labels"])
+        if target_tokens_this_batch <= 0:
+            raise RuntimeError("training batch has no valid next-token targets")
+        if torch.any(batch["labels"][:, 0] != -100):
+            raise RuntimeError("the first token of each isolated sequence must be masked from shifted loss")
+        batch_tokens = target_tokens_this_batch
+        # Match the previous per-microbatch gradient scaling while keeping the
+        # accumulation phase explicit and independent of Accelerate's state.
+        accumulation_tokens += target_tokens_this_batch
+        accumulation_loss_sum += float(result.loss.detach()) * target_tokens_this_batch
+        micro_batches_in_update += 1
+        # BF16 uses no gradient scaler; call Tensor.backward directly so
+        # Accelerate cannot apply hidden accumulation scaling.
+        (result.loss * target_tokens_this_batch / cfg.gradient_accumulation_steps).backward()
+        if micro_batches_in_update == cfg.gradient_accumulation_steps:
+            if accumulation_tokens <= 0:
+                raise RuntimeError("gradient accumulation window contains no supervised target tokens")
+            gradient_scale = cfg.gradient_accumulation_steps / accumulation_tokens
+            for parameter in model.parameters():
+                if parameter.grad is not None:
+                    parameter.grad.mul_(gradient_scale)
+            norm = accelerator.clip_grad_norm_(model.parameters(), cfg.grad_clip)
+            if not torch.isfinite(norm):
+                raise FloatingPointError("non-finite gradient norm")
+            for parameter in model.parameters():
+                if parameter.grad is not None and not torch.isfinite(parameter.grad).all():
+                    raise FloatingPointError("non-finite gradient")
+            optimizer.step()
+            scheduler.step()
+            optimizer.zero_grad(set_to_none=True)
+            step += 1
+            optimizer_step_complete = True
+            micro_batches_in_update = 0
+            progress.update(1)
         sampler.mark_consumed(row_indices)
         consumed += batch_tokens
-        if accelerator.sync_gradients:
+        consumed_rows += len(row_indices)
+        if optimizer_step_complete:
+            expected_rows = step * cfg.gradient_accumulation_steps * cfg.micro_batch_size
+            if consumed_rows != expected_rows:
+                raise RuntimeError(
+                    "training loop row count is not on the configured optimizer boundary: "
+                    f"consumed_rows={consumed_rows}, expected_rows={expected_rows}, step={step}"
+                )
             window_losses.append(accumulation_loss_sum / max(accumulation_tokens, 1))
             accumulation_loss_sum = 0.0
             accumulation_tokens = 0
             if sampler.mix_report()["absolute_token_imbalance"] > max_row_targets:
                 raise RuntimeError("actual EN/RU supervised-token mix exceeded one packed-row tolerance")
-        if step and step % cfg.logging_steps == 0 and accelerator.sync_gradients:
+        if step and step % cfg.logging_steps == 0 and optimizer_step_complete:
             elapsed = max(time.monotonic() - started, 1e-6)
             metrics = {"step": step, "admission": cfg.admission,
                        "processed_tokens": consumed, "optimizer_steps": step,
+                       "consumed_rows": consumed_rows,
+                       "optimizer_step_boundary": "complete",
                        "loss": sum(window_losses[-cfg.logging_steps:]) / min(len(window_losses), cfg.logging_steps),
                         "tokens_per_second": (consumed - initial_consumed_tokens) / elapsed,
                         "learning_rate": scheduler.get_last_lr()[0],
@@ -544,22 +585,24 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
                        **sampler.mix_report()}
             ledger.log_metrics(metrics)
             ledger.write_status(metrics)
-        if cfg.eval_steps and step and step % cfg.eval_steps == 0 and accelerator.sync_gradients:
+        if cfg.eval_steps and step and step % cfg.eval_steps == 0 and optimizer_step_complete:
             metrics = evaluate(accelerator.unwrap_model(model), validation_loader)
             ledger.log_metrics({"step": step, "admission": cfg.admission, **metrics})
-        if cfg.save_steps and step and step % cfg.save_steps == 0 and accelerator.sync_gradients:
+        if cfg.save_steps and step and step % cfg.save_steps == 0 and optimizer_step_complete:
             last_checkpoint = save_checkpoint(accelerator, model, tokenizer, cfg.output_dir, step=step, optimizer=optimizer,
                             scheduler=scheduler, consumed_tokens=consumed, sampler_state=sampler.state_dict(),
                             manifest=manifest, stage=cfg.stage, objective=approved["training"]["objective"],
                             budget_kind=cfg.budget_kind, target_tokens=cfg.max_tokens,
                             training_config_sha256=training_config_sha, admission=cfg.admission,
-                            optimizer_step_complete=accelerator.sync_gradients,
-                            expected_consumed_rows=step * cfg.gradient_accumulation_steps * cfg.micro_batch_size)
+                            optimizer_step_complete=optimizer_step_complete,
+                            expected_consumed_rows=consumed_rows)
             ledger.write_status({"status": "running", "admission": cfg.admission,
                                  "budget_kind": cfg.budget_kind, "target_tokens": cfg.max_tokens,
                                  "step": step, "processed_tokens": consumed, "optimizer_steps": step,
+                                 "consumed_rows": consumed_rows,
+                                 "optimizer_step_boundary": "complete",
                                  "checkpoint": str(last_checkpoint)})
-        if accelerator.sync_gradients and consumed >= cfg.max_tokens:
+        if optimizer_step_complete and consumed >= cfg.max_tokens:
             break
     progress.close()
     training_elapsed = max(time.monotonic() - started, 1e-6)
@@ -573,12 +616,14 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
             manifest=manifest, stage=cfg.stage, objective=approved["training"]["objective"],
             budget_kind=cfg.budget_kind, target_tokens=cfg.max_tokens,
             training_config_sha256=training_config_sha, admission=cfg.admission,
-            optimizer_step_complete=accumulation_tokens == 0,
-            expected_consumed_rows=step * cfg.gradient_accumulation_steps * cfg.micro_batch_size,
+            optimizer_step_complete=(micro_batches_in_update == 0 and accumulation_tokens == 0),
+            expected_consumed_rows=consumed_rows,
         )
         ledger.write_status({"status": "running", "admission": cfg.admission,
                              "budget_kind": cfg.budget_kind, "target_tokens": cfg.max_tokens,
                              "step": step, "processed_tokens": consumed, "optimizer_steps": step,
+                             "consumed_rows": consumed_rows,
+                             "optimizer_step_boundary": "complete",
                              "checkpoint": str(checkpoint)})
     mix_report = sampler.mix_report()
     if mix_report["sampled_target_tokens"] != consumed:
@@ -598,6 +643,8 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
         "admission": cfg.admission,
         "step": step,
         "processed_tokens": consumed,
+        "consumed_rows": consumed_rows,
+        "optimizer_step_boundary": "complete",
         "train_loss": sum(window_losses) / len(window_losses) if window_losses else None,
         "training_tokens_per_second": (consumed - initial_consumed_tokens) / training_elapsed,
         "peak_gpu_memory_allocated_bytes": int(torch.cuda.max_memory_allocated()),
@@ -607,7 +654,9 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
     ledger.log_metrics(training_metrics)
     result = {"status": status, "admission": cfg.admission, "budget_kind": cfg.budget_kind,
               "target_tokens": cfg.max_tokens,
-              "step": step, "processed_tokens": consumed, "token_budget_shortfall": max(cfg.max_tokens - consumed, 0),
+              "step": step, "processed_tokens": consumed, "consumed_rows": consumed_rows,
+              "optimizer_step_boundary": "complete",
+              "token_budget_shortfall": max(cfg.max_tokens - consumed, 0),
               "sampler_epoch": sampler.epoch, "language_mix": mix_report,
               "checkpoint": str(checkpoint), **training_metrics}
     ledger.write_status({**result, **training_metrics})
