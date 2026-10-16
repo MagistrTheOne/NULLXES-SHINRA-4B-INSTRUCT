@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import shutil
@@ -7,6 +8,7 @@ from pathlib import Path
 
 import pytest
 import torch
+from transformers import PreTrainedTokenizer
 
 from configs.loader import load_config
 from data.pack import PackContractError, iter_clean_records, pack_token_stream, resolve_pretrain_special_ids, wrap_pretrain_document
@@ -67,6 +69,42 @@ def test_native_loader_keeps_existing_vocabulary_and_special_ids(native_runtime)
     assert tokenizer.bos_token_id == 1
     assert tokenizer.eos_token_id == 2
     assert tokenizer.pad_token_id == 3
+    assert set(tokenizer.all_special_ids) == set(range(19))
+
+
+def test_native_special_token_registration_handles_transformers_api_aliases(native_runtime):
+    tokenizer = native_runtime["tokenizer"]
+    token_config = native_runtime["config"]["tokenizer"]
+    base_parameters = inspect.signature(PreTrainedTokenizer.add_special_tokens).parameters
+    assert "replace_extra_special_tokens" in base_parameters or "replace_additional_special_tokens" in base_parameters
+
+    expected_ids = {
+        token_config["special_tokens"]["unk"]: token_config["unk_id"],
+        token_config["special_tokens"]["bos"]: token_config["bos_id"],
+        token_config["special_tokens"]["end_of_turn"]: token_config["end_of_turn_id"],
+        token_config["special_tokens"]["pad"]: token_config["pad_id"],
+        token_config["special_tokens"]["end_of_document"]: token_config["end_of_document_id"],
+    }
+    expected_ids.update({
+        token_config["special_tokens"][name]: token_id
+        for name, token_id in token_config["special_token_ids"].items()
+    })
+    controls = [token for token, token_id in sorted(expected_ids.items(), key=lambda item: item[1]) if token_id >= 4]
+
+    original_size = len(tokenizer)
+    assert tokenizer.add_special_tokens(
+        {"additional_special_tokens": controls}, replace_additional_special_tokens=True
+    ) == 0
+    assert tokenizer.add_special_tokens(
+        {"extra_special_tokens": controls[:1]}, replace_extra_special_tokens=False
+    ) == 0
+    assert set(tokenizer.all_special_ids) == set(range(19))
+    assert tokenizer.add_special_tokens(
+        {"extra_special_tokens": controls}, replace_extra_special_tokens=True
+    ) == 0
+
+    assert len(tokenizer) == original_size == token_config["vocab_size"] == 65536
+    assert {token: tokenizer.convert_tokens_to_ids(token) for token in expected_ids} == expected_ids
     assert set(tokenizer.all_special_ids) == set(range(19))
 
 

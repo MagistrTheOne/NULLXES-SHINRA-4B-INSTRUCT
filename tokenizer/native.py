@@ -5,6 +5,7 @@ backend and never constructs a Transformers AutoTokenizer.
 """
 from __future__ import annotations
 
+import inspect
 import shutil
 from pathlib import Path
 from typing import Any
@@ -120,17 +121,54 @@ class ShinraNativeTokenizer(PreTrainedTokenizer):
             raise ValueError("SHINRA Native tokenizer never truncates; shorten or reject input explicitly")
         return super().__call__(text, text_pair=text_pair, truncation=False, **kwargs)
 
-    def add_special_tokens(self, special_tokens_dict: dict, replace_additional_special_tokens: bool = True) -> int:
+    def add_special_tokens(self, special_tokens_dict: dict, *args: Any, **kwargs: Any) -> int:
+        if len(args) > 1:
+            raise TypeError("add_special_tokens accepts at most one replacement option")
+        positional_replace = args[0] if args else None
+        legacy_replace = kwargs.pop("replace_additional_special_tokens", None)
+        current_replace = kwargs.pop("replace_extra_special_tokens", None)
+        if kwargs:
+            unexpected = ", ".join(sorted(kwargs))
+            raise TypeError(f"unexpected add_special_tokens keyword argument(s): {unexpected}")
+        requested_values = [value for value in (positional_replace, legacy_replace, current_replace)
+                            if value is not None]
+        if any(type(value) is not bool for value in requested_values):
+            raise TypeError("special-token replacement option must be a bool")
+        if requested_values and any(value != requested_values[0] for value in requested_values[1:]):
+            raise TypeError("conflicting special-token replacement options were provided")
+        replace_special_tokens = requested_values[0] if requested_values else True
+
         before = self.vocab_size
-        added = super().add_special_tokens(
-            special_tokens_dict, replace_additional_special_tokens=replace_additional_special_tokens
+        base_add_special_tokens = super().add_special_tokens
+        parameters = inspect.signature(base_add_special_tokens).parameters
+        if "replace_extra_special_tokens" in parameters:
+            replacement_parameter = "replace_extra_special_tokens"
+            native_list_key, legacy_list_key = "extra_special_tokens", "additional_special_tokens"
+        elif "replace_additional_special_tokens" in parameters:
+            replacement_parameter = "replace_additional_special_tokens"
+            native_list_key, legacy_list_key = "additional_special_tokens", "extra_special_tokens"
+        else:
+            raise RuntimeError(
+                "unsupported Transformers add_special_tokens API: expected replace_extra_special_tokens "
+                "or replace_additional_special_tokens"
+            )
+
+        normalized_special_tokens = dict(special_tokens_dict)
+        if native_list_key in normalized_special_tokens and legacy_list_key in normalized_special_tokens:
+            raise ValueError("provide only one additional/extra special-token list")
+        if legacy_list_key in normalized_special_tokens:
+            normalized_special_tokens[native_list_key] = normalized_special_tokens.pop(legacy_list_key)
+        added = base_add_special_tokens(
+            normalized_special_tokens, **{replacement_parameter: replace_special_tokens}
         )
         if added or self.vocab_size != before or len(self) != before:
             raise ValueError("configured specials must resolve to existing SentencePiece IDs; vocabulary growth is forbidden")
-        self._native_special_strings = {
-            int(self.convert_tokens_to_ids(token)): token
-            for token in special_tokens_dict.get("additional_special_tokens", [])
-        }
+        if replace_special_tokens:
+            self._native_special_strings.clear()
+        additional_tokens = normalized_special_tokens.get(native_list_key, [])
+        self._native_special_strings.update({
+            int(self.convert_tokens_to_ids(token)): token for token in additional_tokens
+        })
         for field in ("unk_token", "bos_token", "eos_token", "pad_token"):
             token = special_tokens_dict.get(field)
             if token is not None:
