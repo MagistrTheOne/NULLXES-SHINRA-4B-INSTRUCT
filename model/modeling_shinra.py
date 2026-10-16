@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import math
 from typing import Any, Optional
 
@@ -286,8 +287,18 @@ class ShinraForCausalLM(ShinraPreTrainedModel, GenerationMixin):
         self.post_init()
         self.model._scaled_residual_init()
 
-    def tie_weights(self) -> None:
-        self.lm_head.weight = self.model.embed_tokens.weight
+    def tie_weights(self, missing_keys: set[str] | None = None, recompute_mapping: bool = True) -> None:
+        """Delegate tying to Transformers while accepting both legacy and current call contracts."""
+        parent_tie_weights = super().tie_weights
+        parameters = inspect.signature(parent_tie_weights).parameters
+        kwargs = {}
+        if "missing_keys" in parameters:
+            kwargs["missing_keys"] = missing_keys
+        elif missing_keys is not None:
+            raise TypeError("installed Transformers tie_weights API cannot reconcile missing checkpoint keys")
+        if "recompute_mapping" in parameters:
+            kwargs["recompute_mapping"] = recompute_mapping
+        parent_tie_weights(**kwargs)
 
     def get_output_embeddings(self) -> nn.Linear:
         return self.lm_head
