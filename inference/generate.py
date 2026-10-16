@@ -12,6 +12,7 @@ from configs.loader import load_config
 from model.modeling_shinra import ShinraForCausalLM
 from tokenizer import load_shinra_tokenizer
 from tokenizer.contract import encode_chat, suppressed_controls
+from scripts.checkpoint_admission import require_production_checkpoint
 
 
 def load_generate_stack(model_path: str):
@@ -19,6 +20,7 @@ def load_generate_stack(model_path: str):
     checkpoint = Path(model_path)
     if not checkpoint.is_dir():
         raise FileNotFoundError("inference requires a local SHINRA checkpoint directory")
+    require_production_checkpoint(checkpoint)
     for name in ("config.json", "tokenizer_config.json"):
         if not (checkpoint / name).is_file():
             raise FileNotFoundError(f"checkpoint is missing {name}: {checkpoint}")

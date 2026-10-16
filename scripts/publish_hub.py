@@ -11,6 +11,7 @@ from huggingface_hub import HfApi, create_repo, upload_folder
 from .export_hf_bundle import export_code
 from configs.loader import load_config
 from tokenizer.bundle import verify_bundle
+from .checkpoint_admission import require_production_checkpoint
 
 
 def main() -> None:
@@ -24,6 +25,7 @@ def main() -> None:
     checkpoint = Path(args.checkpoint).resolve()
     if not checkpoint.exists():
         raise FileNotFoundError(checkpoint)
+    require_production_checkpoint(checkpoint)
     verify_bundle(checkpoint, load_config())
     export_code(checkpoint)
     private = not args.public

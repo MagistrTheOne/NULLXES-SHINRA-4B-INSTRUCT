@@ -12,3 +12,5 @@ bundle files or a different YAML contract before model allocation. Old tokenizer
 checkpoints and packed v1 inputs are incompatible and must not be relabeled to pass admission.
 
 The engine refuses to start until `configs/shinra.yaml` is marked ready and frozen data/tokenizer hashes, immutable source revisions, hardware support, and complete train/validation artifacts are present. The corpus manifest must describe a distinct blind split, but the trainer does not open its packed files. Do not use Colab for training before those gates and review acceptance.
+
+An explicit audit-only GPU diagnostic is documented separately in [diagnostic_training.md](diagnostic_training.md). It does not open the production gates and cannot produce a checkpoint accepted by inference or publication.

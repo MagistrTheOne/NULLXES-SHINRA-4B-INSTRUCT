@@ -41,6 +41,8 @@ class PackedParquetDataset(Dataset):
         self.packed_manifest_sha256 = declared_sha
         admission = packed_manifest.get("admission")
         bundle_sha = packed_manifest.get("tokenizer_bundle_sha256")
+        self.admission = admission
+        self.tokenizer_bundle_sha256 = bundle_sha
         if packed_manifest.get("schema") != "nullxes.shinra.packed.v3" \
                 or admission not in {"production", "audit_only"} \
                 or not isinstance(bundle_sha, str) or not re.fullmatch(r"[a-f0-9]{64}", bundle_sha):

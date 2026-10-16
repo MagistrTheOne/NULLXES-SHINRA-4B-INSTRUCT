@@ -13,7 +13,10 @@ def main() -> None:
     add_common_args(parser)
     args = parser.parse_args()
     cfg = build_train_config("pretrain", args)
-    run_lm_training(cfg)
+    result = run_lm_training(cfg)
+    import json
+
+    print(json.dumps(result, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

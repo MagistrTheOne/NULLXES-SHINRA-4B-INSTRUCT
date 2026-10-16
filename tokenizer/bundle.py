@@ -184,12 +184,12 @@ def verify_bundle(root: str | Path, config: dict, *, require_frozen: bool = True
     return claimed
 
 
-def copy_bundle(source: Path, destination: Path, config: dict) -> None:
-    verify_bundle(source, config)
+def copy_bundle(source: Path, destination: Path, config: dict, *, require_frozen: bool = True) -> None:
+    verify_bundle(source, config, require_frozen=require_frozen)
     backend = config["tokenizer"].get("backend", "sentencepiece_fast")
     _, required_files = _schema_and_files(backend)
     destination.mkdir(parents=True, exist_ok=True)
     for name in (*required_files, MANIFEST):
         if (source / name).resolve() != (destination / name).resolve():
             shutil.copy2(source / name, destination / name)
-    verify_bundle(destination, config)
+    verify_bundle(destination, config, require_frozen=require_frozen)

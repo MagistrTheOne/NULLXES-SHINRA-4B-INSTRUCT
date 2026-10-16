@@ -197,7 +197,7 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         raise ConfigError("training dataset exhaustion policy must be explicit")
     resume_fields = config["checkpoint"].get("resume_requires_matching", [])
     if "packed_data_manifests_sha256" not in resume_fields:
-        raise ConfigError("checkpoint resume identity must bind all packed split manifest hashes")
+        raise ConfigError("checkpoint resume identity must bind train and validation packed manifest hashes")
     if config["data"].get("splits") != {"train": 0.98, "validation": 0.01, "blind": 0.01}:
         raise ConfigError("document split fractions must be frozen at train=0.98, validation=0.01, blind=0.01")
     cleaning = config["data"].get("cleaning", {})
