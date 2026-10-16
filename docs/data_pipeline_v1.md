@@ -25,6 +25,8 @@ python -m data.sources --source-id PleIAs/Russian-PD \
 
 The current YAML keeps both sources audit-only, so the commands above cannot produce production-admitted data. After separate rights/provenance approval and an approved immutable revision is fixed in the YAML, acquire a fresh production snapshot into a new directory with `--admission production`. Do not relabel or reuse an audit snapshot.
 
+`--max-documents N` caps the number of accepted records. Malformed rows encountered before the Nth accepted record are written to `rejections.jsonl` and do not consume the cap. The manifest records accepted, scanned and rejected totals and per-reason counts. Missing required Parquet columns, unreadable files and pinned-revision mismatches remain fatal.
+
 Prepare an audit corpus from the two acquired snapshots:
 
 ```bash
@@ -60,7 +62,7 @@ No `shinra-pretrain` command is approved by this runbook while the three config 
 
 | Artifact | Schema | Integrity and contents |
 |---|---|---|
-| Raw source snapshot | `nullxes.shinra.raw-source.v1` | Exact source revision, source-specific license claim and review status, upstream file path/SHA-256 list, record count, streaming `records.jsonl` SHA-256, self-hashed manifest; each row has stable document ID, original text SHA-256, upstream file hash, row position and URL/archive identifier. |
+| Raw source snapshot | `nullxes.shinra.raw-source.v2` | Exact source revision, source-specific license claim and review status, upstream file path/SHA-256 list, accepted/scanned/rejected counts, rejection reason counts, `records.jsonl` and redacted `rejections.jsonl` SHA-256 values, self-hashed manifest; accepted rows have stable document ID, original text SHA-256, upstream file hash, row position and URL/archive identifier. Rejection rows never contain source text. |
 | Clean corpus | `nullxes.shinra.corpus.v2` | Admission, source revision and raw manifest identities, frozen split policy, cleaner/dedup versions, total and per-language counts, train/validation/blind/duplicates/quarantine SHA-256 values, self-hashed manifest. Duplicate and quarantine records preserve source provenance. |
 | Packed split | `nullxes.shinra.packed.v3` | Corpus manifest SHA, Native tokenizer bundle SHA, split, per-shard SHA-256, token accounting and chunking contract, self-hashed manifest. Each Parquet row includes source/revision/document IDs, language, split, chunk index/count, half-open token offsets and raw/clean/upstream hashes. Training checkpoints bind the SHA of the train, validation and blind split manifests together.
 

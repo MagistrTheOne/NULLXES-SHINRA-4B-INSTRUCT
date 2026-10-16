@@ -117,8 +117,57 @@ def _load_raw_manifest(path: Path) -> dict[str, Any]:
     records = path.parent / "records.jsonl"
     if sha256_file(records) != manifest.get("records_sha256"):
         raise DataIntegrityError(f"{records}: SHA-256 differs from the raw source manifest")
-    if manifest.get("schema") != "nullxes.shinra.raw-source.v1":
+    if manifest.get("schema") != "nullxes.shinra.raw-source.v2":
         raise DataIntegrityError(f"{path}: unsupported raw source manifest schema")
+    accepted, scanned, rejected = (manifest.get(key) for key in ("accepted", "scanned", "rejected"))
+    if any(type(value) is not int or value < 0 for value in (accepted, scanned, rejected)) \
+            or accepted != manifest.get("records") or scanned != accepted + rejected:
+        raise DataIntegrityError(f"{path}: accepted/scanned/rejected counters are inconsistent")
+    bounded = manifest.get("bounded_slice")
+    maximum = manifest.get("max_accepted_documents")
+    if type(bounded) is not bool or manifest.get("admission") not in {"audit_only", "production"} \
+            or (bounded and (type(maximum) is not int or maximum <= 0 or accepted > maximum
+                             or manifest.get("admission") != "audit_only")) \
+            or (not bounded and maximum is not None):
+        raise DataIntegrityError(f"{path}: bounded acquisition/admission metadata is inconsistent")
+    rejection_name = manifest.get("rejections_file")
+    if rejection_name != "rejections.jsonl":
+        raise DataIntegrityError(f"{path}: unsupported or unsafe rejection-ledger path")
+    rejection_path = path.parent / rejection_name
+    if not rejection_path.is_file() or sha256_file(rejection_path) != manifest.get("rejections_sha256"):
+        raise DataIntegrityError(f"{rejection_path}: rejection-ledger SHA-256 mismatch")
+    files = manifest.get("files")
+    if not isinstance(files, list) or not files:
+        raise DataIntegrityError(f"{path}: upstream Parquet file provenance is missing")
+    valid_files = [item for item in files if isinstance(item, dict)
+                   and isinstance(item.get("path"), str) and item.get("path")
+                   and isinstance(item.get("sha256"), str)
+                   and re.fullmatch(r"[a-f0-9]{64}", item["sha256"])]
+    upstream_paths = {item["path"] for item in valid_files}
+    if len(valid_files) != len(files) or len(upstream_paths) != len(files):
+        raise DataIntegrityError(f"{path}: malformed or duplicate upstream file provenance")
+    reason_counts: dict[str, int] = {}
+    ledger_count = 0
+    with rejection_path.open("r", encoding="utf-8", errors="strict") as stream:
+        for line_no, line in enumerate(stream, 1):
+            try:
+                rejection = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise DataIntegrityError(f"{rejection_path}:{line_no}: malformed rejection JSON: {exc}") from exc
+            if not isinstance(rejection, dict) or "text" in rejection:
+                raise DataIntegrityError(f"{rejection_path}:{line_no}: invalid or non-redacted rejection record")
+            if rejection.get("source_id") != manifest.get("source_id") \
+                    or rejection.get("revision") != manifest.get("revision") \
+                    or rejection.get("upstream_file") not in upstream_paths \
+                    or type(rejection.get("upstream_row_index")) is not int \
+                    or rejection["upstream_row_index"] < 0 \
+                    or not isinstance(rejection.get("reason"), str) or not rejection["reason"] \
+                    or not isinstance(rejection.get("available_identifiers"), dict):
+                raise DataIntegrityError(f"{rejection_path}:{line_no}: incomplete rejection provenance")
+            reason_counts[rejection["reason"]] = reason_counts.get(rejection["reason"], 0) + 1
+            ledger_count += 1
+    if ledger_count != rejected or reason_counts != manifest.get("rejected_by_reason"):
+        raise DataIntegrityError(f"{rejection_path}: ledger rows or reason counts differ from the raw manifest")
     return manifest
 
 
@@ -343,6 +392,11 @@ def prepare_local_corpus(inputs: Iterable[str | Path], output_dir: str | Path, *
             source_provenance.append({"source_id": source["id"], "revision": source["revision"],
                                       "license_claim": source["license_claim"],
                                       "raw_manifest_sha256": raw_manifest["manifest_sha256"],
+                                      "accepted": raw_manifest["accepted"],
+                                      "scanned": raw_manifest["scanned"],
+                                      "rejected": raw_manifest["rejected"],
+                                      "rejected_by_reason": raw_manifest["rejected_by_reason"],
+                                      "rejections_sha256": raw_manifest["rejections_sha256"],
                                       "rights_review_status": raw_manifest.get("rights_review_status"),
                                       "provenance_review_status": raw_manifest.get("provenance_review_status")})
             for row in _records(path, source, raw_manifest):

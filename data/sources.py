@@ -37,7 +37,7 @@ def _content_sha(info: Any) -> str:
 
 
 def _file_rows(repo_id: str, revision: str, path: str, token: str | None,
-               batch_size: int) -> Iterator[dict[str, Any]]:
+               batch_size: int, required_columns: tuple[str, ...]) -> Iterator[dict[str, Any]]:
     try:
         import pyarrow.parquet as pq
         from huggingface_hub import HfFileSystem
@@ -51,10 +51,79 @@ def _file_rows(repo_id: str, revision: str, path: str, token: str | None,
     try:
         with fs.open(remote, "rb") as stream:
             parquet = pq.ParquetFile(stream)
+            missing_columns = sorted(set(required_columns) - set(parquet.schema_arrow.names))
+            if missing_columns:
+                raise SourceAcquisitionError(
+                    f"{repo_id}@{revision}/{path}: required Parquet columns are missing: {missing_columns}"
+                )
             for batch in parquet.iter_batches(batch_size=batch_size):
                 yield from batch.to_pylist()
+    except SourceAcquisitionError:
+        raise
     except Exception as exc:
         raise SourceAcquisitionError(f"failed streaming pinned Parquet file {repo_id}@{revision}/{path}: {exc}") from exc
+
+
+def _available_identifiers(row: Any, source: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(row, dict):
+        return {}
+    fields = [source.get("document_id_field"), source.get("url_field")]
+    result: dict[str, Any] = {}
+    for field in dict.fromkeys(name for name in fields if isinstance(name, str) and name):
+        value = row.get(field)
+        if isinstance(value, (str, int)) and not isinstance(value, bool):
+            text = str(value)
+            result[field] = text if len(text) <= 1024 else {
+                "prefix": text[:1024], "truncated": True,
+                "value_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            }
+    return result
+
+
+def _validate_parquet_schema(repo_id: str, revision: str, path: str, token: str | None,
+                             required_columns: tuple[str, ...]) -> None:
+    try:
+        import pyarrow.parquet as pq
+        from huggingface_hub import HfFileSystem
+
+        fs = HfFileSystem(token=token)
+        with fs.open(f"datasets/{repo_id}@{revision}/{path}", "rb") as stream:
+            parquet = pq.ParquetFile(stream)
+            missing = sorted(set(required_columns) - set(parquet.schema_arrow.names))
+            if missing:
+                raise SourceAcquisitionError(
+                    f"{repo_id}@{revision}/{path}: required Parquet columns are missing: {missing}"
+                )
+    except SourceAcquisitionError:
+        raise
+    except Exception as exc:
+        raise SourceAcquisitionError(
+            f"failed validating pinned Parquet schema {repo_id}@{revision}/{path}: {exc}"
+        ) from exc
+
+
+def _rejection_reason(row: Any, text_field: str, id_field: str) -> str | None:
+    if not isinstance(row, dict):
+        return "malformed_row_shape"
+    if text_field not in row:
+        return "missing_text_field"
+    text = row[text_field]
+    if text is None:
+        return "null_text"
+    if not isinstance(text, str):
+        return "non_string_text"
+    if not text.strip():
+        return "empty_text"
+    if id_field not in row:
+        return "missing_document_identifier"
+    identifier = row[id_field]
+    if identifier is None:
+        return "null_document_identifier"
+    if isinstance(identifier, bool) or not isinstance(identifier, (str, int)):
+        return "non_scalar_document_identifier"
+    if not str(identifier).strip():
+        return "empty_document_identifier"
+    return None
 
 
 def _source_rows(source: dict[str, Any], token: str | None, batch_size: int
@@ -69,6 +138,12 @@ def _source_rows(source: dict[str, Any], token: str | None, batch_size: int
     if not COMMIT_RE.fullmatch(revision):
         raise SourceAcquisitionError(f"{repo_id}: revision must be a full immutable 40-character commit SHA")
     api = HfApi(token=token)
+    repo_info = api.repo_info(repo_id, repo_type="dataset", revision=revision)
+    resolved_revision = getattr(repo_info, "sha", None)
+    if resolved_revision != revision:
+        raise SourceAcquisitionError(
+            f"{repo_id}: upstream resolved revision {resolved_revision!r}, expected pinned commit {revision}"
+        )
     paths = sorted(path for path in api.list_repo_files(repo_id, repo_type="dataset", revision=revision)
                    if any(path.startswith(prefix) for prefix in source["parquet_prefixes"])
                    and path.endswith(".parquet"))
@@ -78,21 +153,31 @@ def _source_rows(source: dict[str, Any], token: str | None, batch_size: int
     file_provenance = [{"path": info.path, "sha256": _content_sha(info)} for info in infos]
     if {item["path"] for item in file_provenance} != set(paths):
         raise SourceAcquisitionError(f"{repo_id}@{revision}: upstream metadata omitted one or more Parquet files")
+    required_columns = (source["text_field"], source["document_id_field"])
+    for path in paths:
+        _validate_parquet_schema(repo_id, revision, path, token, required_columns)
 
     def rows() -> Iterator[dict[str, Any]]:
         for path in paths:
             file_sha = next(item["sha256"] for item in file_provenance if item["path"] == path)
             subset = source["subset_by_path"].get(next((prefix.rstrip("/") for prefix in source["parquet_prefixes"]
                                                         if path.startswith(prefix)), "default"), "default")
-            for row_index, row in enumerate(_file_rows(repo_id, revision, path, token, batch_size)):
+            for row_index, row in enumerate(_file_rows(
+                repo_id, revision, path, token, batch_size,
+                (source["text_field"], source["document_id_field"]),
+            )):
                 text_field = source["text_field"]
                 id_field = source["document_id_field"]
-                text = row.get(text_field)
-                upstream_id = row.get(id_field)
-                if not isinstance(text, str) or not text.strip():
-                    raise SourceAcquisitionError(f"{repo_id}@{revision}/{path} row {row_index}: missing non-empty {text_field}")
-                if upstream_id is None or not str(upstream_id).strip():
-                    raise SourceAcquisitionError(f"{repo_id}@{revision}/{path} row {row_index}: missing {id_field}")
+                reason = _rejection_reason(row, text_field, id_field)
+                if reason:
+                    yield {"_outcome": "rejected", "rejection": {
+                        "source_id": repo_id, "revision": revision, "upstream_file": path,
+                        "upstream_row_index": row_index, "reason": reason,
+                        "available_identifiers": _available_identifiers(row, source),
+                    }}
+                    continue
+                text = row[text_field]
+                upstream_id = row[id_field]
                 language = source["language_by_subset"].get(subset)
                 if language not in {"en", "ru"}:
                     raise SourceAcquisitionError(f"{repo_id}: no configured language for subset {subset!r}")
@@ -102,7 +187,7 @@ def _source_rows(source: dict[str, Any], token: str | None, batch_size: int
                 url = row.get(source.get("url_field", "")) if source.get("url_field") else None
                 if not url and source.get("url_template"):
                     url = source["url_template"].format(identifier=external_id)
-                yield {
+                yield {"_outcome": "accepted", "record": {
                     "text": text,
                     "source_id": repo_id,
                     "revision": revision,
@@ -119,7 +204,7 @@ def _source_rows(source: dict[str, Any], token: str | None, batch_size: int
                     "upstream_file_sha256": file_sha,
                     "upstream_row_index": row_index,
                     "source_record": f"{repo_id}@{revision}/{path}#{row_index}",
-                }
+                }}
 
     return file_provenance, rows()
 
@@ -151,19 +236,35 @@ def acquire_source(source_id: str, output_dir: str | Path, *, config_path: str |
     files, rows = _source_rows(source, token, int(config["data"]["parquet_batch_rows"]))
     destination.parent.mkdir(parents=True, exist_ok=True)
     stage = Path(tempfile.mkdtemp(prefix=f".{destination.name}.partial-", dir=destination.parent))
-    count = 0
+    accepted = 0
+    scanned = 0
+    rejected = 0
+    rejected_by_reason: dict[str, int] = {}
     try:
         records_path = stage / "records.jsonl"
+        rejections_path = stage / "rejections.jsonl"
         with records_path.open("w", encoding="utf-8", newline="\n") as stream:
-            for record in rows:
-                if max_documents is not None and count >= max_documents:
-                    break
-                stream.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-                count += 1
-        if count == 0:
-            raise SourceAcquisitionError(f"{source_id}@{source['revision']}: source returned no documents")
+            with rejections_path.open("w", encoding="utf-8", newline="\n") as rejected_stream:
+                for outcome in rows:
+                    if outcome["_outcome"] == "rejected":
+                        rejection = outcome["rejection"]
+                        rejected_stream.write(json.dumps(rejection, ensure_ascii=False, sort_keys=True) + "\n")
+                        scanned += 1
+                        rejected += 1
+                        reason = rejection["reason"]
+                        rejected_by_reason[reason] = rejected_by_reason.get(reason, 0) + 1
+                        continue
+                    if outcome["_outcome"] != "accepted" or not isinstance(outcome.get("record"), dict):
+                        raise SourceAcquisitionError("source adapter emitted an invalid acquisition outcome")
+                    stream.write(json.dumps(outcome["record"], ensure_ascii=False, sort_keys=True) + "\n")
+                    accepted += 1
+                    scanned += 1
+                    if max_documents is not None and accepted >= max_documents:
+                        break
+        if scanned == 0:
+            raise SourceAcquisitionError(f"{source_id}@{source['revision']}: source returned no rows")
         manifest = {
-            "schema": "nullxes.shinra.raw-source.v1",
+            "schema": "nullxes.shinra.raw-source.v2",
             "purpose": "pretraining-candidate-source-audit",
             "admission": "production" if admission == "production" and max_documents is None else "audit_only",
             "source_id": source_id,
@@ -173,9 +274,16 @@ def acquire_source(source_id: str, output_dir: str | Path, *, config_path: str |
             "rights_review_status": source.get("rights_review_status", "audit_only"),
             "provenance_review_status": source.get("provenance_review_status", "audit_only"),
             "files": files,
-            "records": count,
+            "records": accepted,
+            "accepted": accepted,
+            "scanned": scanned,
+            "rejected": rejected,
+            "rejected_by_reason": dict(sorted(rejected_by_reason.items())),
             "bounded_slice": max_documents is not None,
+            "max_accepted_documents": max_documents,
             "records_sha256": sha256_file(records_path),
+            "rejections_file": "rejections.jsonl",
+            "rejections_sha256": sha256_file(rejections_path),
         }
         manifest["manifest_sha256"] = hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
         temporary_manifest = stage / ".manifest.json.tmp"
@@ -197,7 +305,7 @@ def main() -> None:
     parser.add_argument("--config", default=str(CONFIG_PATH))
     parser.add_argument("--admission", choices=("audit", "production"), default="audit")
     parser.add_argument("--max-documents", type=int, default=None,
-                        help="bounded audit slice only; any bounded output is permanently audit_only")
+                        help="maximum accepted documents; rejected rows are still scanned and recorded")
     parser.add_argument("--token", default=None, help="optional Hugging Face token; prefer HF_TOKEN environment login")
     args = parser.parse_args()
     token = args.token or os.environ.get("HF_TOKEN")
