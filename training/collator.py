@@ -266,8 +266,26 @@ class PackedParquetDataset(Dataset):
 
 
 def collate_lm(batch: list[dict[str, Any]]) -> dict[str, Any]:
+    if not batch:
+        raise ValueError("cannot collate an empty language-model batch")
     result = {key: torch.stack([row[key] for row in batch], dim=0)
               for key in batch[0] if key != "row_index"}
+    attention_mask = result.get("attention_mask")
+    if attention_mask is None or attention_mask.ndim != 2:
+        raise ValueError("language-model batch requires a two-dimensional right-padding attention mask")
+    active_lengths = attention_mask.to(dtype=torch.long).sum(dim=1)
+    positions = torch.arange(attention_mask.shape[1], device=attention_mask.device).unsqueeze(0)
+    expected_mask = positions < active_lengths.unsqueeze(1)
+    if not torch.equal(attention_mask.to(dtype=torch.bool), expected_mask):
+        raise ValueError("language-model batch attention masks must contain active tokens followed by right padding")
+    max_active_length = int(active_lengths.max().item())
+    if max_active_length <= 0:
+        raise ValueError("language-model batch contains no active tokens")
+    for key in ("input_ids", "attention_mask", "labels"):
+        value = result.get(key)
+        if value is None or value.ndim != 2 or value.shape != attention_mask.shape:
+            raise ValueError(f"language-model batch field {key!r} must align with attention_mask")
+        result[key] = value[:, :max_active_length].contiguous()
     if "row_index" in batch[0]:
         result["row_indices"] = [int(row["row_index"]) for row in batch]
     return result
