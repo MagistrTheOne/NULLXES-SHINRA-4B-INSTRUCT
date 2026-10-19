@@ -45,12 +45,10 @@ class PackedParquetDataset(Dataset):
         bundle_sha = packed_manifest.get("tokenizer_bundle_sha256")
         self.admission = admission
         self.tokenizer_bundle_sha256 = bundle_sha
-        if packed_manifest.get("schema") != "nullxes.shinra.packed.v3" \
-                or admission not in {"production", "audit_only"} \
+        if packed_manifest.get("schema") != "nullxes.shinra.packed.synthetic.v1" \
+                or admission != "audit_only" \
                 or not isinstance(bundle_sha, str) or not re.fullmatch(r"[a-f0-9]{64}", bundle_sha):
             raise ValueError(f"{root}: packed artifact schema/admission/tokenizer identity is invalid")
-        if admission == "production" and (not configured_bundle_sha or configured_bundle_sha != bundle_sha):
-            raise ValueError(f"{root}: production packed tokenizer identity differs from the frozen YAML SHA")
         if admission == "audit_only" and not allow_audit_data:
             raise ValueError(f"{root}: audit-only packed data requires explicit allow_audit_data=True")
         if admission == "audit_only" and configured_bundle_sha and configured_bundle_sha != bundle_sha:
@@ -65,14 +63,17 @@ class PackedParquetDataset(Dataset):
             raise ShardError(f"{root}: packed shard set differs from manifest")
         if not isinstance(shard_hashes, dict) or set(shard_hashes) != set(declared):
             raise ShardError(f"{root}: packed shard hashes are incomplete")
-        source_hashes: set[str] = set()
+        corpus_hashes: set[str] = set()
         self._row_groups: list[tuple[int, int, int, int]] = []
         total_rows = 0
         languages: list[np.ndarray] = []
         targets: list[np.ndarray] = []
         self._row_group_starts: list[int] = []
         self._parquet_files = [pq.ParquetFile(path) for path in self.files]
-        source_allowlist = {source["id"]: source for source in self.config["data"]["sources"]}
+        if self.config["data"].get("acquisition") != "nullxes_synthetic_engine":
+            raise ShardError("active packed dataset policy is not the NULLXES Synthetic Engine")
+        family_allowlist = {family["family_id"]: family
+                            for family in self.config["data"]["synthetic"]["families"]}
         previous_document: str | None = None
         previous_chunk_index = -1
         previous_chunk_count = 0
@@ -84,31 +85,30 @@ class PackedParquetDataset(Dataset):
                 raise ShardError(f"{path}: SHA256 differs from packed manifest")
             if "language" not in parquet.schema_arrow.names or "labels" not in parquet.schema_arrow.names:
                 raise ShardError(f"{path}: per-row language and explicit loss labels are required")
-            if not {"tokenizer_bundle_sha256", "source_manifest_sha256", "input_ids", "attention_mask"}.issubset(
+            if not {"tokenizer_bundle_sha256", "corpus_manifest_sha256", "input_ids", "attention_mask"}.issubset(
                 parquet.schema_arrow.names
             ):
                 raise ShardError(f"{path}: required tokenizer, corpus or sequence fields are missing")
-            row_metadata_fields = {"source_id", "revision", "document_id", "upstream_document_id", "source_record",
-                "subset", "license", "url_or_archive_id", "window_semantics",
-                "rights_status", "language",
-                "chunk_index", "chunk_count",
-                "token_start", "token_end", "document_token_count", "split", "raw_sha256", "clean_sha256", "upstream_file_sha256",
-                "is_final_document_window"}
+            row_metadata_fields = {"record_id", "family_id", "functional_family", "template_family",
+                "scenario_family", "generator_id", "generator_version", "generator_seed", "answer_verifier",
+                "verifier_version", "validation_status", "functional_signature", "task_sha256", "text_sha256",
+                "language", "split", "window_semantics", "chunk_index", "chunk_count", "token_start",
+                "token_end", "document_token_count", "is_final_document_window"}
             if not row_metadata_fields.issubset(parquet.schema_arrow.names):
                 raise ShardError(f"{path}: per-row source/document/chunk provenance is incomplete")
             for row_group_idx in range(parquet.metadata.num_row_groups):
                 metadata = parquet.metadata.row_group(row_group_idx)
                 row_count = metadata.num_rows
                 self._row_group_starts.append(total_rows)
-                columns = ["labels", "tokenizer_bundle_sha256", "source_manifest_sha256",
+                columns = ["labels", "tokenizer_bundle_sha256", "corpus_manifest_sha256",
                            *sorted(row_metadata_fields)]
                 table = parquet.read_row_group(row_group_idx, columns=columns)
                 if set(table.column("tokenizer_bundle_sha256").to_pylist()) != {bundle_sha}:
                     raise ShardError(f"{path}: row tokenizer identity is missing or mismatched")
-                group_sources = set(table.column("source_manifest_sha256").to_pylist())
-                if len(group_sources) != 1:
-                    raise ShardError(f"{path}: mixed corpus manifests in a row group")
-                source_hashes.update(group_sources)
+                group_manifests = set(table.column("corpus_manifest_sha256").to_pylist())
+                if len(group_manifests) != 1:
+                    raise ShardError(f"{path}: mixed synthetic corpus manifests in a row group")
+                corpus_hashes.update(group_manifests)
                 language_values = table.column("language").to_pylist()
                 unknown = sorted(set(language_values) - self.LANGUAGE_CODES.keys())
                 if unknown:
@@ -124,32 +124,26 @@ class PackedParquetDataset(Dataset):
                     counts[row_idx] = np.count_nonzero(values[start + 1:end] != -100)
                 metadata_columns = {name: table.column(name).to_pylist() for name in row_metadata_fields}
                 for row_idx in range(row_count):
-                    source_id = metadata_columns["source_id"][row_idx]
-                    revision = metadata_columns["revision"][row_idx]
-                    source = source_allowlist.get(source_id)
-                    if source is None or source.get("revision") != revision:
-                        raise ShardError(f"{path}: row source/revision is outside the current YAML allowlist")
-                    if admission == "production" and (
-                        source.get("status") != "approved" or source.get("rights_review_status") != "approved"
-                        or source.get("provenance_review_status") != "approved"
-                    ):
-                        raise ShardError(f"{path}: production row belongs to a source without current approval")
+                    family_id = metadata_columns["family_id"][row_idx]
+                    family = family_allowlist.get(family_id)
+                    if family is None:
+                        raise ShardError(f"{path}: synthetic family is outside the current YAML allowlist")
                     if metadata_columns["split"][row_idx] != packed_manifest.get("split"):
                         raise ShardError(f"{path}: row split differs from the packed split manifest")
-                    if metadata_columns["license"][row_idx] != source.get("license_claim"):
-                        raise ShardError(f"{path}: row license claim differs from YAML source metadata")
-                    if metadata_columns["rights_status"][row_idx] != source.get("rights_review_status"):
-                        raise ShardError(f"{path}: row rights status differs from the source YAML")
-                    if admission == "production" and metadata_columns["rights_status"][row_idx] != "approved":
-                        raise ShardError(f"{path}: row has no production rights approval")
-                    if not metadata_columns["source_record"][row_idx] or not metadata_columns["subset"][row_idx]:
-                        raise ShardError(f"{path}: upstream row and source subset provenance are missing")
+                    if family.get("split") != packed_manifest.get("split") \
+                            or family.get("language") != metadata_columns["language"][row_idx]:
+                        raise ShardError(f"{path}: family split or language differs from the YAML contract")
+                    for field in ("functional_family", "template_family", "scenario_family"):
+                        if metadata_columns[field][row_idx] != family.get(field):
+                            raise ShardError(f"{path}: synthetic {field} differs from the YAML family contract")
+                    if metadata_columns["generator_id"][row_idx] != family.get("task_kind") \
+                            or metadata_columns["generator_version"][row_idx] != self.config["data"]["synthetic"]["engine_version"] \
+                            or metadata_columns["verifier_version"][row_idx] != self.config["data"]["synthetic"]["verifier_version"] \
+                            or metadata_columns["validation_status"][row_idx] != "verified":
+                        raise ShardError(f"{path}: generator, verifier or validation admission is invalid")
                     if metadata_columns["window_semantics"][row_idx] != "isolated-continuation-windows.v1":
                         raise ShardError(f"{path}: unsupported continuation-window semantics")
-                    if not metadata_columns["upstream_document_id"][row_idx] \
-                            or not metadata_columns["url_or_archive_id"][row_idx]:
-                        raise ShardError(f"{path}: upstream document URL/archive provenance is missing")
-                    document_id = metadata_columns["document_id"][row_idx]
+                    document_id = metadata_columns["record_id"][row_idx]
                     chunk_index = int(metadata_columns["chunk_index"][row_idx])
                     chunk_count = int(metadata_columns["chunk_count"][row_idx])
                     token_start = int(metadata_columns["token_start"][row_idx])
@@ -166,9 +160,10 @@ class PackedParquetDataset(Dataset):
                     if token_end - token_start != int(counts[row_idx]) - int(final_window):
                         raise ShardError(f"{path}: source token offsets differ from supervised body-token count")
                     identity = tuple(metadata_columns[name][row_idx] for name in
-                                     ("source_id", "revision", "language", "raw_sha256", "clean_sha256",
+                                     ("family_id", "functional_family", "template_family", "scenario_family",
+                                      "generator_seed", "task_sha256", "text_sha256", "language",
                                       "document_token_count"))
-                    for hash_field in ("raw_sha256", "clean_sha256", "upstream_file_sha256"):
+                    for hash_field in ("task_sha256", "text_sha256", "functional_signature"):
                         if not re.fullmatch(r"[a-f0-9]{64}", str(metadata_columns[hash_field][row_idx])):
                             raise ShardError(f"{path}: malformed per-row {hash_field}")
                     if document_id != previous_document:
@@ -195,13 +190,13 @@ class PackedParquetDataset(Dataset):
                 total_rows += row_count
         if previous_document is not None and previous_chunk_index != previous_chunk_count - 1:
             raise ShardError(f"packed split ends before document {previous_document} is complete")
-        if len(source_hashes) != 1:
-            raise ShardError(f"{root}: Parquet shards have inconsistent source manifests")
-        self.source_manifest_sha256 = next(iter(source_hashes))
-        if self.source_manifest_sha256 != packed_manifest.get("source_manifest_sha256"):
+        if len(corpus_hashes) != 1:
+            raise ShardError(f"{root}: Parquet shards have inconsistent corpus manifests")
+        self.corpus_manifest_sha256 = next(iter(corpus_hashes))
+        if self.corpus_manifest_sha256 != packed_manifest.get("corpus_manifest_sha256"):
             raise ShardError(f"{root}: Parquet shards do not match packed manifest")
         frozen_corpus = self.config["data"].get("manifest_sha256")
-        if frozen_corpus is not None and frozen_corpus != self.source_manifest_sha256:
+        if frozen_corpus is not None and frozen_corpus != self.corpus_manifest_sha256:
             raise ShardError(f"{root}: corpus differs from frozen YAML identity")
         self.language_codes = np.concatenate(languages) if languages else np.empty(0, dtype=np.uint8)
         self.target_tokens = np.concatenate(targets) if targets else np.empty(0, dtype=np.uint16)

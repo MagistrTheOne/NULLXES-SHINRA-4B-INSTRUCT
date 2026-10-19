@@ -1,4 +1,4 @@
-"""Content-addressed manifests for the legacy Fast and Native bundles."""
+"""Content-addressed manifest for the Native SentencePiece bundle."""
 from __future__ import annotations
 
 import hashlib
@@ -7,13 +7,9 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-FAST_SCHEMA = "nullxes.shinra.tokenizer-bundle.v1"
 NATIVE_SCHEMA = "nullxes.shinra.native-tokenizer-bundle.v1"
-FAST_FILES = ("tokenizer.model", "tokenizer.vocab", "tokenizer.json", "tokenizer_config.json",
-              "special_tokens_map.json", "chat_template.jinja", "tokenizer_stats.json", "corpus_stats.json")
 NATIVE_FILES = ("tokenizer.model", "tokenizer.vocab", "tokenizer_config.json",
                 "special_tokens_map.json", "chat_template.jinja", "tokenizer_stats.json", "corpus_stats.json")
-FILES = FAST_FILES
 MANIFEST = "tokenizer_manifest.json"
 
 
@@ -39,7 +35,7 @@ def _special_id_map(config: dict) -> dict[str, int]:
 
 def contract(config: dict, backend: str | None = None) -> dict:
     tok = config["tokenizer"]
-    backend = backend or tok.get("backend", "sentencepiece_fast")
+    backend = backend or tok.get("backend", "sentencepiece_native")
     keys = ("algorithm", "vocab_size", "byte_fallback", "character_coverage", "normalization",
             "split_digits", "unk_id", "bos_id", "end_of_turn_id", "pad_id", "end_of_document_id",
             "special_tokens", "special_token_ids", "add_bos_in_tokenizer", "chat_template_adds_bos",
@@ -50,8 +46,11 @@ def contract(config: dict, backend: str | None = None) -> dict:
               "text_policy": "nfc-preserve-whitespace-reject-controls-and-metaspace.v1",
               "chat_policy": "basic-text-single-bos-reject-overflow.v1"}
     if backend == "sentencepiece_native":
+        native_sha = tok.get("native_model_sha256")
+        if not isinstance(native_sha, str) or not native_sha:
+            raise ValueError("Native model SHA256 must be reviewed and pinned in configs/shinra.yaml")
         result["backend"] = backend
-        result["native_model_sha256"] = tok["native_model_sha256"]
+        result["native_model_sha256"] = native_sha
     return result
 
 
@@ -60,9 +59,12 @@ def write_native_metadata(root: Path, config: dict, *, provenance: dict[str, Any
     from .special_tokens import render_chat_template
 
     tok = config["tokenizer"]
+    native_sha = tok.get("native_model_sha256")
+    if not isinstance(native_sha, str) or not native_sha:
+        raise ValueError("Native model SHA256 must be reviewed and pinned before final bundle metadata")
     payload = {"tokenizer_class": "ShinraNativeTokenizer", "shinra_tokenizer_backend": "sentencepiece_native",
                "algorithm": tok["algorithm"], "byte_fallback": bool(tok["byte_fallback"]),
-               "split_digits": bool(tok["split_digits"]), "native_model_sha256": tok["native_model_sha256"],
+               "split_digits": bool(tok["split_digits"]), "native_model_sha256": native_sha,
                "vocab_size": int(tok["vocab_size"]), "model_max_length": int(config["model"]["max_position_embeddings"]),
                "add_bos_token": False, "add_eos_token": False, "normalization": tok["normalization"],
                "unicode_normalization": config["data"]["cleaning"]["unicode_normalization"],
@@ -87,14 +89,12 @@ def write_native_metadata(root: Path, config: dict, *, provenance: dict[str, Any
 def _schema_and_files(backend: str) -> tuple[str, tuple[str, ...]]:
     if backend == "sentencepiece_native":
         return NATIVE_SCHEMA, NATIVE_FILES
-    if backend == "sentencepiece_fast":
-        return FAST_SCHEMA, FAST_FILES
     raise ValueError(f"unknown tokenizer backend: {backend}")
 
 
 def write_manifest(root: Path, config: dict, *, backend: str | None = None,
                    provenance: dict[str, Any] | None = None) -> str:
-    backend = backend or config["tokenizer"].get("backend", "sentencepiece_fast")
+    backend = backend or config["tokenizer"].get("backend", "sentencepiece_native")
     schema, required_files = _schema_and_files(backend)
     manifest = {"schema": schema, "contract": contract(config, backend),
                 "files": {name: file_sha256(root / name) for name in required_files}}
@@ -114,16 +114,14 @@ def write_manifest(root: Path, config: dict, *, backend: str | None = None,
 def verify_bundle(root: str | Path, config: dict, *, require_frozen: bool = True,
                   backend: str | None = None) -> str:
     root = Path(root)
-    backend = backend or config["tokenizer"].get("backend", "sentencepiece_fast")
+    backend = backend or config["tokenizer"].get("backend", "sentencepiece_native")
     schema, required_files = _schema_and_files(backend)
     for name in ("added_tokens.json", "chat_templates"):
         if (root / name).exists():
             raise ValueError(f"unmanifested tokenizer override is forbidden: {name}")
     manifest = json.loads((root / MANIFEST).read_text(encoding="utf-8"))
     claimed = manifest.pop("manifest_sha256", None)
-    backend_matches = manifest.get("backend") == backend if backend == "sentencepiece_native" else (
-        manifest.get("backend") in (None, "sentencepiece_fast")
-    )
+    backend_matches = manifest.get("backend") == backend
     if claimed != _digest(manifest) or manifest.get("schema") != schema or not backend_matches:
         raise ValueError("tokenizer bundle manifest identity is invalid")
     if manifest.get("contract") != contract(config, backend):
@@ -137,7 +135,10 @@ def verify_bundle(root: str | Path, config: dict, *, require_frozen: bool = True
             raise ValueError(f"tokenizer bundle file missing or SHA256 mismatch: {name}")
 
     if backend == "sentencepiece_native":
-        if file_sha256(root / "tokenizer.model") != config["tokenizer"].get("native_model_sha256"):
+        native_model_sha = config["tokenizer"].get("native_model_sha256")
+        if not isinstance(native_model_sha, str) or not native_model_sha:
+            raise ValueError("Native SentencePiece model SHA256 is not frozen in configs/shinra.yaml")
+        if file_sha256(root / "tokenizer.model") != native_model_sha:
             raise ValueError("native SentencePiece model SHA256 differs from the verified model identity")
         metadata = json.loads((root / "tokenizer_config.json").read_text(encoding="utf-8"))
         tok = config["tokenizer"]
@@ -150,7 +151,7 @@ def verify_bundle(root: str | Path, config: dict, *, require_frozen: bool = True
                 or metadata.get("algorithm") != tok["algorithm"]
                 or metadata.get("byte_fallback") is not tok["byte_fallback"]
                 or metadata.get("split_digits") is not tok["split_digits"]
-                or metadata.get("native_model_sha256") != tok["native_model_sha256"]
+                or metadata.get("native_model_sha256") != tok.get("native_model_sha256")
                 or metadata.get("vocab_size") != tok["vocab_size"]
                 or metadata.get("model_max_length") != config["model"]["max_position_embeddings"]
                 or metadata.get("normalization") != tok["normalization"]
@@ -158,7 +159,7 @@ def verify_bundle(root: str | Path, config: dict, *, require_frozen: bool = True
                 or metadata.get("add_eos_token") is not False
                 or metadata.get("unicode_normalization") != config["data"]["cleaning"]["unicode_normalization"]
                 or manifest_provenance != provenance
-                or provenance.get("source_model_sha256") != tok["native_model_sha256"]
+                or provenance.get("source_model_sha256") != tok.get("native_model_sha256")
                 or metadata.get("special_token_ids") != {key: int(value) for key, value in {
                     **{key: tok[f"{key}_id"] for key in
                        ("unk", "bos", "end_of_turn", "pad", "end_of_document")},
@@ -186,7 +187,7 @@ def verify_bundle(root: str | Path, config: dict, *, require_frozen: bool = True
 
 def copy_bundle(source: Path, destination: Path, config: dict, *, require_frozen: bool = True) -> None:
     verify_bundle(source, config, require_frozen=require_frozen)
-    backend = config["tokenizer"].get("backend", "sentencepiece_fast")
+    backend = config["tokenizer"].get("backend", "sentencepiece_native")
     _, required_files = _schema_and_files(backend)
     destination.mkdir(parents=True, exist_ok=True)
     for name in (*required_files, MANIFEST):

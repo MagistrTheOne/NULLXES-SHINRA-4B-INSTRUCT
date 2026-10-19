@@ -9,7 +9,7 @@ UNK=0, BOS=1, EOT=2, PAD=3, EOD=4; configured controls retain IDs 5–18.
 - Equality is `decode(encode(text)) == NFC(text)`, not byte equality with original Unicode.
 - Cleaning preserves whitespace, CR/LF, tabs, digits, signs and separators. Numeric spans are checked.
 - Native SentencePiece byte fallback and decoding are delegated to the verified SentencePiece model.
-  The legacy Fast backend uses its own byte-fallback decoder. Neither backend inserts implicit BOS/EOS.
+  The active bundle is Native-only and does not insert implicit BOS/EOS.
 - Literal control strings in ordinary text are rejected, including user messages.
   Literal U+2581 (`▁`) is also rejected because it is reserved by Metaspace. No silent escaping or replacement.
 - Use the repository `encode_text` / `encode_chat` helpers. Raw HF `encode` is a low-level
@@ -21,7 +21,7 @@ UNK=0, BOS=1, EOT=2, PAD=3, EOD=4; configured controls retain IDs 5–18.
   Other controls are suppressed during generation. Tools, reasoning channels and code-role messages
   are unavailable until a distinct tool-handoff/final-turn protocol is designed and trained.
 
-## Candidate build (requires separate authorization)
+## Candidate build (remote only; not yet run)
 
 Input is a previously audited corpus directory containing `manifest.json`, `train.jsonl`,
 `validation.jsonl`, and `blind.jsonl`. Arbitrary text files and permissive JSON fallback were removed.
@@ -37,10 +37,12 @@ Then, only after authorization:
 python -m tokenizer.train_tokenizer --corpus-dir data/cleaned --output-dir tokenizer/artifacts
 ```
 
-The legacy Fast build stages output separately and publishes it only after full EN/RU validation-split
-round-trips, SP/HF ID parity, zero UNK, numeric/Unicode/whitespace probes and BOS/control checks.
-These checks are implemented, **not executed** in this revision. Metrics are collected from real
-validation records; contract probes never substitute for a corpus or enter training.
+The Native builder writes a `candidate_not_frozen` artifact when YAML has no model SHA. Review its
+actual model hash, then freeze `native_model_sha256` in the one YAML and rebuild for a complete bundle.
+If the configured hash differs, publication fails and no bundle is emitted. Finalization checks actual
+validation text in EN/RU, SentencePiece round-trip, zero UNK, numeric/Unicode/whitespace probes and
+chat boundary encoding. These checks are code only; **none has been executed**. No candidate, bundle,
+fertility measurements or acceptance result currently exist.
 
 ## Bundle identity
 
@@ -50,8 +52,8 @@ Native bundle manifests use schema `nullxes.shinra.native-tokenizer-bundle.v1` a
 - `tokenizer_config.json`, `special_tokens_map.json`, `chat_template.jinja`;
 - `tokenizer_stats.json`, `corpus_stats.json`.
 
-The original Fast schema v1 remains separately supported and continues to require
-`tokenizer.json`. Native loading never uses that file or falls back to Fast.
+Fast conversion is excluded from the active YAML validator and installed tokenizer build path. Native
+loading never uses `tokenizer.json` or falls back to Fast.
 
 The Native manifest also contains the configuration contract and provenance. Its `manifest_sha256` is SHA256 of the
 sorted, ASCII-escaped JSON object **without** its own hash field. It is not the hash of the
@@ -68,7 +70,7 @@ Checkpoints copy the complete bundle byte-for-byte and record the same identity 
 Missing files, changed bytes/configuration, absent frozen hash, legacy packed v1 and mismatched
 resume state cause refusal. Existing experimental shards/checkpoints require rebuilding, not relabeling.
 
-The Native model artifact and validation measurements are reported as user-confirmed Colab results.
-This repository revision does not yet contain a generated Native bundle or an executed integration
-report. Bundle loading, wrapper parity, packed-shard roundtrip and downstream runtime behavior remain
-unverified here; corpus licensing, quality and mix approval are separate gates.
+No remote runtime is yet approved or evidenced. This repository revision does not contain a generated
+Native bundle or an executed integration report. Bundle loading, tokenizer persistence, packed-shard
+roundtrip and downstream behavior remain unverified; corpus quality and blind generalization are
+separate gates.

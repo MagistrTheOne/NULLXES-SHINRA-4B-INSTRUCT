@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import math
 from typing import Any, Optional
+from dataclasses import dataclass
 
 import torch
 import torch.nn as nn
@@ -27,6 +28,14 @@ except ImportError:
     from modeling_norm import ShinraRMSNorm
 
 logger = logging.get_logger(__name__)
+
+
+@dataclass
+class ShinraLossOutput:
+    loss: torch.Tensor
+    past_key_values: Cache | None = None
+    hidden_states: tuple[torch.Tensor, ...] | None = None
+    attentions: tuple[torch.Tensor, ...] | None = None
 
 
 class ShinraDecoderLayer(nn.Module):
@@ -335,6 +344,7 @@ class ShinraForCausalLM(ShinraPreTrainedModel, GenerationMixin):
         return_dict: bool | None = None,
         cache_position: torch.LongTensor | None = None,
         logits_to_keep: int = 0,
+        loss_chunk_size: int | None = None,
         **kwargs: Any,
     ) -> CausalLMOutputWithPast | tuple[torch.Tensor, ...]:
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
@@ -352,6 +362,7 @@ class ShinraForCausalLM(ShinraPreTrainedModel, GenerationMixin):
             **kwargs,
         )
         hidden_states = outputs.last_hidden_state
+        selected_chunk_size = int(loss_chunk_size or self.config.loss_chunk_size)
         slice_indices = slice(-logits_to_keep, None) if isinstance(logits_to_keep, int) and logits_to_keep > 0 else slice(None)
         logits = self.lm_head(hidden_states[:, slice_indices, :])
         loss = None
@@ -368,6 +379,15 @@ class ShinraForCausalLM(ShinraPreTrainedModel, GenerationMixin):
             attentions=outputs.attentions,
         )
 
+    def loss_only(self, *, labels: torch.LongTensor, loss_chunk_size: int | None = None,
+                  **model_inputs: Any) -> ShinraLossOutput:
+        """Run the decoder and chunked objective without materializing sequence logits."""
+        outputs = self.model(**model_inputs, return_dict=True)
+        size = int(loss_chunk_size or self.config.loss_chunk_size)
+        loss = self._chunked_loss(outputs.last_hidden_state, labels, size)
+        return ShinraLossOutput(loss=loss, past_key_values=outputs.past_key_values,
+                                hidden_states=outputs.hidden_states, attentions=outputs.attentions)
+
     def _compute_loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
@@ -382,6 +402,37 @@ class ShinraForCausalLM(ShinraPreTrainedModel, GenerationMixin):
                 log_z = torch.logsumexp(shift_logits[valid].float(), dim=-1)
                 loss = loss + z_coeff * (log_z**2).mean()
         return loss
+
+    def _chunked_loss(self, hidden_states: torch.Tensor, labels: torch.Tensor, chunk_size: int) -> torch.Tensor:
+        """Causal CE+z-loss over time chunks, bounding logits to [batch, chunk, vocab]."""
+        if chunk_size <= 0:
+            raise ValueError("loss_chunk_size must be positive")
+        if hidden_states.ndim != 3 or labels.shape != hidden_states.shape[:2]:
+            raise ValueError("chunked causal loss expects aligned [batch, sequence, hidden] and labels")
+        if hidden_states.shape[1] < 2:
+            raise ValueError("causal loss requires at least two sequence positions")
+        target_labels = labels[:, 1:]
+        valid_count = int((target_labels != -100).sum().item())
+        if valid_count == 0:
+            raise ValueError("causal loss batch contains no supervised next-token targets")
+        z_coeff = float(getattr(self.config, "z_loss_coefficient", 0.0) or 0.0)
+        loss_sum = hidden_states.new_zeros((), dtype=torch.float32)
+        for start in range(0, target_labels.shape[1], chunk_size):
+            stop = min(start + chunk_size, target_labels.shape[1])
+            states = hidden_states[:, start:stop, :]
+            logits = F.linear(states, self.lm_head.weight).float()
+            targets = target_labels[:, start:stop].to(logits.device)
+            flat_logits = logits.reshape(-1, self.config.vocab_size)
+            flat_targets = targets.reshape(-1)
+            valid = flat_targets != -100
+            if not torch.any(valid):
+                continue
+            chunk_loss = F.cross_entropy(flat_logits, flat_targets, ignore_index=-100, reduction="sum")
+            if z_coeff > 0:
+                log_z = torch.logsumexp(flat_logits[valid], dim=-1)
+                chunk_loss = chunk_loss + z_coeff * log_z.square().sum()
+            loss_sum = loss_sum + chunk_loss
+        return loss_sum / valid_count
 
     def compute_loss_parts(self, logits: torch.Tensor, labels: torch.Tensor) -> dict[str, float]:
         """Split train_ce / z_loss for V2 UPGRADE logging. No behavior change to _compute_loss."""

@@ -40,12 +40,14 @@ model:
   pad_token_id: 3
   document_end_token_id: 4
   z_loss_coefficient: 1.0e-5
+  loss_chunk_size: 16
+  loss_memory_status: code_candidate_not_runtime_verified
   attention_implementation: sdpa
 
 tokenizer:
   status: provisional_until_corpus_audit
   backend: sentencepiece_native
-  native_model_sha256: 372eb8e5b82a950af7db3fd54d1ded4a36116016af6103076074ef99d9a0d83c
+  native_model_sha256: null  # Pin only after remote candidate artifact review.
   artifact_dir: tokenizer/artifacts
   algorithm: unigram
   vocab_size: 65536
@@ -108,207 +110,41 @@ tokenizer:
   numeric_rewrite: forbidden
 
 data:
-  acquisition: pinned_huggingface_stream
+  acquisition: nullxes_synthetic_engine
   training_enabled: false
-  source_manifest_required: true
-  manifest_sha256: null  # Must be frozen only after the new corpus is built and audited.
-  immutable_revision_required: true
-  parquet_batch_rows: 512
-  provenance_fields: [source_id, revision, document_id, url_or_archive_id, license, language, split, raw_sha256, transform_version, clean_sha256]
-  split_salt: "NULLXES-SHINRA-AUDIT-2026-10-16-v1"
+  corpus_manifest_required: true
+  manifest_sha256: null
+  split_salt: "NULLXES-SHINRA-SYNTHETIC-v1"
+  # Descriptive legacy fields only; the actual split is assigned by isolated semantic families below.
   splits: {train: 0.98, validation: 0.01, blind: 0.01}
-  split_unit: source_document_or_work_before_chunking
+  split_unit: semantic_template_scenario_family_before_generation
   packed_shard_tokens: 100000000
-  target_build:
-    goal: 1000000000
-    unit: supervised_shinra_targets
-    per_language: {en: 500000000, ru: 500000000}
-    source_acquisition_is_candidate_only: true
-    target_accounting: packed_train_manifest
-    source_candidate_targets:
-      HuggingFaceFW/fineweb-edu: 400000000
-      mlfoundations/dclm-baseline-1.0: 400000000
-      HuggingFaceFW/fineweb-2: 800000000
-  sources:
-    - id: Wikimedia/wikipedia
-      repo_type: dataset
-      subsets: [20231101.en, 20231101.ru]
-      languages: [en, ru]
-      language_by_subset: {20231101.en: en, 20231101.ru: ru}
-      language_validation_profile: configured_subset_exact
-      parquet_prefixes: [20231101.en/, 20231101.ru/]
-      subset_by_path: {20231101.en: 20231101.en, 20231101.ru: 20231101.ru}
-      text_field: text
-      document_id_field: id
-      title_field: title
-      url_field: url
-      cleaning_profile: wikimedia_rendered_text
-      quarantine_profile: table_and_markup
-      license_claim: "CC-BY-SA-3.0 and GFDL-1.3; page-level terms may vary"
-      upstream_url: https://huggingface.co/datasets/wikimedia/wikipedia
-      status: audit_only
-      revision: b04c8d1ceb2f5cd4588862100d08de323dccfbaa
-      rights_review_status: audit_only
-      provenance_review_status: audit_only
-      license_review_required: true
-    - id: PleIAs/Russian-PD
-      repo_type: dataset
-      subsets: [default]
-      languages: [ru]
-      language_by_subset: {default: ru}
-      language_validation_profile: configured_subset_exact
-      parquet_prefixes: [russian_pd_]
-      subset_by_path: {}
-      text_field: text
-      document_id_field: identifier
-      title_field: title
-      cleaning_profile: plain_text_nfc
-      quarantine_profile: ocr_book
-      license_claim: "Publisher claims worldwide public domain; each work remains subject to independent review"
-      upstream_url: https://huggingface.co/datasets/PleIAs/Russian-PD
-      status: audit_only
-      revision: 12e0ad67405dcf1e79154aa6a4c6cdb77947ab2d
-      rights_review_status: audit_only
-      provenance_review_status: audit_only
-      ocr_review_required: true
-      license_review_required: true
-    - id: HuggingFaceFW/fineweb-edu
-      repo_type: dataset
-      format: parquet
-      subsets: [CC-MAIN-2025-26]
-      languages: [en]
-      language_by_subset: {CC-MAIN-2025-26: en}
-      parquet_prefixes: [data/CC-MAIN-2025-26/]
-      max_source_files: 256
-      subset_by_path: {data/CC-MAIN-2025-26: CC-MAIN-2025-26}
-      text_field: text
-      document_id_field: id
-      title_field: null
-      url_field: url
-      language_field: language
-      language_validation_profile: upstream_language_label_exact
-      language_labels: {en: en}
-      quality_field: int_score
-      minimum_quality_score: 3
-      quality_method: FineWeb-Edu upstream educational classifier; documented keep threshold 3/5
-      cleaning_profile: web_crawl_text
-      quarantine_profile: web_crawl
-      license_claim: "ODC-By 1.0; Common Crawl terms also apply"
-      upstream_url: https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu
-      status: audit_only
-      revision: 87f09149ef4734204d70ed1d046ddc9ca3f2b8f9
-      rights_review_status: audit_only
-      provenance_review_status: audit_only
-      license_review_required: true
-      quality_review_required: true
-    - id: mlfoundations/dclm-baseline-1.0
-      repo_type: dataset
-      format: jsonl.zst
-      subsets: [default]
-      languages: [en]
-      language_by_subset: {default: en}
-      parquet_prefixes: [global-shard_]
-      max_source_files: 512
-      subset_by_path: {}
-      text_field: text
-      document_id_field: __source_file_row__
-      title_field: null
-      url_field: url
-      language_field: null
-      language_validation_profile: english_source_latin_script_guard
-      minimum_latin_script_fraction: 0.70
-      language_labels: {}
-      quality_field: null
-      quality_method: DCLM-Baseline upstream research filtering; source card requires research-only use
-      cleaning_profile: web_crawl_text
-      quarantine_profile: web_crawl
-      license_claim: "CC-BY-4.0 claimed by upstream; Common Crawl terms and source-level rights require review"
-      upstream_url: https://huggingface.co/datasets/mlfoundations/dclm-baseline-1.0
-      status: audit_only
-      revision: a3b142c183aebe5af344955ae20836eb34dcf69b
-      rights_review_status: audit_only
-      provenance_review_status: audit_only
-      license_review_required: true
-      pii_review_required: true
-      quality_review_required: true
-    - id: HuggingFaceFW/fineweb-2
-      repo_type: dataset
-      format: parquet
-      subsets: [rus_Cyrl]
-      languages: [ru]
-      language_by_subset: {rus_Cyrl: ru}
-      parquet_prefixes: [data/rus_Cyrl/train/]
-      max_source_files: 512
-      subset_by_path: {data/rus_Cyrl/train: rus_Cyrl}
-      text_field: text
-      document_id_field: id
-      title_field: null
-      url_field: url
-      language_field: language
-      language_validation_profile: upstream_language_and_script_exact
-      language_labels: {ru: rus}
-      script_field: language_script
-      script_labels: {ru: Cyrl}
-      quality_field: language_score
-      minimum_quality_score: 0.8
-      quality_method: FineWeb-2 upstream language ID and quality filtering; per-row score retained
-      cleaning_profile: web_crawl_text
-      quarantine_profile: web_crawl
-      license_claim: "ODC-By 1.0; source Common Crawl terms apply"
-      upstream_url: https://huggingface.co/datasets/HuggingFaceFW/fineweb-2
-      status: audit_only
-      revision: af9c13333eb981300149d5ca60a8e9d659b276b9
-      rights_review_status: audit_only
-      provenance_review_status: audit_only
-      license_review_required: true
-      quality_review_required: true
-  excluded_sources: [FineWeb, SmolLM-Corpus]
+  synthetic:
+    enabled: true
+    engine_version: nullxes-synthetic-engine.v1
+    verifier_version: nullxes-synthetic-verifiers.v1
+    root_seed: 20261019
+    records_per_family: 4096
+    cross_split_near_duplicate_jaccard: 0.85
+    external_text_sources_allowed: false
+    external_llm_generation_allowed: false
+    status: implementation_not_runtime_verified
+    families:
+      - {family_id: en.arithmetic.add.train.v1, language: en, split: train, task_kind: arithmetic, operation: add, functional_family: arithmetic.add.v1, template_family: arithmetic.sum.train.v1, scenario_family: arithmetic.addition.train.v1}
+      - {family_id: ru.arithmetic.add.train.v1, language: ru, split: train, task_kind: arithmetic, operation: add, functional_family: arithmetic.add.v1, template_family: arithmetic.sum.train.v1, scenario_family: arithmetic.addition.train.v1}
+      - {family_id: en.device.mode.train.v1, language: en, split: train, task_kind: mode_transition, functional_family: device.mode_transition.v1, template_family: device.mode.train.v1, scenario_family: device.start_pause.train.v1, initial_state: idle}
+      - {family_id: ru.device.mode.train.v1, language: ru, split: train, task_kind: mode_transition, functional_family: device.mode_transition.v1, template_family: device.mode.train.v1, scenario_family: device.start_pause.train.v1, initial_state: idle}
+      - {family_id: en.arithmetic.multiply.validation.v1, language: en, split: validation, task_kind: arithmetic, operation: multiply, functional_family: arithmetic.multiply.v1, template_family: arithmetic.product.validation.v1, scenario_family: arithmetic.multiplication.validation.v1}
+      - {family_id: ru.arithmetic.multiply.validation.v1, language: ru, split: validation, task_kind: arithmetic, operation: multiply, functional_family: arithmetic.multiply.v1, template_family: arithmetic.product.validation.v1, scenario_family: arithmetic.multiplication.validation.v1}
+      - {family_id: en.inventory.validation.v1, language: en, split: validation, task_kind: inventory, functional_family: inventory.add_remove.v1, template_family: inventory.box.validation.v1, scenario_family: inventory.parts.validation.v1}
+      - {family_id: ru.inventory.validation.v1, language: ru, split: validation, task_kind: inventory, functional_family: inventory.add_remove.v1, template_family: inventory.box.validation.v1, scenario_family: inventory.parts.validation.v1}
+      - {family_id: en.arithmetic.subtract.blind.v1, language: en, split: blind, task_kind: arithmetic, operation: subtract, functional_family: arithmetic.subtract.v1, template_family: arithmetic.difference.blind.v1, scenario_family: arithmetic.subtraction.blind.v1}
+      - {family_id: ru.arithmetic.subtract.blind.v1, language: ru, split: blind, task_kind: arithmetic, operation: subtract, functional_family: arithmetic.subtract.v1, template_family: arithmetic.difference.blind.v1, scenario_family: arithmetic.subtraction.blind.v1}
+      - {family_id: en.location.blind.v1, language: en, split: blind, task_kind: location, functional_family: state.location_navigation.v1, template_family: location.coordinates.blind.v1, scenario_family: location.cardinal_moves.blind.v1}
+      - {family_id: ru.location.blind.v1, language: ru, split: blind, task_kind: location, functional_family: state.location_navigation.v1, template_family: location.coordinates.blind.v1, scenario_family: location.cardinal_moves.blind.v1}
   cleaning:
-    strict_decode: true
     unicode_normalization: NFC
-    preserve_numbers_dates_units_signs_decimals_and_math: true
-    verify_numeric_spans_after_cleaning: true
-    reject_malformed_records_with_reason: true
-    silent_skip: false
-    exact_deduplication: true
-    near_deduplication: true
-    near_dedup_threshold: 0.80
-    near_dedup_metric: minhash_estimated_jaccard
-    near_dedup_num_perm: 128
-    near_dedup_bands: 16
-    near_dedup_shingle_words: 5
-    preserve_duplicate_provenance: true
-    source_aware_markup_removal: true
-    retain_table_context_or_quarantine: true
-    quarantine_table_documents: true
-    table_rows_quarantine_threshold: 2
-    max_control_character_ratio: 0.001
-    repeated_short_line_quarantine_threshold: 12
-    filter_languages: [en, ru]
-    holdout_contamination_check: true
-  quality:
-    policy_version: shinra-web-quality.v1
-    minimum_characters: 96
-    minimum_letters: 28
-    minimum_letter_fraction: 0.08
-    minimum_word_sample: 8
-    word_sample_limit: 512
-    uniqueness_minimum_sample: 128
-    minimum_unique_word_fraction: 0.08
-    maximum_url_character_fraction: 0.55
-    maximum_repeated_character_run: 64
-    technical_minimum_characters: 48
-    technical_minimum_letters: 12
-    dclm_minimum_english_function_word_fraction: 0.015
-    dclm_language_minimum_words: 40
-  performance:
-    clean_checkpoint_records: 8192
-    clean_checkpoint_bytes: 536870912
-    disk_check_records: 4096
-    sqlite_cache_mib: 256
-    sqlite_mmap_mib: 1024
-    sqlite_wal_autocheckpoint_pages: 131072
-    output_buffer_bytes: 1048576
+    policy_version: nullxes-synthetic-text.v1
   mix:
     unit: actual_shinra_tokens
     en: 0.50

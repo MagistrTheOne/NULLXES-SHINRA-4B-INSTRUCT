@@ -172,17 +172,22 @@ def pack_token_stream(documents: list[list[int]], sequence_length: int, pad_id: 
 def iter_clean_records(input_dir: Path, split: str, manifest: dict,
                        config: dict | None = None) -> Iterator[dict[str, Any]]:
     config = config or load_config()
-    source_allowlist = {source["id"]: source for source in config["data"]["sources"]}
+    if config["data"].get("acquisition") != "nullxes_synthetic_engine":
+        raise PackContractError("active packer accepts only NULLXES Synthetic Engine records")
+    if manifest.get("schema") != "nullxes.shinra.synthetic-corpus.v1" \
+            or manifest.get("purpose") != "pretraining" or manifest.get("admission") != "audit_only" \
+            or manifest.get("training_enabled") is not False \
+            or manifest.get("external_text_sources") != [] \
+            or manifest.get("external_llm_generation") is not False:
+        raise PackContractError("packer accepts only audit-only NULLXES synthetic corpus manifests")
+    families = {family["family_id"]: family for family in config["data"]["synthetic"]["families"]}
     path = input_dir / f"{split}.jsonl"
     expected_hash = manifest.get("files", {}).get(f"{split}.jsonl")
     if not path.is_file() or not expected_hash:
         raise PackContractError(f"cleaned {split}.jsonl or its manifest hash is missing")
     if sha256_file(path) != expected_hash:
         raise PackContractError(f"{path}: SHA256 differs from corpus manifest")
-    required = ("text", "source_id", "revision", "license", "language", "split", "document_id", "subset",
-                "source_record", "rights_status", "url_or_archive_id", "raw_sha256", "clean_sha256",
-                "upstream_file_sha256")
-    from data.numeric_integrity import numeric_spans
+    from data.synthetic_engine import ENGINE_VERSION, VERIFIER_VERSION, _seed, _sha, _verify_task
 
     with path.open("r", encoding="utf-8", errors="strict") as stream:
         for line_no, line in enumerate(stream, 1):
@@ -192,25 +197,47 @@ def iter_clean_records(input_dir: Path, split: str, manifest: dict,
                 raise PackContractError(f"{path}:{line_no}: malformed JSON: {exc}") from exc
             if not isinstance(row, dict):
                 raise PackContractError(f"{path}:{line_no}: record must be an object")
+            required = ("record_id", "text", "prompt", "answer", "language", "split", "family_id",
+                        "functional_family", "template_family", "scenario_family", "functional_signature", "generator_id",
+                        "generator_version", "answer_verifier", "verifier_version", "validation_status",
+                        "task_sha256", "text_sha256")
             missing = [key for key in required if not isinstance(row.get(key), str) or not row[key].strip()]
             if missing:
-                raise PackContractError(f"{path}:{line_no}: missing provenance/text fields {missing}")
+                raise PackContractError(f"{path}:{line_no}: missing synthetic provenance/text fields {missing}")
+            if row.get("schema") != "nullxes.shinra.synthetic-record.v1":
+                raise PackContractError(f"{path}:{line_no}: unsupported synthetic record schema")
             if row["split"] != split:
                 raise PackContractError(f"{path}:{line_no}: expected split {split}, got {row['split']}")
-            source = source_allowlist.get(row["source_id"])
-            if source is None or source.get("revision") != row["revision"]:
-                raise PackContractError(f"{path}:{line_no}: source revision is outside the configured allowlist")
-            if row["license"] != source.get("license_claim"):
-                raise PackContractError(f"{path}:{line_no}: source license metadata differs from configs/shinra.yaml")
-            if manifest.get("admission") == "production" and (
-                source.get("status") != "approved" or source.get("rights_review_status") != "approved"
-                or source.get("provenance_review_status") != "approved"
-            ):
-                raise PackContractError(f"{path}:{line_no}: source lacks production rights/provenance approval")
-            if hashlib.sha256(row["text"].encode("utf-8")).hexdigest() != row["clean_sha256"]:
-                raise PackContractError(f"{path}:{line_no}: clean text hash mismatch")
-            if numeric_spans(row["text"]) != row.get("numeric_spans"):
-                raise PackContractError(f"{path}:{line_no}: numeric span audit mismatch")
+            family = families.get(row["family_id"])
+            if family is None or family["split"] != split or family["language"] != row["language"]:
+                raise PackContractError(f"{path}:{line_no}: family/language/split is outside the configured partition")
+            for field in ("functional_family", "template_family", "scenario_family"):
+                if row[field] != family[field]:
+                    raise PackContractError(f"{path}:{line_no}: {field} differs from configs/shinra.yaml")
+            if row["generator_id"] != family["task_kind"] or row["generator_version"] != ENGINE_VERSION \
+                    or row["verifier_version"] != VERIFIER_VERSION or row["validation_status"] != "verified":
+                raise PackContractError(f"{path}:{line_no}: generator/verifier admission is invalid")
+            if type(row.get("seed")) is not int or type(row.get("ordinal")) is not int or row["ordinal"] < 0:
+                raise PackContractError(f"{path}:{line_no}: generator seed/ordinal is malformed")
+            if row["seed"] != _seed(int(manifest["root_seed"]), row["family_id"], row["ordinal"]):
+                raise PackContractError(f"{path}:{line_no}: deterministic generator seed differs from the corpus root")
+            task = row.get("task")
+            if not isinstance(task, dict) or task.get("language") != row["language"]:
+                raise PackContractError(f"{path}:{line_no}: canonical task payload is invalid")
+            expected_id = _sha([ENGINE_VERSION, row["family_id"], row["ordinal"], row["seed"]])
+            expected_function = _sha([task.get("kind"), task.get("operation"),
+                                      row["functional_family"]])
+            if row["record_id"] != expected_id or row["functional_signature"] != expected_function:
+                raise PackContractError(f"{path}:{line_no}: synthetic identity/signature does not match its payload")
+            if row["text"] != f"User: {row['prompt']}\nAssistant: {row['answer']}":
+                raise PackContractError(f"{path}:{line_no}: rendered prompt/answer text differs from record fields")
+            if hashlib.sha256(row["text"].encode("utf-8")).hexdigest() != row["text_sha256"] \
+                    or _sha(row.get("task")) != row["task_sha256"]:
+                raise PackContractError(f"{path}:{line_no}: synthetic record content checksum mismatch")
+            try:
+                _verify_task(task, row["answer"], row["answer_verifier"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise PackContractError(f"{path}:{line_no}: answer verifier rejected the record: {exc}") from exc
             yield row
 
 
@@ -317,29 +344,21 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
     if corpus_manifest_sha != _json_sha({k: v for k, v in corpus_manifest.items() if k != "manifest_sha256"}):
         raise PackContractError("corpus manifest self-hash is invalid")
     corpus_admission = corpus_manifest.get("admission")
-    if corpus_manifest.get("purpose") != "pretraining" or corpus_admission not in {"production", "audit_only"}:
-        raise PackContractError("packing requires a pretraining corpus manifest with an explicit admission status")
+    if corpus_manifest.get("schema") != "nullxes.shinra.synthetic-corpus.v1" \
+            or corpus_manifest.get("purpose") != "pretraining" or corpus_admission != "audit_only" \
+            or corpus_manifest.get("training_enabled") is not False:
+        raise PackContractError("packing accepts only audit-only NULLXES synthetic pretraining corpora")
+    if corpus_manifest.get("external_text_sources") != [] \
+            or corpus_manifest.get("external_llm_generation") is not False:
+        raise PackContractError("synthetic corpus manifest does not satisfy the no-external-source policy")
     if config["data"].get("manifest_sha256") is not None and config["data"]["manifest_sha256"] != corpus_manifest_sha:
         raise PackContractError("corpus manifest SHA256 does not match configs/shinra.yaml")
+    if corpus_admission != "audit_only":
+        raise PackContractError("only explicitly audit-only Synthetic Engine corpora can be packed")
     if corpus_manifest.get("split_hashes", {}).get(required_split) is None:
         raise PackContractError(f"corpus manifest has no frozen {required_split} split hash")
-    source_allowlist = {source["id"]: source for source in config["data"]["sources"]}
-    source_revisions = corpus_manifest.get("source_revisions")
-    if not isinstance(source_revisions, list) or not source_revisions:
-        raise PackContractError("corpus manifest lacks source revision and review provenance")
-    for provenance in source_revisions:
-        source = source_allowlist.get(provenance.get("source_id"))
-        if source is None or source.get("revision") != provenance.get("revision"):
-            raise PackContractError("corpus manifest contains a source revision outside the YAML allowlist")
-        if corpus_manifest.get("admission") == "production" and (
-            source.get("status") != "approved" or source.get("rights_review_status") != "approved"
-            or source.get("provenance_review_status") != "approved"
-            or provenance.get("rights_review_status") != "approved"
-            or provenance.get("provenance_review_status") != "approved"
-        ):
-            raise PackContractError("production corpus manifest contains a source without both approvals")
     tokenizer = load_shinra_tokenizer(
-        tokenizer_path, config, require_frozen_bundle=(corpus_admission == "production")
+        tokenizer_path, config, require_frozen_bundle=True
     )
     bundle_sha = tokenizer.shinra_bundle_sha256
     _, _, pad_id = resolve_pretrain_special_ids(tokenizer, config)
@@ -358,7 +377,7 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
         temporary_root_manifest.write_text(json.dumps(corpus_manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         os.replace(temporary_root_manifest, root_manifest)
     stage = output_root / f".{output_dir.name}.partial"
-    identity = {"source_manifest_sha256": corpus_manifest_sha,
+    identity = {"corpus_manifest_sha256": corpus_manifest_sha,
                 "source_split_sha256": corpus_manifest["files"][f"{required_split}.jsonl"],
                 "tokenizer_bundle_sha256": bundle_sha, "config_sha256": _json_sha(config),
                 "split": required_split, "sequence_length": sequence_length,
@@ -463,12 +482,12 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
                 raise PackContractError("cleaned corpus differs from configured NFC normalization")
             ids = encode_text(tokenizer, record["text"], config)
             if not ids:
-                raise PackContractError(f"{record['document_id']}: tokenizer produced an empty sequence")
+                raise PackContractError(f"{record['record_id']}: tokenizer produced an empty sequence")
             pieces = chunk_token_ranges(len(ids), sequence_length)
             count = len(pieces)
             language = record["language"].casefold()
             if language not in language_target_tokens:
-                raise PackContractError(f"{record['document_id']}: language {language!r} is outside EN/RU contract")
+                raise PackContractError(f"{record['record_id']}: language {language!r} is outside EN/RU contract")
             language_target_tokens[language] += len(ids) + 1
             language_documents[language] += 1
             for chunk_index, (token_start, token_end, final_window) in enumerate(pieces):
@@ -476,22 +495,24 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
                 wrapped = wrap_pretrain_window(body, final_window=final_window, config=config)
                 packed_row = pack_token_stream([wrapped], sequence_length, pad_id, config)[0]
                 packed_row.update({
-                    "source_manifest_sha256": corpus_manifest_sha,
+                    "corpus_manifest_sha256": corpus_manifest_sha,
                     "tokenizer_bundle_sha256": bundle_sha,
-                    "source_id": record["source_id"],
-                    "revision": record["revision"],
-                    "document_id": record["document_id"],
-                    "upstream_document_id": record.get("upstream_document_id", record["document_id"]),
-                    "source_record": record.get("source_record", record["document_id"]),
-                    "subset": record["subset"],
-                    "url_or_archive_id": record["url_or_archive_id"],
-                    "license": record["license"],
-                    "rights_status": record["rights_status"],
+                    "record_id": record["record_id"],
+                    "family_id": record["family_id"],
+                    "functional_family": record["functional_family"],
+                    "template_family": record["template_family"],
+                    "scenario_family": record["scenario_family"],
+                    "generator_id": record["generator_id"],
+                    "generator_version": record["generator_version"],
+                    "generator_seed": record["seed"],
+                    "answer_verifier": record["answer_verifier"],
+                    "verifier_version": record["verifier_version"],
+                    "validation_status": record["validation_status"],
+                    "functional_signature": record["functional_signature"],
+                    "task_sha256": record["task_sha256"],
+                    "text_sha256": record["text_sha256"],
                     "language": record["language"],
                     "split": record["split"],
-                    "raw_sha256": record["raw_sha256"],
-                    "clean_sha256": record["clean_sha256"],
-                    "upstream_file_sha256": record["upstream_file_sha256"],
                     "chunk_index": chunk_index,
                     "chunk_count": count,
                     "token_start": token_start,
@@ -549,9 +570,9 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
         }
         (stage / "pack_report.json").write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         packed_manifest = {
-            "schema": "nullxes.shinra.packed.v3",
-            "admission": "audit_only" if corpus_admission != "production" or smoke_test_documents else "production",
-            "source_manifest_sha256": corpus_manifest_sha, "tokenizer_bundle_sha256": bundle_sha,
+            "schema": "nullxes.shinra.packed.synthetic.v1",
+            "admission": "audit_only",
+            "corpus_manifest_sha256": corpus_manifest_sha, "tokenizer_bundle_sha256": bundle_sha,
             "smoke_test_only": smoke_test_documents is not None, "split": required_split,
             "shard_files": shard_files, "shard_sha256": shard_hashes, "report": report,
         }

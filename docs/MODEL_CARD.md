@@ -8,7 +8,7 @@ This repository is preparing a random-initialized decoder-only language model. I
 
 Architecture and tokenizer IDs are defined only in [`configs/shinra.yaml`](../configs/shinra.yaml). Current provisional design: hidden size 2560, 36 layers, 32 query heads, 8 KV heads, head dimension 128, intermediate size 9728, 32,768 position window, and 65,536 vocabulary entries. Vocabulary and tokenizer remain subject to corpus audit.
 
-Initialization is random. No previous experiment weights are used. The 20M-token initial budget is a diagnostic run and is not a foundation training claim. FineWeb-Edu, DCLM-Baseline-1.0, and FineWeb-2 are configured as audit-only corpus candidates; no source is approved for production training yet. FineWeb and SmolLM-Corpus remain excluded.
+Initialization is random. No previous experiment weights are used. New training data is specified to come only from the NULLXES Synthetic Engine; external text corpora and third-party LLM outputs are excluded. The generator, tokenizer, training pipeline, and model capabilities have not been runtime-verified or accepted. No training run is authorized by this model card.
 
 ## Status and limitations
 

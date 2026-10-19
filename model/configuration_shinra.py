@@ -50,6 +50,7 @@ class ShinraConfig(PretrainedConfig):
         layer_types: list[str] | None = None,
         attention_implementation: str = "sdpa",
         z_loss_coefficient: float = 1e-5,
+        loss_chunk_size: int = 16,
         attention_multiplier: float | None = None,
         document_end_token_id: int = 4,
         **kwargs: Any,
@@ -90,6 +91,9 @@ class ShinraConfig(PretrainedConfig):
         self.layer_types = layer_types
         self.attention_implementation = attention_implementation
         self.z_loss_coefficient = z_loss_coefficient
+        if type(loss_chunk_size) is not int or loss_chunk_size <= 0:
+            raise ValueError("loss_chunk_size must be a positive integer")
+        self.loss_chunk_size = loss_chunk_size
         self.attention_multiplier = attention_multiplier
         self.mlp_hidden_act = hidden_act
         self.document_end_token_id = int(document_end_token_id)
@@ -177,6 +181,7 @@ class ShinraConfig(PretrainedConfig):
             "layer_types",
             "attention_implementation",
             "z_loss_coefficient",
+            "loss_chunk_size",
             "attention_multiplier",
             "document_end_token_id",
         }

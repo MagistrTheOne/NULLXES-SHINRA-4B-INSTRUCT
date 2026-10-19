@@ -58,7 +58,7 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--budget", choices=("diagnostic", "foundation"), default="diagnostic",
                         help="selects the separate diagnostic or foundation token target in shinra.yaml")
     parser.add_argument("--diagnostic-audit", action="store_true",
-                        help="explicitly train on audit_only data with production gates still closed")
+                        help="request diagnostic training after P0 identities and runtime gates are admitted")
     parser.add_argument("--diagnostic-max-steps", type=int, default=None,
                         help="optimizer-step cap for an explicit diagnostic run; defaults to one real update")
 
@@ -68,14 +68,19 @@ def build_train_config(stage: str, args: argparse.Namespace) -> TrainConfig:
     diagnostic = bool(getattr(args, "diagnostic_audit", False))
     raw = load_config(config_path, require_ready=not diagnostic)
     if diagnostic:
-        if raw["status"] == "ready_for_training" or raw["training"].get("enabled") is not False \
-                or raw["data"].get("training_enabled") is not False \
-                or raw["runtime"].get("colab_launch_allowed") is not False:
-            raise ValueError("diagnostic audit mode requires all production training gates to remain false")
-        if not raw["data"].get("manifest_sha256") or any(
-            source.get("status") != "audit_only" for source in raw["data"].get("sources", [])
-        ):
-            raise ValueError("diagnostic audit mode requires the pinned audit corpus and audit-only sources")
+        if raw["status"] != "ready_for_training" or raw["training"].get("enabled") is not True \
+                or raw["data"].get("training_enabled") is not True \
+                or raw["runtime"].get("colab_launch_allowed") is not True:
+            raise ValueError("diagnostic training is unavailable until every P0 gate is explicitly admitted")
+        if not raw["data"].get("manifest_sha256") \
+                or not raw["tokenizer"].get("artifact_sha256") \
+                or not raw["tokenizer"].get("native_model_sha256") \
+                or raw["data"].get("acquisition") != "nullxes_synthetic_engine" \
+                or raw["data"].get("synthetic", {}).get("external_llm_generation_allowed") is not False \
+                or raw["data"].get("synthetic", {}).get("external_text_sources_allowed") is not False:
+            raise ValueError("diagnostic training requires frozen Native tokenizer and synthetic corpus identities")
+        if raw["model"].get("loss_memory_status") != "runtime_verified":
+            raise ValueError("diagnostic training is blocked until chunked loss memory and gradients are verified remotely")
         if stage != "pretrain":
             raise ValueError("diagnostic audit mode is available only for causal pretraining")
     elif getattr(args, "diagnostic_max_steps", None) is not None:

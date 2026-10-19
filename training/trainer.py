@@ -245,12 +245,12 @@ def evaluate(model, loader, max_batches: int | None = None) -> dict:
         n_tokens = count_target_tokens_post_shift(batch["labels"])
         if not n_tokens:
             continue
-        result = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], labels=batch["labels"], use_cache=False)
+        core_model = model.module if hasattr(model, "module") else model
+        result = core_model.loss_only(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"],
+                                      labels=batch["labels"], use_cache=False)
         if not torch.isfinite(result.loss):
             raise FloatingPointError("non-finite validation loss")
-        # Evaluation CE excludes the training-only z-loss regularizer.
-        core_model = model.module if hasattr(model, "module") else model
-        total_loss += core_model.compute_loss_parts(result.logits, batch["labels"])["train_ce"] * n_tokens
+        total_loss += float(result.loss.detach()) * n_tokens
         tokens += n_tokens
     model.train()
     if tokens == 0:
@@ -265,12 +265,20 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
         raise RuntimeError(f"unsupported training admission: {cfg.admission}")
     approved = load_config(cfg.model_config, require_ready=not diagnostic)
     if diagnostic:
-        if approved["status"] == "ready_for_training" or approved["training"].get("enabled") is not False \
-                or approved["data"].get("training_enabled") is not False \
-                or approved["runtime"].get("colab_launch_allowed") is not False:
-            raise RuntimeError("diagnostic audit mode requires every production training gate to remain false")
-        if any(source.get("status") != "audit_only" for source in approved["data"].get("sources", [])):
-            raise RuntimeError("diagnostic audit mode requires audit-only configured sources")
+        if approved["status"] != "ready_for_training" or approved["training"].get("enabled") is not True \
+                or approved["data"].get("training_enabled") is not True \
+                or approved["runtime"].get("colab_launch_allowed") is not True:
+            raise RuntimeError("diagnostic training is unavailable until every P0 gate is explicitly admitted")
+        if approved["data"].get("acquisition") != "nullxes_synthetic_engine" \
+                or approved["data"].get("synthetic", {}).get("external_text_sources_allowed") is not False \
+                or approved["data"].get("synthetic", {}).get("external_llm_generation_allowed") is not False:
+            raise RuntimeError("diagnostic audit mode requires NULLXES-only synthetic corpus policy")
+        if not approved["tokenizer"].get("artifact_sha256") \
+                or not approved["tokenizer"].get("native_model_sha256") \
+                or not approved["data"].get("manifest_sha256"):
+            raise RuntimeError("diagnostic training requires frozen Native tokenizer and synthetic corpus identities")
+        if approved["model"].get("loss_memory_status") != "runtime_verified":
+            raise RuntimeError("diagnostic training is blocked until chunked loss memory and gradients are verified remotely")
         if cfg.budget_kind != "diagnostic" or cfg.max_tokens > 20_000_000:
             raise RuntimeError("diagnostic audit token budget must be positive and no greater than 20M")
         if "diagnostic" not in str(cfg.output_dir).casefold():
@@ -285,6 +293,48 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
             raise ShardIdentityError("resume checkpoint Native tokenizer bundle differs from the selected bundle")
     if cfg.stage != "pretrain":
         raise SystemExit("only causal pretraining is active; instruction tuning is a future phase")
+    corpus_root = cfg.data_dir
+    data_manifest_path = corpus_root / "manifest.json"
+    if not data_manifest_path.is_file():
+        raise FileNotFoundError("training data manifest.json is required")
+    data_manifest = json.loads(data_manifest_path.read_text(encoding="utf-8"))
+    if data_manifest.get("schema") != "nullxes.shinra.synthetic-corpus.v1" \
+            or data_manifest.get("external_text_sources") != [] \
+            or data_manifest.get("external_llm_generation") is not False \
+            or data_manifest.get("training_enabled") is not False:
+        raise ShardIdentityError("training corpus manifest violates the NULLXES synthetic-only audit contract")
+    if not isinstance(data_manifest.get("generator_source_sha256"), str) \
+            or not re.fullmatch(r"[a-f0-9]{64}", data_manifest["generator_source_sha256"]):
+        raise ShardIdentityError("training corpus manifest lacks a valid Synthetic Engine source identity")
+    split_hashes = data_manifest.get("split_hashes")
+    if not isinstance(split_hashes, dict) or set(split_hashes) != {"train", "validation", "blind"} \
+            or any(not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value)
+                   for value in split_hashes.values()):
+        raise ShardIdentityError("training corpus manifest lacks all three valid frozen split identities")
+    if data_manifest.get("train_hash") != split_hashes["train"] \
+            or data_manifest.get("validation_hash") != split_hashes["validation"] \
+            or data_manifest.get("blind_hash") != split_hashes["blind"]:
+        raise ShardIdentityError("training corpus split aliases differ from the manifest split inventory")
+    if len(set(split_hashes.values())) != 3:
+        raise ShardIdentityError("training corpus split identities overlap")
+    expected_counts = data_manifest.get("record_counts", {})
+    if not isinstance(expected_counts, dict) or set(expected_counts) != {"train", "validation", "blind"} \
+            or any(type(value) is not int or value <= 0 for value in expected_counts.values()):
+        raise ShardIdentityError("training corpus manifest must declare nonempty measured split record counts")
+    if data_manifest.get("admission") != "audit_only" and not diagnostic:
+        raise ShardIdentityError("production corpus admission has no implementation in the synthetic pipeline")
+    expected_corpus_admission = "audit_only" if diagnostic else "production"
+    if data_manifest.get("purpose") != "pretraining" or data_manifest.get("admission") != expected_corpus_admission:
+        raise ShardIdentityError(f"{cfg.admission} mode requires corpus admission {expected_corpus_admission!r}")
+    manifest_sha = data_manifest.get("manifest_sha256")
+    manifest_without_self_hash = dict(data_manifest)
+    manifest_without_self_hash.pop("manifest_sha256", None)
+    expected_manifest_sha = hashlib.sha256(json.dumps(manifest_without_self_hash, sort_keys=True).encode()).hexdigest()
+    if manifest_sha != expected_manifest_sha:
+        raise ShardIdentityError("corpus manifest self-hash is invalid")
+    if approved["data"].get("manifest_sha256") != manifest_sha:
+        raise ShardIdentityError("dataset manifest SHA256 does not match configs/shinra.yaml")
+
     if not Path("/content").exists():
         raise RuntimeError("training is restricted to the approved Google Colab runtime")
     if not torch.cuda.is_available():
@@ -325,21 +375,6 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
             f"GPU memory preflight failed: need {required_free / 1e9:.1f} GB free, "
             f"have {free_gpu_bytes / 1e9:.1f} GB; see {cfg.run_dir / 'preflight.json'}"
         )
-    corpus_root = cfg.data_dir
-    data_manifest_path = corpus_root / "manifest.json"
-    if not data_manifest_path.is_file():
-        raise FileNotFoundError("training data manifest.json is required")
-    data_manifest = json.loads(data_manifest_path.read_text(encoding="utf-8"))
-    expected_corpus_admission = "audit_only" if diagnostic else "production"
-    if data_manifest.get("purpose") != "pretraining" or data_manifest.get("admission") != expected_corpus_admission:
-        raise ShardIdentityError(f"{cfg.admission} mode requires corpus admission {expected_corpus_admission!r}")
-    manifest_without_self_hash = dict(data_manifest)
-    manifest_sha = manifest_without_self_hash.pop("manifest_sha256", None)
-    expected_manifest_sha = hashlib.sha256(json.dumps(manifest_without_self_hash, sort_keys=True).encode()).hexdigest()
-    if manifest_sha != expected_manifest_sha:
-        raise ShardIdentityError("corpus manifest self-hash is invalid")
-    if approved["data"].get("manifest_sha256") != manifest_sha:
-        raise ShardIdentityError("dataset manifest SHA256 does not match configs/shinra.yaml")
     if not diagnostic and not approved["tokenizer"].get("artifact_sha256"):
         raise RuntimeError("tokenizer artifact SHA256 is not frozen")
     heldout_dir = cfg.heldout_dir or cfg.data_dir / "validation"
@@ -362,10 +397,10 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
         raise ShardIdentityError("manifest missing frozen train/validation/blind split hashes")
     if len({data_manifest["train_hash"], data_manifest["validation_hash"], data_manifest["blind_hash"]}) != 3:
         raise ShardIdentityError("train/evaluation split hashes overlap")
-    if getattr(train_data, "source_manifest_sha256", None) != manifest_sha:
-        raise ShardIdentityError("packed train source manifest differs from frozen manifest")
-    if getattr(validation_data, "source_manifest_sha256", None) != manifest_sha:
-        raise ShardIdentityError("packed validation source manifest differs from frozen manifest")
+    if getattr(train_data, "corpus_manifest_sha256", None) != manifest_sha:
+        raise ShardIdentityError("packed train corpus manifest differs from frozen manifest")
+    if getattr(validation_data, "corpus_manifest_sha256", None) != manifest_sha:
+        raise ShardIdentityError("packed validation corpus manifest differs from frozen manifest")
     # Gradient accumulation is advanced explicitly below. Keeping the Accelerator
     # unaware of DataLoaders and accumulation phases avoids hidden lookahead or
     # phase state that would have to be reconstructed after a Colab disconnect.
@@ -520,7 +555,12 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
         batch = {key: value.to(accelerator.device, non_blocking=True) for key, value in batch.items()}
         optimizer_step_complete = False
         with accelerator.autocast():
-            result = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"], labels=batch["labels"], use_cache=False)
+            result = model.module.loss_only(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"],
+                                            labels=batch["labels"], use_cache=False) \
+                if hasattr(model, "module") else model.loss_only(
+                    input_ids=batch["input_ids"], attention_mask=batch["attention_mask"],
+                    labels=batch["labels"], use_cache=False
+                )
         if not torch.isfinite(result.loss):
             raise FloatingPointError("non-finite training loss")
         target_tokens_this_batch = count_target_tokens_post_shift(batch["labels"])

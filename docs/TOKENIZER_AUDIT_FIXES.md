@@ -14,7 +14,7 @@ pytest и обучение токенизатора не запускались.
 | Блокер | Исправление |
 | --- | --- |
 | `list + tuple` | `tokenizer/special_tokens.py`: обе группы — tuple, единый порядок по YAML ID. |
-| Unicode `identity` | `tokenizer/contract.py`, `data/numeric_integrity.py`: Unicode NFC отдельно; `identity` передаётся только SentencePiece. |
+| Unicode `identity` | `tokenizer/contract.py`: Unicode NFC отдельно; `identity` передаётся только SentencePiece. `data/numeric_integrity.py` относится к отключённому historical pipeline. |
 | BOS loss | `data/pack.py`: обязательный `False`; BOS и PAD маскируются, EOD обучается. |
 | SameFileError | `tokenizer/train_tokenizer.py`: сравнение resolved source/destination перед копированием model/vocab. |
 | Потерянный EOD | EOD=4 входит в SP symbols, HF special registration, сериализацию, проверку ID и bundle. |

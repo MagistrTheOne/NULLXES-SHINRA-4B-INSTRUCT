@@ -8,7 +8,6 @@ from configs.loader import load_config
 
 if TYPE_CHECKING:
     from .native import ShinraNativeTokenizer
-    from transformers import PreTrainedTokenizerFast
 
 
 def _expected_specials(token_config: dict) -> dict[str, int]:
@@ -88,36 +87,13 @@ def _load_native_tokenizer(path: Path, approved: dict, *, require_frozen_bundle:
     return tokenizer
 
 
-def _load_fast_tokenizer(path: Path, approved: dict, *, require_frozen_bundle: bool):
-    from .bundle import verify_bundle
-    from transformers import AutoTokenizer
-
-    bundle_sha = verify_bundle(path, approved, backend="sentencepiece_fast",
-                               require_frozen=require_frozen_bundle)
-    tokenizer = AutoTokenizer.from_pretrained(str(path), use_fast=True, local_files_only=True)
-    expected = _expected_specials(approved["tokenizer"])
-    _validate_common(tokenizer, expected, approved)
-    if tokenizer.backend_tokenizer.post_processor is not None:
-        raise ValueError("tokenizer post-processing is forbidden: BOS is inserted explicitly")
-    if tokenizer.backend_tokenizer.truncation is not None:
-        raise ValueError("implicit tokenizer truncation is forbidden")
-    tokenizer.padding_side = "right"
-    tokenizer.truncation_side = "right"
-    tokenizer.shinra_bundle_path = path.resolve()
-    tokenizer.shinra_bundle_sha256 = bundle_sha
-    tokenizer.shinra_config = approved
-    return tokenizer
-
-
 def load_shinra_tokenizer(
     path: str | Path, config: dict | None = None, *, require_frozen_bundle: bool = True
-) -> ShinraNativeTokenizer | PreTrainedTokenizerFast:
+) -> ShinraNativeTokenizer:
     """Load exactly the configured backend. Backend failures do not trigger fallback."""
     approved = config or load_config()
     path = Path(path)
-    backend = approved["tokenizer"].get("backend", "sentencepiece_fast")
+    backend = approved["tokenizer"].get("backend", "sentencepiece_native")
     if backend == "sentencepiece_native":
         return _load_native_tokenizer(path, approved, require_frozen_bundle=require_frozen_bundle)
-    if backend == "sentencepiece_fast":
-        return _load_fast_tokenizer(path, approved, require_frozen_bundle=require_frozen_bundle)
     raise ValueError(f"unsupported tokenizer backend in configs/shinra.yaml: {backend}")

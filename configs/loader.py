@@ -77,13 +77,13 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         raise ConfigError("tokenizer must preserve normalized corpus text exactly (identity model normalization)")
     if tokenizer.get("byte_fallback") is not True:
         raise ConfigError("tokenizer byte fallback is required")
-    if tokenizer.get("backend") not in {"sentencepiece_native", "sentencepiece_fast"}:
-        raise ConfigError("tokenizer backend must be explicitly supported")
+    if tokenizer.get("backend") != "sentencepiece_native":
+        raise ConfigError("SHINRA Native release requires sentencepiece_native; Fast conversion is not admitted")
     native_sha = tokenizer.get("native_model_sha256")
-    if tokenizer["backend"] == "sentencepiece_native" and (
+    if native_sha is not None and (
         not isinstance(native_sha, str) or not re.fullmatch(r"[a-f0-9]{64}", native_sha)
     ):
-        raise ConfigError("Native SentencePiece model SHA256 must be fixed in configs/shinra.yaml")
+        raise ConfigError("tokenizer.native_model_sha256 must be a SHA256 or null pending candidate review")
     digest = tokenizer.get("artifact_sha256")
     if digest is not None and (not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest)):
         raise ConfigError("tokenizer.artifact_sha256 must be the bundle manifest SHA256 or null")
@@ -107,6 +107,10 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
             raise ConfigError(f"tokenizer.special_token_ids.{key} must be {offset}")
     if model["document_end_token_id"] != tokenizer["end_of_document_id"]:
         raise ConfigError("model document_end_token_id must match tokenizer.end_of_document_id")
+    if type(model.get("loss_chunk_size")) is not int or model["loss_chunk_size"] <= 0:
+        raise ConfigError("model.loss_chunk_size must be a positive logit time chunk size")
+    if model.get("loss_memory_status") != "code_candidate_not_runtime_verified":
+        raise ConfigError("loss memory status requires an explicit audited state")
     packing = config["data"].get("packing", {})
     if packing.get("policy") != "isolated_documents" or packing.get("isolate_document_attention") is not True:
         raise ConfigError("the approved packing policy must isolate documents")
@@ -129,68 +133,71 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         raise ConfigError("PAD and the first post-PAD target must be excluded from loss")
     if tokenizer["special_tokens"]["end_of_document"] not in {"<|end_of_text|>", "<|document_end|>"}:
         raise ConfigError("document termination token must remain a dedicated end-of-document control")
-    sources = config["data"].get("sources", [])
-    if config["data"].get("immutable_revision_required") is not True or not sources:
-        raise ConfigError("source acquisition requires an exact-revision allowlist")
-    for source in sources:
-        if not isinstance(source.get("revision"), str) or not re.fullmatch(r"[a-f0-9]{40}", source["revision"]):
-            raise ConfigError(f"source {source.get('id')!r} must pin an immutable 40-character revision")
-        required_source_fields = ("repo_type", "parquet_prefixes", "text_field", "document_id_field",
-                                  "license_claim", "cleaning_profile", "quarantine_profile", "upstream_url")
-        if any(not source.get(key) for key in required_source_fields):
-            raise ConfigError(f"source {source.get('id')!r} is missing adapter, license, or cleaning metadata")
-        if source["repo_type"] != "dataset" or not isinstance(source["parquet_prefixes"], list) \
-                or not source["parquet_prefixes"] or any(not isinstance(prefix, str) or not prefix
-                                                          for prefix in source["parquet_prefixes"]):
-            raise ConfigError(f"source {source.get('id')!r} must use a configured Hugging Face dataset adapter")
-        if source.get("max_source_files") is not None and (
-                type(source["max_source_files"]) is not int or source["max_source_files"] <= 0):
-            raise ConfigError(f"source {source.get('id')!r} max_source_files must be a positive integer")
-        if not isinstance(source.get("language_by_subset"), dict) or not source["language_by_subset"]:
-            raise ConfigError(f"source {source.get('id')!r} must map every subset to EN or RU")
-        if any(language not in {"en", "ru"} for language in source["language_by_subset"].values()):
-            raise ConfigError(f"source {source.get('id')!r} contains a language outside EN/RU")
-        if source.get("format", "parquet") not in {"parquet", "jsonl.zst"}:
-            raise ConfigError(f"source {source.get('id')!r} has an unsupported pinned stream format")
-        if source["cleaning_profile"] not in {"wikimedia_rendered_text", "plain_text_nfc", "web_crawl_text"} \
-                or source["quarantine_profile"] not in {"table_and_markup", "ocr_book", "web_crawl"}:
-            raise ConfigError(f"source {source.get('id')!r} uses an unsupported cleaning/quarantine profile")
-        if source.get("language_field"):
-            if not isinstance(source.get("language_labels"), dict) \
-                    or set(source["language_labels"].keys()) != set(source["languages"]) \
-                    or any(not isinstance(label, str) or not label for label in source["language_labels"].values()):
-                raise ConfigError(f"source {source.get('id')!r} needs explicit upstream language labels")
-        if source.get("language_validation_profile") not in {
-                "upstream_language_label_exact", "upstream_language_and_script_exact",
-                "english_source_latin_script_guard", "configured_subset_exact"}:
-            raise ConfigError(f"source {source.get('id')!r} has no supported language-validation contract")
-        if source.get("language_validation_profile") == "english_source_latin_script_guard" and (
-                source.get("language_by_subset", {}).get("default") != "en"
-                or not 0 < float(source.get("minimum_latin_script_fraction", 0)) <= 1):
-            raise ConfigError(f"source {source.get('id')!r} has an invalid English script guard")
-        if source.get("script_field") and (not isinstance(source.get("script_labels"), dict)
-                or set(source["script_labels"]) != set(source["languages"])):
-            raise ConfigError(f"source {source.get('id')!r} needs explicit upstream script labels")
-        if source.get("minimum_quality_score") is not None and (
-                not isinstance(source.get("quality_field"), str) or not source["quality_field"]):
-            raise ConfigError(f"source {source.get('id')!r} needs a score field for its quality threshold")
-        if source.get("status") not in {"audit_only", "approved"}:
-            raise ConfigError(f"source {source.get('id')!r} has an unsupported admission status")
-        if source.get("rights_review_status") not in {"audit_only", "approved"} \
-                or source.get("provenance_review_status") not in {"audit_only", "approved"}:
-            raise ConfigError(f"source {source.get('id')!r} needs explicit rights and provenance review status")
-        if source.get("status") == "approved" and (source["rights_review_status"] != "approved"
-                or source["provenance_review_status"] != "approved"):
-            raise ConfigError(f"source {source.get('id')!r} cannot be admitted without both reviews")
-    if config["data"].get("training_enabled") and config["training"].get("enabled"):
-        if not sources or any(s.get("status") != "approved" for s in sources):
-            raise ConfigError("training requires rights- and provenance-approved sources with immutable revisions")
+    data = config["data"]
+    synthetic = data.get("synthetic", {})
+    if data.get("acquisition") != "nullxes_synthetic_engine" or synthetic.get("enabled") is not True:
+        raise ConfigError("active corpus acquisition must use the NULLXES Synthetic Engine")
+    if data.get("sources") or data.get("target_build") or data.get("excluded_sources"):
+        raise ConfigError("external corpus sources/caps must not appear in active data configuration")
+    if data.get("corpus_manifest_required") is not True or data.get("source_manifest_required") is not False:
+        raise ConfigError("synthetic data contract requires a corpus manifest, not an upstream source manifest")
+    if synthetic.get("external_text_sources_allowed") is not False \
+            or synthetic.get("external_llm_generation_allowed") is not False:
+        raise ConfigError("Synthetic Engine forbids external text corpora and LLM-generated records")
+    if synthetic.get("engine_version") != "nullxes-synthetic-engine.v1" \
+            or synthetic.get("verifier_version") != "nullxes-synthetic-verifiers.v1":
+        raise ConfigError("synthetic engine and answer verifier versions must be explicit")
+    if type(synthetic.get("root_seed")) is not int or synthetic["root_seed"] < 0 \
+            or type(synthetic.get("records_per_family")) is not int or synthetic["records_per_family"] <= 0:
+        raise ConfigError("synthetic seed and per-family record count must be explicit non-negative/positive integers")
+    threshold = synthetic.get("cross_split_near_duplicate_jaccard")
+    if not isinstance(threshold, (int, float)) or isinstance(threshold, bool) or not 0.0 < float(threshold) <= 1.0:
+        raise ConfigError("synthetic cross-split near-duplicate threshold must be in (0, 1]")
+    families = synthetic.get("families")
+    if not isinstance(families, list) or not families:
+        raise ConfigError("synthetic semantic/template/scenario families must be configured")
+    seen_family_ids: set[str] = set()
+    split_by_group: dict[tuple[str, str], str] = {}
+    configured_splits: set[str] = set()
+    configured_languages: set[str] = set()
+    for family in families:
+        if not isinstance(family, dict):
+            raise ConfigError("each synthetic family must be a mapping")
+        required_family = {"family_id", "language", "split", "task_kind", "functional_family",
+                           "template_family", "scenario_family"}
+        missing_family = required_family - family.keys()
+        if missing_family:
+            raise ConfigError(f"synthetic family is missing fields: {sorted(missing_family)}")
+        family_id = family["family_id"]
+        if not isinstance(family_id, str) or not family_id or family_id in seen_family_ids:
+            raise ConfigError(f"synthetic family ID is empty or duplicated: {family_id!r}")
+        seen_family_ids.add(family_id)
+        if family["language"] not in {"en", "ru"} or family["split"] not in {"train", "validation", "blind"}:
+            raise ConfigError(f"synthetic family {family_id} has unsupported language or split")
+        if family["task_kind"] not in {"arithmetic", "mode_transition", "inventory", "location"}:
+            raise ConfigError(f"synthetic family {family_id} has unsupported task kind")
+        if family["task_kind"] == "arithmetic" and family.get("operation") not in {
+                "add", "subtract", "multiply", "divide"}:
+            raise ConfigError(f"synthetic arithmetic family {family_id} needs a supported operation")
+        for group_field in ("functional_family", "template_family", "scenario_family"):
+            group = family[group_field]
+            if not isinstance(group, str) or not group:
+                raise ConfigError(f"synthetic family {family_id} has an empty {group_field}")
+            key = (group_field, group)
+            previous_split = split_by_group.setdefault(key, family["split"])
+            if previous_split != family["split"]:
+                raise ConfigError(f"synthetic {group_field} {group!r} crosses corpus splits")
+        configured_splits.add(family["split"])
+        configured_languages.add(family["language"])
+    if configured_splits != {"train", "validation", "blind"} or configured_languages != {"en", "ru"}:
+        raise ConfigError("synthetic corpus requires all three splits and both EN/RU languages")
+    if data.get("training_enabled") and config["training"].get("enabled"):
         if not tokenizer.get("artifact_sha256"):
             raise ConfigError("training requires a frozen tokenizer artifact SHA256")
-        if not config["data"].get("manifest_sha256"):
-            raise ConfigError("training requires a frozen corpus manifest SHA256")
-        if not config["data"].get("split_salt"):
-            raise ConfigError("training requires a frozen split salt")
+        if not data.get("manifest_sha256"):
+            raise ConfigError("training requires a frozen synthetic corpus manifest SHA256")
+        if not data.get("split_salt"):
+            raise ConfigError("training requires a frozen semantic-family split identity")
     if config["training"].get("initialization") != "random":
         raise ConfigError("training initialization must be random")
     if config["training"].get("optimizer", {}).get("name") != "adamw":
@@ -223,67 +230,16 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
     if "packed_data_manifests_sha256" not in resume_fields:
         raise ConfigError("checkpoint resume identity must bind train and validation packed manifest hashes")
     if config["data"].get("splits") != {"train": 0.98, "validation": 0.01, "blind": 0.01}:
-        raise ConfigError("document split fractions must be frozen at train=0.98, validation=0.01, blind=0.01")
+        raise ConfigError("legacy split fractions are descriptive only and must retain documented values")
     cleaning = config["data"].get("cleaning", {})
-    if not 0.0 < float(cleaning.get("near_dedup_threshold", 0)) <= 1.0:
-        raise ConfigError("near-deduplication threshold must be in (0, 1]")
-    if cleaning.get("near_dedup_metric") != "minhash_estimated_jaccard":
-        raise ConfigError("near-deduplication similarity metric must be explicit and supported")
-    if int(cleaning.get("near_dedup_num_perm", 0)) <= 0:
-        raise ConfigError("near-deduplication num_perm must be positive")
-    if int(cleaning.get("near_dedup_bands", 0)) <= 0 or int(cleaning["near_dedup_num_perm"]) % int(cleaning["near_dedup_bands"]):
-        raise ConfigError("near-deduplication MinHash dimensions must divide evenly into disk-backed LSH bands")
-    if type(cleaning.get("near_dedup_shingle_words")) is not int or cleaning["near_dedup_shingle_words"] <= 0:
-        raise ConfigError("near-deduplication shingle width must be a positive integer")
-    if type(config["data"].get("parquet_batch_rows")) is not int or config["data"]["parquet_batch_rows"] <= 0:
-        raise ConfigError("streaming Parquet batch size must be a positive integer")
+    if cleaning.get("unicode_normalization") != "NFC" \
+            or cleaning.get("policy_version") != "nullxes-synthetic-text.v1":
+        raise ConfigError("synthetic corpus and Native tokenizer require the versioned NFC text policy")
     mix = config["data"].get("mix", {})
     if mix.get("unit") != "actual_shinra_tokens" or abs(float(mix.get("en", 0)) + float(mix.get("ru", 0)) - 1.0) > 1e-12:
         raise ConfigError("language mix must define normalized actual-token weights")
     if float(mix.get("en", 0)) != 0.5 or float(mix.get("ru", 0)) != 0.5:
         raise ConfigError("the approved initial training mix is exactly 50/50 EN/RU supervised tokens")
-    target_build = config["data"].get("target_build", {})
-    if target_build.get("unit") != "supervised_shinra_targets" \
-            or target_build.get("goal") != 1_000_000_000 \
-            or target_build.get("per_language") != {"en": 500_000_000, "ru": 500_000_000}:
-        raise ConfigError("the first corpus-build target must remain 500M supervised targets per language")
-    candidate_targets = target_build.get("source_candidate_targets", {})
-    if set(candidate_targets) != {"HuggingFaceFW/fineweb-edu", "mlfoundations/dclm-baseline-1.0",
-                                  "HuggingFaceFW/fineweb-2"} \
-            or any(type(value) is not int or value <= 0 for value in candidate_targets.values()):
-        raise ConfigError("source candidate token caps must be explicit positive integers for all selected sources")
-    quality = config["data"].get("quality", {})
-    if quality.get("policy_version") != "shinra-web-quality.v1":
-        raise ConfigError("data quality policy version is missing or unsupported")
-    positive_quality_fields = ("minimum_characters", "minimum_letters", "minimum_word_sample", "word_sample_limit",
-                               "uniqueness_minimum_sample", "maximum_repeated_character_run",
-                               "technical_minimum_characters", "technical_minimum_letters", "dclm_language_minimum_words")
-    if any(type(quality.get(key)) is not int or quality[key] <= 0 for key in positive_quality_fields):
-        raise ConfigError("data quality integer thresholds must be positive integers")
-    if quality["minimum_word_sample"] > quality["word_sample_limit"] \
-            or quality["uniqueness_minimum_sample"] > quality["word_sample_limit"]:
-        raise ConfigError("data quality sample thresholds must fit within word_sample_limit")
-    if quality["maximum_repeated_character_run"] < 2:
-        raise ConfigError("maximum repeated-character run must be at least two characters")
-    for key in ("minimum_letter_fraction", "minimum_unique_word_fraction",
-                "maximum_url_character_fraction", "dclm_minimum_english_function_word_fraction"):
-        if not 0 < float(quality.get(key, 0)) <= 1:
-            raise ConfigError(f"data.quality.{key} must be in (0, 1]")
-    if quality["technical_minimum_characters"] > quality["minimum_characters"] \
-            or quality["technical_minimum_letters"] > quality["minimum_letters"]:
-        raise ConfigError("technical-content exceptions cannot be stricter than the general minimums")
-    performance = config["data"].get("performance", {})
-    positive_performance_fields = ("clean_checkpoint_records", "clean_checkpoint_bytes", "disk_check_records",
-                                   "sqlite_cache_mib", "sqlite_wal_autocheckpoint_pages", "output_buffer_bytes")
-    if any(type(performance.get(key)) is not int or performance[key] <= 0 for key in positive_performance_fields):
-        raise ConfigError("data performance settings must use positive integer limits")
-    if type(performance.get("sqlite_mmap_mib")) is not int or performance["sqlite_mmap_mib"] < 0:
-        raise ConfigError("data.performance.sqlite_mmap_mib must be a non-negative integer")
-    excluded = {str(source).casefold() for source in config["data"].get("excluded_sources", [])}
-    for source in sources:
-        source_id = source.get("id", "").casefold()
-        if source_id in excluded:
-            raise ConfigError(f"excluded source appears in source list: {source['id']}")
     fsdp = config["precision"].get("fsdp", {})
     if fsdp.get("enabled") is not False or fsdp.get("implementation_status") != "unavailable_single_process":
         raise ConfigError("FSDP is not implemented by the current single-process trainer")

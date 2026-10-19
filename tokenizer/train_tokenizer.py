@@ -1,4 +1,4 @@
-"""Build a candidate tokenizer from audited train/validation JSONL splits.
+"""Build a candidate Native SentencePiece bundle from audited synthetic splits.
 
 Execution requires explicit operator authorization. This module never loads a model.
 """
@@ -15,8 +15,8 @@ from pathlib import Path
 
 from configs.loader import load_config
 from data.pack import iter_clean_records
-from .bundle import file_sha256, verify_bundle, write_manifest
-from .contract import encode_chat, encode_text, plain_text, special_ids
+from .bundle import file_sha256, verify_bundle, write_manifest, write_native_metadata
+from .contract import encode_chat, plain_text, special_ids
 from .special_tokens import render_chat_template
 
 
@@ -26,6 +26,15 @@ def audit_corpus(root: Path, config: dict, database: Path) -> dict:
     claimed = body.pop("manifest_sha256", None)
     if claimed != hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest():
         raise ValueError("corpus manifest self-hash mismatch")
+    if manifest.get("schema") != "nullxes.shinra.synthetic-corpus.v1" \
+            or manifest.get("admission") != "audit_only" \
+            or manifest.get("training_enabled") is not False \
+            or manifest.get("external_text_sources") != [] \
+            or manifest.get("external_llm_generation") is not False:
+        raise ValueError("tokenizer accepts only audit-only NULLXES synthetic corpus manifests")
+    for field in ("generator_source_sha256", "config_sha256"):
+        if not isinstance(manifest.get(field), str) or len(manifest[field]) != 64:
+            raise ValueError(f"corpus manifest {field} identity is missing")
     frozen = config["data"].get("manifest_sha256")
     if frozen and frozen != claimed:
         raise ValueError("corpus manifest differs from configured identity")
@@ -39,10 +48,14 @@ def audit_corpus(root: Path, config: dict, database: Path) -> dict:
                 text = plain_text(row["text"], config)
                 if text != row["text"] or not text.strip():
                     raise ValueError(f"{split}: corpus must contain nonempty NFC-normalized text")
-                unit = row.get("work_id") or row.get("document_id") or row.get("source_record")
+                unit = row.get("record_id")
                 if not isinstance(unit, str) or not unit:
-                    raise ValueError(f"{split}: document/work identity is required")
-                identities = (("text", row["clean_sha256"]), ("document", unit))
+                    raise ValueError(f"{split}: synthetic record identity is required")
+                identities = tuple((kind, row[field]) for kind, field in (
+                    ("text", "text_sha256"), ("record", "record_id"), ("family", "family_id"),
+                    ("functional_family", "functional_family"), ("template_family", "template_family"),
+                    ("scenario_family", "scenario_family"),
+                ))
                 for kind, identity in identities:
                     previous = db.execute("SELECT split FROM identities WHERE kind=? AND identity=?", (kind, identity)).fetchone()
                     if previous and previous[0] != split:
@@ -93,83 +106,35 @@ def train_sentencepiece(root: Path, manifest: dict, output: Path, config: dict, 
     )
 
 
-def convert_spm_to_hf(model_file: Path, output_dir: Path, config: dict | None = None) -> None:
-    import sentencepiece as spm
-    from tokenizers import AddedToken, Tokenizer, decoders, pre_tokenizers
-    from tokenizers.models import Unigram
-    from transformers import PreTrainedTokenizerFast
-
-    config = config or load_config()
-    cfg = config["tokenizer"]
-    sp = spm.SentencePieceProcessor(model_file=str(model_file))
-    expected = special_ids(config)
-    if sp.get_piece_size() != cfg["vocab_size"] or any(sp.piece_to_id(t) != i for t, i in expected.items()):
-        raise ValueError("SentencePiece vocabulary or special IDs differ from YAML")
-    vocab = [(sp.id_to_piece(i), sp.get_score(i)) for i in range(sp.get_piece_size())]
-    for byte in range(256):
-        piece = f"<0x{byte:02X}>"
-        if sp.id_to_piece(sp.piece_to_id(piece)) != piece:
-            raise ValueError(f"SentencePiece byte fallback piece missing: {piece}")
-    backend = Tokenizer(Unigram(vocab, unk_id=cfg["unk_id"], byte_fallback=cfg["byte_fallback"]))
-    # No dummy prefix: preserves leading/repeated spaces and avoids a per-message
-    # synthetic space after AddedToken boundaries. API matches tokenizers 0.22.2.
-    backend.pre_tokenizer = pre_tokenizers.Metaspace(replacement="▁", prepend_scheme="never", split=False)
-    backend.decoder = decoders.Sequence([
-        decoders.Replace("▁", " "),
-        decoders.ByteFallback(), decoders.Fuse(),
-    ])
-    backend.post_processor = None
-    strings = cfg["special_tokens"]
-    hf = PreTrainedTokenizerFast(
-        tokenizer_object=backend, bos_token=strings["bos"], eos_token=strings["end_of_turn"],
-        unk_token=strings["unk"], pad_token=strings["pad"],
-        additional_special_tokens=[AddedToken(t, special=True, normalized=False, lstrip=False, rstrip=False)
-                                   for t, i in sorted(expected.items(), key=lambda pair: pair[1]) if i >= cfg["end_of_document_id"]],
-        model_max_length=config["model"]["max_position_embeddings"],
-        add_bos_token=False, add_eos_token=False, clean_up_tokenization_spaces=False,
-    )
-    if len(hf) != cfg["vocab_size"] or any(hf.convert_tokens_to_ids(t) != i for t, i in expected.items()):
-        raise ValueError("HF conversion changed vocabulary size or special IDs")
-    template = render_chat_template(config)
-    hf.chat_template = template
-    output_dir.mkdir(parents=True, exist_ok=True)
-    hf.save_pretrained(output_dir)
-    for source, name in ((model_file, "tokenizer.model"), (model_file.with_suffix(".vocab"), "tokenizer.vocab")):
-        if source.resolve() != (output_dir / name).resolve():
-            shutil.copy2(source, output_dir / name)
-    (output_dir / "chat_template.jinja").write_text(template, encoding="utf-8")
-    # Explicitly include all fixed controls even on serializers which omit this file.
-    mapping = {key + "_token": strings[name] for key, name in
-               (("unk", "unk"), ("bos", "bos"), ("eos", "end_of_turn"), ("pad", "pad"))}
-    mapping["additional_special_tokens"] = [t for t, i in sorted(expected.items(), key=lambda pair: pair[1]) if i >= cfg["end_of_document_id"]]
-    (output_dir / "special_tokens_map.json").write_text(json.dumps(mapping, indent=2) + "\n", encoding="utf-8")
+def copy_native_vocab(model_file: Path, output_dir: Path) -> None:
+    """Publish SentencePiece's native model/vocabulary pair without HF conversion."""
+    vocab_file = model_file.with_suffix(".vocab")
+    if not model_file.is_file() or not vocab_file.is_file():
+        raise ValueError("SentencePiece did not produce both native model and vocabulary files")
+    for source, name in ((model_file, "tokenizer.model"), (vocab_file, "tokenizer.vocab")):
+        destination = output_dir / name
+        if source.resolve() != destination.resolve():
+            shutil.copy2(source, destination)
 
 
 def evaluate_tokenizer(output: Path, root: Path, manifest: dict, config: dict) -> dict:
     import sentencepiece as spm
-    from transformers import AutoTokenizer
-
-    tokenizer = AutoTokenizer.from_pretrained(output, use_fast=True, local_files_only=True)
     sp = spm.SentencePieceProcessor(model_file=str(output / "tokenizer.model"))
     expected = special_ids(config)
-    if len(tokenizer) != config["tokenizer"]["vocab_size"] or any(tokenizer.convert_tokens_to_ids(t) != i for t, i in expected.items()):
-        raise ValueError("serialized tokenizer changed vocabulary or special IDs")
-    if set(tokenizer.all_special_ids) != set(expected.values()):
-        raise ValueError("not every control is registered as a special token")
-    if tokenizer.encode("BOS check", add_special_tokens=True) != tokenizer.encode("BOS check", add_special_tokens=False):
-        raise ValueError("implicit special token insertion is forbidden")
+    if sp.get_piece_size() != config["tokenizer"]["vocab_size"] or any(sp.piece_to_id(t) != i for t, i in expected.items()):
+        raise ValueError("native SentencePiece vocabulary or special IDs differ from YAML")
     totals = {"documents": 0, "bytes": 0, "tokens": 0}
     languages = {}
 
     def check(text: str) -> list[int]:
         text = plain_text(text, config)
-        ids = encode_text(tokenizer, text, config)
         native = sp.encode(text, out_type=int)
         if config["tokenizer"]["unk_id"] in native or sp.decode(native) != text:
             raise ValueError("SentencePiece round-trip/UNK failure on NFC text")
-        if native != ids:
-            raise ValueError("SentencePiece and serialized HF token IDs differ")
-        return ids
+        forbidden = set(expected.values())
+        if any(token_id in forbidden or not 0 <= token_id < config["tokenizer"]["vocab_size"] for token_id in native):
+            raise ValueError("ordinary text encoded to a control token or out-of-range ID")
+        return native
 
     for row in iter_clean_records(root, "validation", manifest):
         ids = check(row["text"])
@@ -193,11 +158,18 @@ def evaluate_tokenizer(output: Path, root: Path, manifest: dict, config: dict) -
               " ", "  ", "\t", "\n", "<0x41> <0xFF>"]
     for text in probes:
         check(text)
-    encode_chat(tokenizer, [{"role": "user", "content": "  Привет!\n"}], config["model"]["max_position_embeddings"], config)
-    return {"vocab_size": len(tokenizer), "special_ids": expected, "heldout": totals, "languages": languages,
+    from .native import ShinraNativeTokenizer
+    from .special_tokens import render_chat_template
+    tokenizer = ShinraNativeTokenizer(str(output / "tokenizer.model"), config=config,
+                                     require_frozen_bundle=False)
+    tokenizer.chat_template = render_chat_template(config)
+    chat_ids = encode_chat(tokenizer, [{"role": "user", "content": "  Привет!\n"}],
+                           config["model"]["max_position_embeddings"], config)
+    return {"vocab_size": sp.get_piece_size(), "special_ids": expected, "heldout": totals, "languages": languages,
             "bytes_per_token": totals["bytes"] / totals["tokens"], "unk_count": 0,
-            "roundtrip_failures": 0, "sp_hf_parity_failures": 0, "contract_probe_count": len(probes),
-            "evaluation_split": "validation", "validation_sha256": manifest["files"]["validation.jsonl"]}
+            "roundtrip_failures": 0, "chat_roundtrip_verified": True,
+            "chat_contract_tokens": len(chat_ids), "contract_probe_count": len(probes),
+            "evaluation_split": "validation", "validation_split_sha256": manifest["files"]["validation.jsonl"]}
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -228,10 +200,36 @@ def main(argv: list[str] | None = None) -> None:
         for row in iter_clean_records(root, "train", manifest):
             if len(row["text"].encode("utf-8")) > args.max_sentence_bytes:
                 raise ValueError("training document exceeds tokenizer.build.max_sentence_bytes")
-        stats = {"source_manifest_sha256": manifest["manifest_sha256"], "split_counts": audit["counts"],
+        stats = {"corpus_manifest_sha256": manifest["manifest_sha256"], "split_counts": audit["counts"],
                  "train_sha256": manifest["files"]["train.jsonl"], "build": build}
         train_sentencepiece(root, manifest, stage, config, args, stats)
-        convert_spm_to_hf(stage / "tokenizer.model", stage, config)
+        copy_native_vocab(stage / "tokenizer.model", stage)
+        model_sha = file_sha256(stage / "tokenizer.model")
+        expected_model_sha = config["tokenizer"].get("native_model_sha256")
+        if expected_model_sha and expected_model_sha != model_sha:
+            raise ValueError(
+                "candidate Native model SHA differs from configs/shinra.yaml; "
+                f"candidate_sha256={model_sha}. Review and pin this identity before building the final bundle."
+            )
+        if not expected_model_sha:
+            # Preserve a real candidate for remote review without pretending it
+            # is a loadable, frozen tokenizer bundle.
+            candidate = output.parent / f"{output.name}.candidate"
+            if candidate.exists():
+                raise FileExistsError(f"refusing to overwrite tokenizer candidate: {candidate}")
+            (stage / "candidate_identity.json").write_text(
+                json.dumps({"status": "candidate_not_frozen", "native_model_sha256": model_sha,
+                            "corpus_manifest_sha256": manifest["manifest_sha256"],
+                            "training_split_sha256": manifest["files"]["train.jsonl"]},
+                           ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+            )
+            (stage / "identities.sqlite").unlink()
+            stage.replace(candidate)
+            raise ValueError(
+                "Native model candidate was preserved for review; freeze native_model_sha256 in YAML, "
+                f"then rerun to build and validate the final bundle: candidate={candidate}; sha256={model_sha}"
+            )
+        stats["native_model_sha256"] = model_sha
         report = evaluate_tokenizer(stage, root, manifest, config)
         # Recheck inputs after all reads; never publish a bundle from changing files.
         for split in ("train", "validation", "blind"):
@@ -240,10 +238,15 @@ def main(argv: list[str] | None = None) -> None:
         (stage / "corpus_stats.json").write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
         (stage / "tokenizer_stats.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         (stage / "identities.sqlite").unlink()
-        digest = write_manifest(stage, config, backend="sentencepiece_fast")
-        verify_bundle(stage, config, require_frozen=False, backend="sentencepiece_fast")
+        provenance = {"source_model_sha256": model_sha,
+                      "corpus_manifest_sha256": manifest["manifest_sha256"],
+                      "generator_version": config["data"]["synthetic"]["engine_version"],
+                      "training_split_sha256": manifest["files"]["train.jsonl"]}
+        write_native_metadata(stage, config, provenance=provenance)
+        digest = write_manifest(stage, config, backend="sentencepiece_native", provenance=provenance)
+        verify_bundle(stage, config, require_frozen=False, backend="sentencepiece_native")
         stage.replace(output)
-    print(f"candidate_tokenizer_bundle_sha256={digest}; manual review and YAML freeze are required")
+    print(f"candidate_native_tokenizer_bundle_sha256={digest}; manual review and YAML freeze are required")
 
 
 if __name__ == "__main__":

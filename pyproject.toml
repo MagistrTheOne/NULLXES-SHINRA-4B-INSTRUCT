@@ -24,22 +24,16 @@ dependencies = [
   "tqdm>=4.66.0",
   "numpy>=1.26.0",
   "pyarrow>=20.0.0",
-  "datasketch>=1.6.5",
 ]
 
 [project.optional-dependencies]
-data = [
-  "huggingface_hub>=0.25.0",
-  "fsspec>=2024.2.0",
-  "zstandard>=0.22.0",
-]
+data = []
 
 [project.scripts]
 shinra-pretrain = "training.pretrain:main"
-shinra-acquire-data = "data.sources:main"
-shinra-prepare-data = "data.numeric_integrity:main"
 shinra-pack-data = "data.pack:main"
-shinra-build-corpus = "data.build_corpus:main"
+shinra-generate-synthetic = "data.synthetic_engine:main"
+shinra-build-synthetic-corpus = "data.build_synthetic_corpus:main"
 shinra-tokenize = "tokenizer.train_tokenizer:main"
 shinra-generate = "inference.generate:main"
 shinra-serve = "inference.server:main"

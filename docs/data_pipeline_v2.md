@@ -1,10 +1,10 @@
 # SHINRA EN/RU Corpus Build V2
 
-This pipeline creates a reproducible **audit-only** corpus candidate from immutable Hugging Face revisions. It streams source files, writes provenance and rejection ledgers, performs source-aware cleanup and disk-backed document deduplication, assigns deterministic document splits before token chunking, then packs isolated Native SentencePiece windows. It does not change the source rights status, enable training, or start training.
+> **Historical pipeline — disabled for new SHINRA training.** This document describes the former external-source workflow. It is retained as history only; the active YAML and installed CLI use NULLXES Synthetic Engine. Do not run the commands below for the current corpus policy. Historical source code and data are retained pending inventory; no runtime evidence is implied.
 
 ## Pinned sources and admission
 
-`configs/shinra.yaml` is the exact-revision source allowlist. The configured sources are FineWeb-Edu (English), DCLM-Baseline-1.0 (English), and FineWeb-2 `rus_Cyrl` (Russian). FineWeb-Edu and FineWeb-2 use pinned Parquet files. DCLM uses its pinned original `jsonl.zst` shards, not a generated viewer export. File selection is deterministic and bounded by the configured maximum number of source files.
+The prior source allowlist and URLs below document historical acquisition only. They are not active inputs and must not be used in new training builds.
 
 All sources remain `audit_only`; rights and provenance review are still required. In particular, DCLM's upstream dataset card limits its stated use to research and flags rights/PII review as unresolved. No source is automatically approved by this code. Training gates remain false and the corpus build manifest records `audit_only`.
 
