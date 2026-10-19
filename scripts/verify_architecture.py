@@ -20,7 +20,7 @@ def main() -> None:
     parser.add_argument("--batch", type=int, default=1)
     parser.add_argument("--forward", action="store_true", help="Run a BF16 CUDA forward+generate pass")
     parser.add_argument("--backward", action="store_true", help="Run one BF16 train step (forward+backward)")
-    parser.add_argument("--attn", default="sdpa", choices=["eager", "sdpa", "flash_attention_2"])
+    parser.add_argument("--attn", default="sdpa", choices=["eager", "sdpa"])
     args = parser.parse_args()
 
     analytical = count_parameters(ShinraSpec())

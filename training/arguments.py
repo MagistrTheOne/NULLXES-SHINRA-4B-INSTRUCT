@@ -65,46 +65,37 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
 
 def build_train_config(stage: str, args: argparse.Namespace) -> TrainConfig:
     config_path = Path(args.config)
-    diagnostic = bool(getattr(args, "diagnostic_audit", False))
-    raw = load_config(config_path, require_ready=not diagnostic)
-    if diagnostic:
-        if raw["status"] != "ready_for_training" or raw["training"].get("enabled") is not True \
-                or raw["data"].get("training_enabled") is not True \
-                or raw["runtime"].get("colab_launch_allowed") is not True:
-            raise ValueError("diagnostic training is unavailable until every P0 gate is explicitly admitted")
-        if not raw["data"].get("manifest_sha256") \
-                or not raw["tokenizer"].get("artifact_sha256") \
-                or not raw["tokenizer"].get("native_model_sha256") \
-                or raw["data"].get("acquisition") != "nullxes_synthetic_engine" \
-                or raw["data"].get("synthetic", {}).get("external_llm_generation_allowed") is not False \
-                or raw["data"].get("synthetic", {}).get("external_text_sources_allowed") is not False:
-            raise ValueError("diagnostic training requires frozen Native tokenizer and synthetic corpus identities")
-        if raw["model"].get("loss_memory_status") != "runtime_verified":
-            raise ValueError("diagnostic training is blocked until chunked loss memory and gradients are verified remotely")
-        if stage != "pretrain":
-            raise ValueError("diagnostic audit mode is available only for causal pretraining")
-    elif getattr(args, "diagnostic_max_steps", None) is not None:
-        raise ValueError("--diagnostic-max-steps requires the explicit --diagnostic-audit mode")
+    if not bool(getattr(args, "diagnostic_audit", False)):
+        raise ValueError(
+            "production training is unavailable: NULLXES Synthetic Engine currently publishes audit_only data"
+        )
+    raw = load_config(config_path, require_ready=True)
+    if not raw["tokenizer"].get("native_model_sha256") \
+            or raw["data"].get("acquisition") != "nullxes_synthetic_engine" \
+            or raw["data"].get("synthetic", {}).get("external_llm_generation_allowed") is not False \
+            or raw["data"].get("synthetic", {}).get("external_text_sources_allowed") is not False:
+        raise ValueError("diagnostic training requires frozen Native tokenizer and synthetic corpus identities")
+    if raw["model"].get("loss_memory_status") != "runtime_verified":
+        raise ValueError("diagnostic training is blocked until chunked loss memory and gradients are verified remotely")
+    if stage != "pretrain":
+        raise ValueError("diagnostic audit mode is available only for causal pretraining")
     train, model = raw["training"], raw["model"]
     opt, sched = train["optimizer"], train["scheduler"]
     budget_kind = getattr(args, "budget", "diagnostic")
-    if diagnostic and budget_kind != "diagnostic":
+    if budget_kind != "diagnostic":
         raise ValueError("audit-only runs can use the diagnostic budget only")
     diagnostic_steps = getattr(args, "diagnostic_max_steps", None)
-    max_steps = ((1 if diagnostic_steps is None else diagnostic_steps) if diagnostic else train.get("max_steps"))
-    if max_steps is None:
-        raise ValueError("training.max_steps must be explicitly frozen before production training")
+    max_steps = 1 if diagnostic_steps is None else diagnostic_steps
     if type(max_steps) is not int or max_steps <= 0:
         raise ValueError("diagnostic optimizer-step cap must be a positive integer")
     budget_tokens = train.get(f"{budget_kind}_tokens")
     if not isinstance(budget_tokens, int) or budget_tokens <= 0:
         raise ValueError(f"training.{budget_kind}_tokens must be approved and positive before this budget can run")
-    schedule_steps = (math.ceil(budget_tokens / int(train["global_tokens_per_update"]))
-                      if diagnostic else int(max_steps))
-    admission = "diagnostic_audit" if diagnostic else "production"
-    default_output = Path(raw["checkpoint"]["output_dir"]) / ("diagnostic-audit" if diagnostic else budget_kind)
+    schedule_steps = math.ceil(budget_tokens / int(train["global_tokens_per_update"]))
+    admission = "diagnostic_audit"
+    default_output = Path(raw["checkpoint"]["output_dir"]) / "diagnostic-audit"
     output = Path(args.output_dir or default_output)
-    if diagnostic and "diagnostic" not in str(output).casefold():
+    if "diagnostic" not in str(output).casefold():
         raise ValueError("diagnostic checkpoint output path must include 'diagnostic' to prevent production confusion")
     return TrainConfig(
         stage=stage,
@@ -134,7 +125,7 @@ def build_train_config(stage: str, args: argparse.Namespace) -> TrainConfig:
         seed=int(train["seed"]),
         logging_steps=int(train["logging_steps"]),
         eval_steps=int(train["eval_steps"]),
-        save_steps=1 if diagnostic else int(train["save_steps"]),
+        save_steps=1,
         gradient_checkpointing=bool(train["gradient_checkpointing"]),
         attention_implementation=str(model["attention_implementation"]),
         dataloader_num_workers=int(train["dataloader_num_workers"]),

@@ -10,6 +10,4 @@ if [[ "${SHINRA_TOKENSPEED_BACKEND:-transformers_http}" == "transformers_http" ]
   exit 0
 fi
 
-TOKENSPEED_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 tokenspeed serve "$CKPT" \
-  --trust-remote-code \
-  --hf-overrides '{"rope_scaling":{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":8192}}'
+tokenspeed serve "$CKPT" --trust-remote-code

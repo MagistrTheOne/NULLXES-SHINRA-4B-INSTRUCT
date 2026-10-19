@@ -11,8 +11,6 @@ if [[ "${SHINRA_SGLANG_BACKEND:-transformers_http}" == "transformers_http" ]]; t
   exit 0
 fi
 
-SGLANG_ALLOW_OVERWRITE_LONGER_CONTEXT_LEN=1 python -m sglang.launch_server \
+python -m sglang.launch_server \
   --model-path "$CKPT" \
-  --trust-remote-code \
-  --context-length 32768 \
-  --json-model-override-args '{"rope_scaling":{"rope_type":"yarn","factor":4.0,"original_max_position_embeddings":8192}}'
+  --trust-remote-code

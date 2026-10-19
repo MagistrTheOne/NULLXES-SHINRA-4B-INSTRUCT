@@ -213,7 +213,6 @@ precision:
   require_hardware_support: true
   fallback: float32
   tf32: true
-  attention_implementation: sdpa
   activation_checkpointing: true
   fsdp:
     enabled: false

@@ -44,8 +44,12 @@ class ShinraDecoderLayer(nn.Module):
         self.hidden_size = config.hidden_size
         self.layer_idx = layer_idx
         attn_impl = getattr(config, "_attn_implementation", None) or config.attention_implementation
-        if attn_impl not in SHINRA_ATTENTION_CLASSES:
-            attn_impl = "sdpa"
+        if attn_impl == "flash_attention_2":
+            raise RuntimeError(
+                "UNAVAILABLE: FlashAttention-2 is not admitted until padding, GQA, cache, forward, and gradient parity pass"
+            )
+        if attn_impl not in {"eager", "sdpa"}:
+            raise ValueError(f"unsupported SHINRA attention implementation: {attn_impl}")
         self.self_attn = SHINRA_ATTENTION_CLASSES[attn_impl](config, layer_idx)
         self.mlp = ShinraMLP(config)
         self.input_layernorm = ShinraRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -267,8 +271,6 @@ class ShinraModel(ShinraPreTrainedModel):
         causal_mask = torch.full(
             (sequence_length, target_length), fill_value=min_dtype, dtype=dtype, device=device
         )
-        if sequence_length != 1:
-            causal_mask = torch.triu(causal_mask, diagonal=1)
         causal_mask *= torch.arange(target_length, device=device) > cache_position.reshape(-1, 1)
         causal_mask = causal_mask[None, None, :, :].expand(input_tensor.shape[0], 1, -1, -1)
         if attention_mask is not None:
@@ -280,7 +282,8 @@ class ShinraModel(ShinraPreTrainedModel):
                 padding_mask, min_dtype
             )
         if attn_impl == "sdpa" and not output_attentions and attention_mask is not None:
-            if torch.all(attention_mask == 1) and sequence_length > 1:
+            if torch.all(attention_mask == 1) and sequence_length > 1 \
+                    and not using_static and past_seen == 0 and target_length == sequence_length:
                 return None
         return causal_mask
 

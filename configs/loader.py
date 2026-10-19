@@ -23,6 +23,15 @@ class ConfigError(ValueError):
 
 def load_config(path: str | Path = CONFIG_PATH, *, require_ready: bool = False) -> dict[str, Any]:
     config_path = Path(path)
+    try:
+        requested_path = config_path.resolve(strict=True)
+        approved_path = CONFIG_PATH.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ConfigError(f"cannot resolve the canonical SHINRA config path: {config_path}") from exc
+    if requested_path != approved_path:
+        raise ConfigError(
+            f"SHINRA has one authoritative configuration: {approved_path}; alternate configs are not supported"
+        )
     with config_path.open("r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
     validate_config(config, require_ready=require_ready)
@@ -49,6 +58,8 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         raise ConfigError("model geometry or special token IDs are incomplete")
     if model["num_attention_heads"] * model["head_dim"] != 4096:
         raise ConfigError("approved SHINRA attention Q width must be 4096")
+    if model.get("attention_implementation") != "sdpa":
+        raise ConfigError("configs/shinra.yaml admits SDPA only until alternate attention passes parity review")
     for model_key, tokenizer_key in (("vocab_size", "vocab_size"), ("bos_token_id", "bos_id"),
                                       ("eos_token_id", "end_of_turn_id"), ("pad_token_id", "pad_id"),
                                       ("document_end_token_id", "end_of_document_id")):
@@ -109,8 +120,11 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         raise ConfigError("model document_end_token_id must match tokenizer.end_of_document_id")
     if type(model.get("loss_chunk_size")) is not int or model["loss_chunk_size"] <= 0:
         raise ConfigError("model.loss_chunk_size must be a positive logit time chunk size")
-    if model.get("loss_memory_status") != "code_candidate_not_runtime_verified":
-        raise ConfigError("loss memory status requires an explicit audited state")
+    loss_memory_status = model.get("loss_memory_status")
+    if loss_memory_status not in {"code_candidate_not_runtime_verified", "runtime_verified"}:
+        raise ConfigError("model.loss_memory_status must identify the candidate or remotely verified implementation")
+    if config["training"].get("enabled") and loss_memory_status != "runtime_verified":
+        raise ConfigError("training cannot be enabled until chunked loss memory and gradients are runtime verified")
     packing = config["data"].get("packing", {})
     if packing.get("policy") != "isolated_documents" or packing.get("isolate_document_attention") is not True:
         raise ConfigError("the approved packing policy must isolate documents")

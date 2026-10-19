@@ -1,4 +1,4 @@
-"""SHINRA attention: RoPE (incl. YaRN/NTK), GQA, FlashAttention/SDPA, KV cache."""
+"""SHINRA attention primitives: RoPE, GQA, SDPA, and an unadmitted FlashAttention candidate."""
 
 from __future__ import annotations
 

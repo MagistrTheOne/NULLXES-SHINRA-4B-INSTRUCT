@@ -177,8 +177,7 @@ def save_checkpoint(accelerator: Accelerator, model, tokenizer, output_dir: Path
         accelerator.save_model(unwrapped, str(temporary))
         accelerator.wait_for_everyone()
         if accelerator.is_main_process:
-            copy_bundle(tokenizer.shinra_bundle_path, temporary, tokenizer.shinra_config,
-                        require_frozen=(admission == "production"))
+            copy_bundle(tokenizer.shinra_bundle_path, temporary, tokenizer.shinra_config, require_frozen=True)
             unwrapped.config.save_pretrained(temporary)
             from scripts.export_hf_bundle import export_code
 
@@ -260,32 +259,28 @@ def evaluate(model, loader, max_batches: int | None = None) -> dict:
 
 
 def _run_lm_training(cfg: TrainConfig) -> dict:
-    diagnostic = cfg.admission == "diagnostic_audit"
-    if cfg.admission not in {"production", "diagnostic_audit"}:
-        raise RuntimeError(f"unsupported training admission: {cfg.admission}")
-    approved = load_config(cfg.model_config, require_ready=not diagnostic)
-    if diagnostic:
-        if approved["status"] != "ready_for_training" or approved["training"].get("enabled") is not True \
-                or approved["data"].get("training_enabled") is not True \
-                or approved["runtime"].get("colab_launch_allowed") is not True:
-            raise RuntimeError("diagnostic training is unavailable until every P0 gate is explicitly admitted")
-        if approved["data"].get("acquisition") != "nullxes_synthetic_engine" \
-                or approved["data"].get("synthetic", {}).get("external_text_sources_allowed") is not False \
-                or approved["data"].get("synthetic", {}).get("external_llm_generation_allowed") is not False:
-            raise RuntimeError("diagnostic audit mode requires NULLXES-only synthetic corpus policy")
-        if not approved["tokenizer"].get("artifact_sha256") \
-                or not approved["tokenizer"].get("native_model_sha256") \
-                or not approved["data"].get("manifest_sha256"):
-            raise RuntimeError("diagnostic training requires frozen Native tokenizer and synthetic corpus identities")
-        if approved["model"].get("loss_memory_status") != "runtime_verified":
-            raise RuntimeError("diagnostic training is blocked until chunked loss memory and gradients are verified remotely")
-        if cfg.budget_kind != "diagnostic" or cfg.max_tokens > 20_000_000:
-            raise RuntimeError("diagnostic audit token budget must be positive and no greater than 20M")
-        if "diagnostic" not in str(cfg.output_dir).casefold():
-            raise RuntimeError("diagnostic checkpoint output path must include 'diagnostic'")
-    bundle_sha = verify_bundle(cfg.tokenizer_path, approved, require_frozen=not diagnostic)
+    if cfg.admission != "diagnostic_audit":
+        raise RuntimeError(
+            "production training is unavailable: NULLXES Synthetic Engine currently publishes audit_only data"
+        )
+    approved = load_config(cfg.model_config, require_ready=True)
+    if approved["data"].get("acquisition") != "nullxes_synthetic_engine" \
+            or approved["data"].get("synthetic", {}).get("external_text_sources_allowed") is not False \
+            or approved["data"].get("synthetic", {}).get("external_llm_generation_allowed") is not False:
+        raise RuntimeError("diagnostic audit mode requires NULLXES-only synthetic corpus policy")
+    if not approved["tokenizer"].get("artifact_sha256") \
+            or not approved["tokenizer"].get("native_model_sha256") \
+            or not approved["data"].get("manifest_sha256"):
+        raise RuntimeError("diagnostic training requires frozen Native tokenizer and synthetic corpus identities")
+    if approved["model"].get("loss_memory_status") != "runtime_verified":
+        raise RuntimeError("diagnostic training is blocked until chunked loss memory and gradients are verified remotely")
+    if cfg.budget_kind != "diagnostic" or cfg.max_tokens > 20_000_000:
+        raise RuntimeError("diagnostic audit token budget must be positive and no greater than 20M")
+    if "diagnostic" not in str(cfg.output_dir).casefold():
+        raise RuntimeError("diagnostic checkpoint output path must include 'diagnostic'")
+    bundle_sha = verify_bundle(cfg.tokenizer_path, approved, require_frozen=True)
     if cfg.resume_from:
-        resumed_bundle_sha = verify_bundle(cfg.resume_from, approved, require_frozen=not diagnostic)
+        resumed_bundle_sha = verify_bundle(cfg.resume_from, approved, require_frozen=True)
         checkpoint_manifest = verify_training_checkpoint(cfg.resume_from)
         if checkpoint_manifest.get("admission") != cfg.admission:
             raise ShardIdentityError("resume checkpoint admission differs from the explicitly selected run mode")
@@ -321,11 +316,8 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
     if not isinstance(expected_counts, dict) or set(expected_counts) != {"train", "validation", "blind"} \
             or any(type(value) is not int or value <= 0 for value in expected_counts.values()):
         raise ShardIdentityError("training corpus manifest must declare nonempty measured split record counts")
-    if data_manifest.get("admission") != "audit_only" and not diagnostic:
-        raise ShardIdentityError("production corpus admission has no implementation in the synthetic pipeline")
-    expected_corpus_admission = "audit_only" if diagnostic else "production"
-    if data_manifest.get("purpose") != "pretraining" or data_manifest.get("admission") != expected_corpus_admission:
-        raise ShardIdentityError(f"{cfg.admission} mode requires corpus admission {expected_corpus_admission!r}")
+    if data_manifest.get("purpose") != "pretraining" or data_manifest.get("admission") != "audit_only":
+        raise ShardIdentityError("diagnostic audit mode requires an audit_only synthetic pretraining corpus")
     manifest_sha = data_manifest.get("manifest_sha256")
     manifest_without_self_hash = dict(data_manifest)
     manifest_without_self_hash.pop("manifest_sha256", None)
@@ -375,21 +367,20 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
             f"GPU memory preflight failed: need {required_free / 1e9:.1f} GB free, "
             f"have {free_gpu_bytes / 1e9:.1f} GB; see {cfg.run_dir / 'preflight.json'}"
         )
-    if not diagnostic and not approved["tokenizer"].get("artifact_sha256"):
+    if not approved["tokenizer"].get("artifact_sha256"):
         raise RuntimeError("tokenizer artifact SHA256 is not frozen")
     heldout_dir = cfg.heldout_dir or cfg.data_dir / "validation"
     if not heldout_dir.is_dir():
         raise FileNotFoundError("held-out validation data is required")
     train_dir = cfg.data_dir / "train"
     train_data = load_packed_dataset(train_dir, config=approved, expected_split="train",
-                                     allow_audit_data=diagnostic, include_row_indices=True)
+                                     allow_audit_data=True, include_row_indices=True)
     validation_data = load_packed_dataset(heldout_dir, config=approved, expected_split="validation",
-                                         allow_audit_data=diagnostic)
+                                         allow_audit_data=True)
     if train_data.tokenizer_bundle_sha256 != bundle_sha or validation_data.tokenizer_bundle_sha256 != bundle_sha:
         raise ShardIdentityError("packed train/validation tokenizer bundle differs from the verified selected bundle")
-    expected_packed_admission = "audit_only" if diagnostic else "production"
-    if train_data.admission != expected_packed_admission or validation_data.admission != expected_packed_admission:
-        raise ShardIdentityError(f"{cfg.admission} mode requires {expected_packed_admission!r} packed artifacts")
+    if train_data.admission != "audit_only" or validation_data.admission != "audit_only":
+        raise ShardIdentityError("diagnostic audit mode requires audit_only packed train and validation artifacts")
     packed_manifest_shas = {"train": train_data.packed_manifest_sha256,
                             "validation": validation_data.packed_manifest_sha256}
     packed_data_manifests_sha = _sha(packed_manifest_shas)
@@ -407,8 +398,8 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
     accelerator = Accelerator(mixed_precision="bf16")
     if accelerator.num_processes != 1:
         raise RuntimeError("multi-process training is unavailable; use one approved GPU per run")
-    if cfg.budget_kind not in {"diagnostic", "foundation"} or cfg.max_tokens <= 0:
-        raise RuntimeError("a positive diagnostic or foundation token budget must be selected")
+    if cfg.budget_kind != "diagnostic" or cfg.max_tokens <= 0:
+        raise RuntimeError("a positive diagnostic token budget must be selected")
     if cfg.dataloader_num_workers != 0:
         raise RuntimeError("exact-resume data delivery requires dataloader_num_workers=0")
     if len(train_data) % cfg.micro_batch_size:
@@ -506,7 +497,7 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
             torch.cuda.set_rng_state_all(resume_state["cuda_rng"])
         random.setstate(resume_state["python_rng"])
         np.random.set_state(resume_state["numpy_rng"])
-    tokenizer = load_shinra_tokenizer(cfg.tokenizer_path, approved, require_frozen_bundle=not diagnostic)
+    tokenizer = load_shinra_tokenizer(cfg.tokenizer_path, approved, require_frozen_bundle=True)
     manifest = {"architecture": approved["model"], "tokenizer_bundle_sha256": bundle_sha,
                 "data_manifest_sha256": manifest_sha,
                 "packed_data_manifests_sha256": packed_data_manifests_sha,
