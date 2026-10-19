@@ -162,6 +162,15 @@ data:
       - {family_id: ru.location.blind.v1, language: ru, split: blind, task_kind: location, functional_family: state.location_navigation.v1, template_family: location.coordinates.blind.v1, scenario_family: location.cardinal_moves.blind.v1}
       - {family_id: en.robot.object_presence.blind.v2, language: en, split: blind, task_kind: grounded_action, scenario: object_presence, functional_family: robot.observed_object_presence.v1, template_family: robot.object_observation.blind.v2, scenario_family: robot.object_grounding.blind.v2}
       - {family_id: ru.robot.object_presence.blind.v2, language: ru, split: blind, task_kind: grounded_action, scenario: object_presence, functional_family: robot.observed_object_presence.v1, template_family: robot.object_observation.blind.v2, scenario_family: robot.object_grounding.blind.v2}
+  tokenizer_language:
+    enabled: true
+    engine_version: nullxes-native-language-engine.v1
+    records_per_concept: 96
+    root_seed: 20261019
+    artifact_name: tokenizer_train.jsonl
+    purpose: tokenizer_training_only
+    external_text_sources_allowed: false
+    external_llm_generation_allowed: false
   cleaning:
     unicode_normalization: NFC
     policy_version: nullxes-synthetic-text.v1

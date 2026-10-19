@@ -237,6 +237,17 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         raise ConfigError("synthetic corpus requires all three splits and both EN/RU languages")
     if identity_train_counts != {"en": 1400, "ru": 1400}:
         raise ConfigError("identity foundation must contain exactly 1400 configured train records per language")
+    tokenizer_language = data.get("tokenizer_language", {})
+    if tokenizer_language.get("enabled") is not True \
+            or tokenizer_language.get("engine_version") != "nullxes-native-language-engine.v1" \
+            or tokenizer_language.get("records_per_concept") != 96 \
+            or tokenizer_language.get("purpose") != "tokenizer_training_only" \
+            or tokenizer_language.get("artifact_name") != "tokenizer_train.jsonl" \
+            or tokenizer_language.get("external_text_sources_allowed") is not False \
+            or tokenizer_language.get("external_llm_generation_allowed") is not False:
+        raise ConfigError("tokenizer-only language corpus contract is invalid")
+    if type(tokenizer_language.get("root_seed")) is not int or tokenizer_language["root_seed"] < 0:
+        raise ConfigError("tokenizer-only language corpus root_seed must be a non-negative integer")
     if data.get("training_enabled") and config["training"].get("enabled"):
         if not tokenizer.get("artifact_sha256"):
             raise ConfigError("training requires a frozen tokenizer artifact SHA256")

@@ -14,6 +14,7 @@ from contextlib import closing
 from pathlib import Path
 
 from configs.loader import load_config
+from data.language_engine import _sha_bytes
 from data.pack import iter_clean_records
 from .bundle import file_sha256, verify_bundle, write_manifest, write_native_metadata
 from .contract import encode_chat, plain_text, special_ids
@@ -37,6 +38,22 @@ def audit_corpus(root: Path, config: dict, database: Path) -> dict:
     frozen = config["data"].get("manifest_sha256")
     if frozen and frozen != claimed:
         raise ValueError("corpus manifest differs from configured identity")
+    language = manifest.get("tokenizer_language_corpus")
+    if not isinstance(language, dict) or language.get("schema") != "nullxes.shinra.tokenizer-language-corpus.v1" \
+            or language.get("purpose") != "tokenizer_training_only" \
+            or language.get("external_text_sources") != [] \
+            or language.get("external_llm_generation") is not False:
+        raise ValueError("tokenizer-only language corpus provenance or external-source policy is invalid")
+    language_file = language.get("file")
+    expected_language_sha = language.get("file_sha256")
+    if language_file != config["data"]["tokenizer_language"]["artifact_name"] \
+            or expected_language_sha != manifest.get("files", {}).get(language_file) \
+            or not isinstance(expected_language_sha, str) \
+            or file_sha256(root / language_file) != expected_language_sha:
+        raise ValueError("tokenizer-only language corpus file SHA256 is missing or mismatched")
+    language_source = Path(__file__).parents[1] / "data" / "language_engine.py"
+    if not language_source.is_file() or file_sha256(language_source) != language.get("source_sha256"):
+        raise ValueError("tokenizer-only language generator source SHA256 differs from its corpus manifest")
     counts = {}
     # Disk-backed identities avoid storing an entire corpus in Python memory.
     with closing(sqlite3.connect(database)) as db:
@@ -63,24 +80,70 @@ def audit_corpus(root: Path, config: dict, database: Path) -> dict:
                 counts[split] += 1
             if not counts[split]:
                 raise ValueError(f"{split}: an independent nonempty split is required")
+        language_counts = {"en": 0, "ru": 0}
+        language_path = root / language_file
+        with language_path.open("r", encoding="utf-8", errors="strict") as stream:
+            for line_number, line in enumerate(stream, 1):
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"{language_path}:{line_number}: malformed tokenizer-only JSON") from exc
+                if not isinstance(row, dict) or row.get("schema") != "nullxes.shinra.tokenizer-language-record.v1" \
+                        or row.get("purpose") != "tokenizer_training_only" \
+                        or row.get("generator_version") != language.get("engine_version") \
+                        or row.get("language") not in language_counts:
+                    raise ValueError(f"{language_path}:{line_number}: tokenizer-only record contract is invalid")
+                text = plain_text(row.get("text"), config)
+                digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+                if digest != row.get("text_sha256") or not text.strip():
+                    raise ValueError(f"{language_path}:{line_number}: text SHA256 or content is invalid")
+                if type(row.get("ordinal")) is not int or row["ordinal"] < 0 \
+                        or not isinstance(row.get("family_id"), str) or not row["family_id"] \
+                        or not isinstance(row.get("provenance"), str) or not row["provenance"]:
+                    raise ValueError(f"{language_path}:{line_number}: tokenizer-only provenance is incomplete")
+                family_id = row["family_id"]
+                version = language["engine_version"]
+                root_seed = int(config["data"]["tokenizer_language"]["root_seed"])
+                expected_seed = int.from_bytes(hashlib.sha256(
+                    f"{version}\0{root_seed}\0{family_id}\0{row['language']}\0{row['ordinal']}".encode()
+                ).digest()[:8], "big")
+                expected_record_id = _sha_bytes(json.dumps(
+                    [version, root_seed, family_id, row["language"], row["ordinal"]], separators=(",", ":")
+                ).encode())
+                if row.get("seed") != expected_seed or row.get("record_id") != expected_record_id:
+                    raise ValueError(f"{language_path}:{line_number}: tokenizer-only deterministic identity mismatch")
+                try:
+                    db.execute("INSERT INTO identities VALUES (?, ?, ?)",
+                               ("tokenizer_text", digest, "tokenizer_only"))
+                except sqlite3.IntegrityError as exc:
+                    raise ValueError(f"{language_path}:{line_number}: duplicate tokenizer-only text") from exc
+                language_counts[row["language"]] += 1
+        expected_counts = language.get("stats", {}).get("records_by_language")
+        if expected_counts != language_counts or not all(language_counts.values()):
+            raise ValueError("tokenizer-only language counts differ from its manifest or omit EN/RU")
         db.commit()
     return {"manifest": manifest, "counts": counts}
 
 
 def training_sentences(root: Path, manifest: dict, config: dict, max_chars: int, stats: dict):
-    # Pass documents as strings, not newline-delimited temporary text: embedded
-    # whitespace remains available to SentencePiece's identity normalizer.
+    # The tokenizer-only stream is intentionally disjoint from model-training splits.
     chars = documents = 0
-    for row in iter_clean_records(root, "train", manifest):
-        text = plain_text(row["text"], config)
-        if chars + len(text) > max_chars:
-            break  # whole-document cap, never cut a number/Unicode sequence
-        chars += len(text)
-        documents += 1
-        yield text
+    language_manifest = manifest["tokenizer_language_corpus"]
+    path = root / language_manifest["file"]
+    with path.open("r", encoding="utf-8", errors="strict") as stream:
+        for line in stream:
+            row = json.loads(line)
+            text = plain_text(row["text"], config)
+            if chars + len(text) > max_chars:
+                continue
+            chars += len(text)
+            documents += 1
+            yield text
     if not documents:
-        raise ValueError("training character cap admits no whole documents")
-    stats.update({"training_documents": documents, "training_characters": chars})
+        raise ValueError("tokenizer build character cap admits no whole language documents")
+    stats.update({"training_documents": documents, "training_characters": chars,
+                  "training_source": "tokenizer-only-language-corpus",
+                  "tokenizer_language_corpus_sha256": language_manifest["file_sha256"]})
 
 
 def train_sentencepiece(root: Path, manifest: dict, output: Path, config: dict, args, stats: dict) -> None:
@@ -93,6 +156,7 @@ def train_sentencepiece(root: Path, manifest: dict, output: Path, config: dict, 
         sentence_iterator=training_sentences(root, manifest, config, args.max_chars, stats),
         model_prefix=str(output / "tokenizer"),
         vocab_size=tok["vocab_size"], model_type=tok["algorithm"],
+        hard_vocab_limit=True,
         character_coverage=tok["character_coverage"], byte_fallback=tok["byte_fallback"],
         split_digits=tok["split_digits"], normalization_rule_name=tok["normalization"],
         remove_extra_whitespaces=False, add_dummy_prefix=False,
@@ -101,7 +165,7 @@ def train_sentencepiece(root: Path, manifest: dict, output: Path, config: dict, 
         unk_piece=strings["unk"], bos_piece=strings["bos"], eos_piece=strings["end_of_turn"], pad_piece=strings["pad"],
         user_defined_symbols=[token for token, index in ordered if index >= tok["end_of_document_id"]],
         num_threads=args.num_threads, input_sentence_size=args.input_sentence_size,
-        shuffle_input_sentence=True, max_sentence_length=config["tokenizer"]["build"]["max_sentence_bytes"],
+        shuffle_input_sentence=True, max_sentence_length=args.max_sentence_bytes,
     )
 
 
@@ -256,14 +320,6 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv)
     config = load_config(args.config)
-    build = config["tokenizer"]["build"]
-    for name in ("max_chars", "num_threads", "input_sentence_size", "max_sentence_bytes"):
-        value = build[name]
-        if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
-            raise ValueError(f"tokenizer.build.{name} must be explicitly approved as a positive integer")
-        setattr(args, name, value)
-    if args.input_sentence_size <= 100:
-        raise ValueError("SentencePiece sampled input_sentence_size must exceed 100")
     root = Path(args.corpus_dir).resolve()
     output = Path(args.output_dir or config["tokenizer"]["artifact_dir"]).resolve()
     if args.finalize_candidate:
@@ -277,13 +333,43 @@ def main(argv: list[str] | None = None) -> None:
         stage = Path(temporary)
         audit = audit_corpus(root, config, stage / "identities.sqlite")
         manifest = audit["manifest"]
-        # Reject overlong training documents before SentencePiece can silently skip them.
-        for row in iter_clean_records(root, "train", manifest):
-            if len(row["text"].encode("utf-8")) > args.max_sentence_bytes:
-                raise ValueError("training document exceeds tokenizer.build.max_sentence_bytes")
+        build = config["tokenizer"]["build"]
+        recommendation = manifest.get("tokenizer_build_recommendation", {})
+        language_stats = manifest["tokenizer_language_corpus"]["stats"]
+        fallback_values = {
+            "max_chars": recommendation.get("max_chars"),
+            "input_sentence_size": recommendation.get("input_sentence_size"),
+            "num_threads": recommendation.get("num_threads"),
+            "max_sentence_bytes": config["tokenizer"]["build"].get("max_sentence_bytes"),
+        }
+        for name, fallback in fallback_values.items():
+            explicit = build.get(name)
+            value = explicit if explicit is not None else fallback
+            if type(value) is not int or value <= 0:
+                raise ValueError(
+                    f"tokenizer.build.{name} is null and corpus manifest has no valid measured recommendation"
+                )
+            setattr(args, name, value)
+        if args.input_sentence_size <= 100:
+            raise ValueError("SentencePiece input_sentence_size must exceed 100")
+        if args.input_sentence_size > language_stats["record_count"]:
+            raise ValueError("tokenizer.build.input_sentence_size exceeds tokenizer-only corpus record_count")
+        # Reject overlong tokenizer-only documents before SentencePiece can silently skip them.
+        language_file = manifest["tokenizer_language_corpus"]["file"]
+        with (root / language_file).open("r", encoding="utf-8", errors="strict") as stream:
+            for line_number, line in enumerate(stream, 1):
+                row = json.loads(line)
+                if len(row["text"].encode("utf-8")) > args.max_sentence_bytes:
+                    raise ValueError(f"tokenizer-only document {line_number} exceeds max_sentence_bytes")
         stats = {"corpus_manifest_sha256": manifest["manifest_sha256"], "split_counts": audit["counts"],
-                 "train_sha256": manifest["files"]["train.jsonl"], "build": build}
+                 "tokenizer_language_corpus_sha256": manifest["tokenizer_language_corpus"]["file_sha256"],
+                 "build": {name: getattr(args, name) for name in fallback_values}}
         train_sentencepiece(root, manifest, stage, config, args, stats)
+        for split in ("train", "validation", "blind"):
+            if file_sha256(root / f"{split}.jsonl") != manifest["files"][f"{split}.jsonl"]:
+                raise ValueError("corpus changed during tokenizer build")
+        if file_sha256(root / language_file) != manifest["tokenizer_language_corpus"]["file_sha256"]:
+            raise ValueError("tokenizer-only language corpus changed during SentencePiece build")
         copy_native_vocab(stage / "tokenizer.model", stage)
         model_sha = file_sha256(stage / "tokenizer.model")
         expected_model_sha = config["tokenizer"].get("native_model_sha256")
@@ -322,9 +408,6 @@ def main(argv: list[str] | None = None) -> None:
                 f"candidate={candidate}; sha256={model_sha}"
             )
         # Recheck inputs after all reads; never publish a bundle from changing files.
-        for split in ("train", "validation", "blind"):
-            if file_sha256(root / f"{split}.jsonl") != manifest["files"][f"{split}.jsonl"]:
-                raise ValueError("corpus changed during tokenizer build")
         (stage / "identities.sqlite").unlink()
         digest = _publish_bundle(stage, output, root, manifest, config, stats, model_sha)
     print(f"candidate_native_tokenizer_bundle_sha256={digest}; manual review and YAML freeze are required")

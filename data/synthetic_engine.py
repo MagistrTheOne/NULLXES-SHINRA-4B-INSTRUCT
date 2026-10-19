@@ -60,6 +60,7 @@ def _corpus_config_sha256(config: dict[str, Any]) -> str:
         "split_salt": data["split_salt"],
         "split_unit": data["split_unit"],
         "synthetic": synthetic,
+        "tokenizer_language": data["tokenizer_language"],
         "cleaning": data["cleaning"],
     }
     return hashlib.sha256(_canonical(policy)).hexdigest()
@@ -905,12 +906,27 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
             os.fsync(handle.fileno())
         for handle in handles.values():
             handle.close()
+        from data.language_engine import ENGINE_VERSION as LANGUAGE_ENGINE_VERSION, write_corpus
+
+        language_policy = config["data"]["tokenizer_language"]
+        language_path = stage / language_policy["artifact_name"]
+        language_stats = write_corpus(
+            language_path,
+            int(language_policy["root_seed"]),
+            int(language_policy["records_per_concept"]),
+            int(config["tokenizer"]["build"]["max_sentence_bytes"]),
+            worker_count,
+        )
         files = {f"{split}.jsonl": sha256_file(stage / f"{split}.jsonl") for split in SPLITS}
+        files[language_policy["artifact_name"]] = sha256_file(language_path)
         prompt_database.close()
         prompt_database = None
         (stage / "near_duplicates.sqlite").unlink()
         config_sha = _corpus_config_sha256(config)
         generator_source_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        language_source_sha = hashlib.sha256(
+            Path(__file__).with_name("language_engine.py").read_bytes()
+        ).hexdigest()
         manifest: dict[str, Any] = {
             "schema": CORPUS_SCHEMA,
             "admission": "audit_only",
@@ -922,6 +938,17 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
             "engine_version": ENGINE_VERSION,
             "verifier_version": VERIFIER_VERSION,
             "generator_source_sha256": generator_source_sha,
+            "tokenizer_language_corpus": {
+                "schema": "nullxes.shinra.tokenizer-language-corpus.v1",
+                "purpose": "tokenizer_training_only",
+                "engine_version": LANGUAGE_ENGINE_VERSION,
+                "source_sha256": language_source_sha,
+                "file": language_policy["artifact_name"],
+                "file_sha256": files[language_policy["artifact_name"]],
+                "stats": language_stats,
+                "external_text_sources": [],
+                "external_llm_generation": False,
+            },
             "config_sha256": config_sha,
             "config_sha256_scope": "synthetic_generation_policy.v1",
             "root_seed": seed,
@@ -949,9 +976,11 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
             },
             "tokenizer_build_recommendation": {
                 "status": "recommendation_only_requires_review",
-                "max_chars": sum(character_lengths["train"]),
-                "input_sentence_size": counts["train"],
+                "max_chars": sum(language_stats["characters_by_language"].values()),
+                "input_sentence_size": language_stats["record_count"],
                 "num_threads": min(16, cpu_count, ram_worker_cap),
+                "max_sentence_bytes": int(config["tokenizer"]["build"]["max_sentence_bytes"]),
+                "source": "measured tokenizer-only corpus manifest statistics",
                 "vocab_65536_sufficiency": "UNVERIFIED_UNTIL_NATIVE_SENTENCEPIECE_CANDIDATE",
             },
             "exact_duplicate_text_records": exact_duplicate_text_records,
