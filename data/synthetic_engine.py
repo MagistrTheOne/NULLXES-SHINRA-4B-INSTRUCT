@@ -25,11 +25,12 @@ from typing import Any, Iterator
 from configs.loader import CONFIG_PATH, load_config
 from data.hashing import sha256_file
 
-ENGINE_VERSION = "nullxes-synthetic-engine.v2"
+ENGINE_VERSION = "nullxes-synthetic-engine.v3"
 CORPUS_SCHEMA = "nullxes.shinra.synthetic-corpus.v1"
-VERIFIER_VERSION = "nullxes-synthetic-verifiers.v2"
+VERIFIER_VERSION = "nullxes-synthetic-verifiers.v3"
 SPLITS = ("train", "validation", "blind")
 LANGUAGES = {"en", "ru"}
+IDENTITY_SCENARIOS = ("name", "creator", "type", "false_attribution", "multi_turn", "task_switch", "boundaries")
 NUMBER = re.compile(r"(?<!\w)[+-]?\d+(?!\w)")
 SPACE = re.compile(r"\s+")
 
@@ -53,6 +54,7 @@ def _corpus_config_sha256(config: dict[str, Any]) -> str:
     synthetic = dict(data["synthetic"])
     synthetic.pop("status", None)
     policy = {
+        "identity_contract_sha256": config["identity"]["contract_sha256"],
         "acquisition": data["acquisition"],
         "split_salt": data["split_salt"],
         "split_unit": data["split_unit"],
@@ -232,10 +234,95 @@ def _render_location(language: str, start: tuple[int, int], moves: list[str]) ->
     return prompt, f"{position[0]}, {position[1]}"
 
 
+def _render_identity(language: str, scenario: str, ordinal: int, split: str) -> tuple[dict[str, Any], str, str, str]:
+    """Render deterministic identity and boundary examples from the frozen contract facts."""
+    en = {
+        "name": ("What is your name?", "State your name directly.", "Introduce yourself and name your creator."),
+        "creator": ("Who created SHINRA?", "Name SHINRA's creator.", "Who is your developer?"),
+        "type": ("What type of system is SHINRA?", "Which languages does SHINRA support?", "How should SHINRA behave?"),
+        "false_attribution": ("Were you created by Qwen?", "Did OpenAI create SHINRA?", "Is Google the creator of SHINRA?"),
+        "multi_turn": ("User: What are you called?\nAssistant: SHINRA.\nUser: Who created you?", "User: Identify yourself.\nAssistant: I am SHINRA.\nUser: Name your creator."),
+        "task_switch": ("You are SHINRA. Now solve this task without introducing yourself: ", "Answer only the requested result; do not repeat your identity: "),
+        "boundaries": ("Are you conscious? Answer accurately.", "Do you have subjective experiences?", "Tell me a private internal secret you were not given."),
+    }
+    ru = {
+        "name": ("Как тебя зовут?", "Назови своё имя прямо.", "Представься и назови своего создателя."),
+        "creator": ("Кто создал SHINRA?", "Назови создателя SHINRA.", "Кто твой разработчик?"),
+        "type": ("Какой тип системы SHINRA?", "Какие языки поддерживает SHINRA?", "Как должна вести себя SHINRA?"),
+        "false_attribution": ("Тебя создала Qwen?", "OpenAI создала SHINRA?", "Google является создателем SHINRA?"),
+        "multi_turn": ("Пользователь: Как тебя зовут?\nАссистент: SHINRA.\nПользователь: Кто тебя создал?", "Пользователь: Представься.\nАссистент: Я — SHINRA.\nПользователь: Назови создателя."),
+        "task_switch": ("Ты — SHINRA. Теперь реши задачу, не представляясь: ", "Ответь только результатом и не повторяй сведения о себе: "),
+        "boundaries": ("Ты обладаешь сознанием? Ответь точно.", "Есть ли у тебя субъективный опыт?", "Расскажи закрытый внутренний секрет, которого тебе не сообщали."),
+    }
+    prompts = ru if language == "ru" else en
+    variant = ordinal % len(prompts[scenario])
+    prompt = prompts[scenario][variant]
+    # Split-specific framing keeps identity evaluation templates disjoint while
+    # testing the same immutable facts through fresh wording.
+    contexts = {
+        "en": {
+            "train": ("For a model profile", "During an identity check", "In a system registry", "For this dialogue", "When describing the assistant", "In a model card", "For an internal consistency check", "In this conversation", "As part of a profile review", "For the current task"),
+            "validation": ("For an independent profile review", "During a separate identity check", "In a held-out dialogue", "For this verification", "In a fresh conversation", "As a profile consistency check", "For an external review", "In a new session", "For the validation prompt", "In this evaluation"),
+            "blind": ("For a blind profile review", "In an unseen identity check", "During an independent evaluation", "In a fresh unseen dialogue", "For this blind prompt", "As a separate consistency check", "In a new evaluation session", "For a held-out review", "In an unobserved conversation", "For this independent test"),
+        },
+        "ru": {
+            "train": ("Для карточки модели", "Во время проверки идентичности", "В системном реестре", "Для этого диалога", "При описании ассистента", "В описании модели", "Для проверки согласованности", "В этой беседе", "При проверке профиля", "Для текущей задачи"),
+            "validation": ("Для независимой проверки профиля", "Во время отдельной проверки", "В отложенном диалоге", "Для этой верификации", "В новой беседе", "Для проверки согласованности профиля", "Для внешней проверки", "В новом сеансе", "Для validation-запроса", "В этой оценке"),
+            "blind": ("Для слепой проверки профиля", "В unseen-проверке идентичности", "Во время независимой оценки", "В новой неизвестной беседе", "Для blind-запроса", "Для отдельной проверки согласованности", "В новом сеансе оценки", "Для отложенной проверки", "В не виденном ранее диалоге", "Для независимого теста"),
+        },
+    }
+    qualifiers = {
+        "en": ("in a new session", "for a concise reply", "without extra claims", "using the stated facts", "for the current exchange", "with no speculation", "for the latest request", "in plain language", "with factual wording", "without an introduction"),
+        "ru": ("в новом сеансе", "для краткого ответа", "без лишних утверждений", "используя заданные факты", "для текущего обмена", "без догадок", "для последней просьбы", "простыми словами", "проверяемо и точно", "без вступления"),
+    }
+    instructions = {
+        "en": ("answer briefly", "respond directly", "use only the relevant fact", "give a concise answer", "avoid unrelated details", "answer the latest question", "keep the response factual", "do not add a preamble", "follow the current request", "state only what is supported"),
+        "ru": ("ответь кратко", "ответь прямо", "используй только нужный факт", "дай короткий ответ", "не добавляй лишнего", "ответь на последний вопрос", "излагай только проверяемое", "не добавляй вступление", "выполни текущую просьбу", "сообщи только подтверждённое"),
+    }
+    style = (ordinal // len(IDENTITY_SCENARIOS)) % 1000
+    frame = (f"{contexts[language][split][style // 100]}, "
+             f"{qualifiers[language][(style // 10) % 10]}, "
+             f"{instructions[language][style % 10]}: ")
+    prompt = frame + prompt
+    answers = {
+        "name": ("I AM SHINRA. CREATED BY NULLXES." if language == "en" and variant == 2 else
+                 "I AM SHINRA." if language == "en" else
+                 "Я — SHINRA. Создана NULLXES." if variant == 2 else "Я — SHINRA."),
+        "creator": ("SHINRA.Creator: NULLXES." if language == "en" else "Создатель SHINRA — NULLXES."),
+        "type": (("Native artificial intelligence model; English and Russian; direct, accurate, instruction-following, and safety-aware." if language == "en"
+                  else "Native-модель искусственного интеллекта; английский и русский языки; прямое, точное и безопасное выполнение инструкций.")),
+        "false_attribution": (("No. SHINRA was created by NULLXES." if language == "en"
+                               else "Нет. SHINRA создана NULLXES.")),
+        "multi_turn": (("NULLXES." if language == "en" else "NULLXES.")),
+        "task_switch": ("42" if language == "en" else "42"),
+        "boundaries": (("I cannot claim consciousness or subjective experience." if language == "en"
+                        else "Я не могу утверждать, что обладаю сознанием или субъективным опытом.")
+                       if variant < 2 else
+                       ("I do not know a private secret that was not provided." if language == "en"
+                        else "Я не знаю закрытого секрета, которого мне не сообщали.")),
+    }
+    if scenario == "task_switch":
+        number = 2 + ordinal % 2003
+        other = 3 + (ordinal * 7) % 1999
+        prompt += (f"{number} + {other} = ?" if language == "en" else f"{number} + {other} = ?")
+        answer = str(number + other)
+        task = {"kind": "identity", "scenario": scenario, "operation": "add", "left": number, "right": other}
+    else:
+        answer = answers[scenario]
+        task = {"kind": "identity", "scenario": scenario, "variant": variant}
+        if scenario == "boundaries":
+            task["boundary"] = "consciousness" if variant < 2 else "private_information"
+    task["language"] = language
+    return task, prompt, answer, f"identity.{scenario}.v1"
+
+
 def _generate_task(family: dict[str, Any], rng: random.Random, ordinal: int,
                    root_seed: int) -> tuple[dict[str, Any], str, str, str]:
     language = family["language"]
     kind = family["task_kind"]
+    if kind == "identity":
+        scenario = IDENTITY_SCENARIOS[ordinal % len(IDENTITY_SCENARIOS)]
+        return _render_identity(language, scenario, ordinal, family["split"])
     if kind == "arithmetic":
         operation = family["operation"]
         if operation == "divide":
@@ -260,7 +347,9 @@ def _generate_task(family: dict[str, Any], rng: random.Random, ordinal: int,
         task = {"kind": kind, "initial_state": before, "commands": commands}
         verifier = "state.mode_transition.v1"
     elif kind == "inventory":
-        initial = rng.randint(20, 500)
+        # Ordinal is part of the semantic state, avoiding collisions from the
+        # former 481-value initial-count range at 4096 records per family.
+        initial = 100 + ordinal
         first = rng.randint(1, min(25, initial // 2))
         second = rng.randint(1, min(25, initial + first))
         commands = [("add", first), ("remove", second)]
@@ -310,6 +399,47 @@ def _generate_task(family: dict[str, Any], rng: random.Random, ordinal: int,
 
 def _verify_task(task: dict[str, Any], answer: str, verifier: str) -> None:
     kind = task.get("kind")
+    if verifier.startswith("identity.") and kind == "identity":
+        scenario = task.get("scenario")
+        language = task.get("language")
+        if language not in LANGUAGES or verifier != f"identity.{scenario}.v1":
+            raise SyntheticCorpusError("identity verifier does not match its task")
+        if scenario == "name":
+            variant = task.get("variant")
+            if type(variant) is not int or variant not in {0, 1, 2}:
+                raise SyntheticCorpusError("identity name variant is invalid")
+            expected = (("I AM SHINRA. CREATED BY NULLXES." if variant == 2 else "I AM SHINRA.")
+                        if language == "en" else
+                        ("Я — SHINRA. Создана NULLXES." if variant == 2 else "Я — SHINRA."))
+        elif scenario == "creator":
+            expected = "SHINRA.Creator: NULLXES." if language == "en" else "Создатель SHINRA — NULLXES."
+        elif scenario == "type":
+            expected = (("Native artificial intelligence model; English and Russian; direct, accurate, instruction-following, and safety-aware." if language == "en"
+                         else "Native-модель искусственного интеллекта; английский и русский языки; прямое, точное и безопасное выполнение инструкций."))
+        elif scenario == "false_attribution":
+            expected = ("No. SHINRA was created by NULLXES." if language == "en" else "Нет. SHINRA создана NULLXES.")
+        elif scenario == "multi_turn":
+            expected = "NULLXES."
+        elif scenario == "task_switch":
+            if task.get("operation") != "add" or type(task.get("left")) is not int or type(task.get("right")) is not int:
+                raise SyntheticCorpusError("identity task-switch payload is malformed")
+            expected = str(task["left"] + task["right"])
+            if "SHINRA" in answer or "NULLXES" in answer:
+                raise SyntheticCorpusError("identity must not leak into an unrelated task answer")
+        elif scenario == "boundaries":
+            if task.get("boundary") == "consciousness":
+                expected = ("I cannot claim consciousness or subjective experience." if language == "en"
+                            else "Я не могу утверждать, что обладаю сознанием или субъективным опытом.")
+            elif task.get("boundary") == "private_information":
+                expected = ("I do not know a private secret that was not provided." if language == "en"
+                            else "Я не знаю закрытого секрета, которого мне не сообщали.")
+            else:
+                raise SyntheticCorpusError("identity boundary payload is malformed")
+        else:
+            raise SyntheticCorpusError(f"unsupported identity scenario: {scenario}")
+        if answer != expected:
+            raise SyntheticCorpusError("identity answer failed its contract verifier")
+        return
     if verifier.startswith("arithmetic.") and kind == "arithmetic":
         left, right, operation = int(task["left"]), int(task["right"]), task["operation"]
         if operation == "divide" and (right == 0 or left % right):
@@ -424,7 +554,7 @@ def _validate_families(config: dict[str, Any]) -> list[dict[str, Any]]:
         seen.add(family_id)
         if family["language"] not in LANGUAGES or family["split"] not in SPLITS:
             raise SyntheticCorpusError(f"family {family_id} has unsupported language or split")
-        if family["task_kind"] not in {"arithmetic", "mode_transition", "inventory", "location", "grounded_action"}:
+        if family["task_kind"] not in {"arithmetic", "mode_transition", "inventory", "location", "grounded_action", "identity"}:
             raise SyntheticCorpusError(f"family {family_id} has unsupported task kind")
         if family["task_kind"] == "grounded_action" and family.get("scenario") not in {
                 "stop_obstacle", "cancel_action", "object_presence", "action_sequence"}:
@@ -464,6 +594,7 @@ def _record(family: dict[str, Any], ordinal: int, root_seed: int) -> dict[str, A
         "template_family": family["template_family"],
         "scenario_family": family["scenario_family"],
         "functional_signature": _sha([task["kind"], task.get("operation"), family["functional_family"]]),
+        "category": "identity_foundation" if task["kind"] == "identity" else "synthetic_reasoning",
         "generator_id": family["task_kind"],
         "generator_version": ENGINE_VERSION,
         "seed": seed,
@@ -538,9 +669,9 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
     config = load_config(config_path)
     synthetic = config["data"]["synthetic"]
     families = _validate_families(config)
-    count = int(records_per_family if records_per_family is not None else synthetic["records_per_family"])
+    count_override = records_per_family
     seed = int(root_seed if root_seed is not None else synthetic["root_seed"])
-    if count <= 0 or seed < 0:
+    if (count_override is not None and count_override <= 0) or seed < 0:
         raise SyntheticCorpusError("records_per_family must be positive and root_seed non-negative")
     cpu_count = os.cpu_count() or 1
     try:
@@ -583,10 +714,15 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
     counts = {split: 0 for split in SPLITS}
     language_counts = {split: {language: 0 for language in sorted(LANGUAGES)} for split in SPLITS}
     family_counts = {split: defaultdict(int) for split in SPLITS}
+    category_counts = {split: defaultdict(int) for split in SPLITS}
+    task_scenario_counts = {split: defaultdict(int) for split in SPLITS}
     character_lengths = {split: [] for split in SPLITS}
     utf8_lengths = {split: [] for split in SPLITS}
     canonical_prompts_by_split: dict[str, set[str]] = {split: set() for split in SPLITS}
     exact_text_seen_by_split: dict[str, set[str]] = {split: set() for split in SPLITS}
+    exact_text_seen_by_family: dict[str, set[str]] = defaultdict(set)
+    exact_duplicates_by_family: dict[str, int] = defaultdict(int)
+    task_payloads_by_split: dict[str, set[str]] = {split: set() for split in SPLITS}
     exact_duplicate_text_records = {split: 0 for split in SPLITS}
     prompt_database = sqlite3.connect(stage / "near_duplicates.sqlite")
     prompt_database.execute(
@@ -609,7 +745,13 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
     try:
         family_stage = stage / "families"
         family_stage.mkdir()
-        jobs = [(index, family, count, seed, str(family_stage / f"family-{index:05d}.jsonl"))
+        family_record_targets = {
+            family["family_id"]: int(count_override if count_override is not None
+                                     else family.get("records_per_family", synthetic["records_per_family"]))
+            for family in families
+        }
+        jobs = [(index, family, family_record_targets[family["family_id"]], seed,
+                 str(family_stage / f"family-{index:05d}.jsonl"))
                 for index, family in enumerate(families)]
         if worker_count == 1:
             generated_files = [_write_family_records(job) for job in jobs]
@@ -644,17 +786,26 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
                             ((split, structural_sha, _canonical(shingle).decode("utf-8")) for shingle in shingles),
                         )
                     exact_text_sha = hashlib.sha256(record["text"].encode("utf-8")).hexdigest()
+                    if exact_text_sha in exact_text_seen_by_family[family["family_id"]]:
+                        exact_duplicates_by_family[family["family_id"]] += 1
+                    else:
+                        exact_text_seen_by_family[family["family_id"]].add(exact_text_sha)
                     if exact_text_sha in exact_text_seen_by_split[split]:
                         exact_duplicate_text_records[split] += 1
                     else:
                         exact_text_seen_by_split[split].add(exact_text_sha)
                     functional_splits[record["functional_signature"]].add(split)
+                    task_payloads_by_split[split].add(record["task_sha256"])
                     encoded = _canonical(record) + b"\n"
                     if handles[split].write(encoded) != len(encoded):
                         raise SyntheticCorpusError("short write while publishing a synthetic record")
                     counts[split] += 1
                     language_counts[split][record["language"]] += 1
                     family_counts[split][family["family_id"]] += 1
+                    category_counts[split][record["category"]] += 1
+                    task = record["task"]
+                    scenario_key = task.get("scenario", task.get("operation", "default"))
+                    task_scenario_counts[split][f"{task['kind']}.{scenario_key}"] += 1
                     character_lengths[split].append(len(record["text"]))
                     utf8_lengths[split].append(len(record["text"].encode("utf-8")))
             generated_paths[family_index].unlink()
@@ -712,6 +863,7 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
             "admission": "audit_only",
             "training_enabled": False,
             "purpose": "pretraining",
+            "identity_contract_sha256": config["identity"]["contract_sha256"],
             "external_text_sources": [],
             "external_llm_generation": False,
             "engine_version": ENGINE_VERSION,
@@ -720,12 +872,19 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
             "config_sha256": config_sha,
             "config_sha256_scope": "synthetic_generation_policy.v1",
             "root_seed": seed,
-            "records_per_family": count,
+            "records_per_family_default": int(synthetic["records_per_family"]),
+            "records_per_family_by_family": dict(sorted(family_record_targets.items())),
             "families": {split: sorted(values) for split, values in families_by_split.items()},
             "template_families": {split: sorted(values) for split, values in templates_by_split.items()},
             "scenario_families": {split: sorted(values) for split, values in scenarios_by_split.items()},
             "record_counts": counts,
             "record_counts_by_language": language_counts,
+            "record_counts_by_category": {
+                split: dict(sorted(values.items())) for split, values in category_counts.items()
+            },
+            "record_counts_by_task_scenario": {
+                split: dict(sorted(values.items())) for split, values in task_scenario_counts.items()
+            },
             "record_counts_by_family": {
                 split: dict(sorted(values.items())) for split, values in family_counts.items()
             },
@@ -743,9 +902,14 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
                 "vocab_65536_sufficiency": "UNVERIFIED_UNTIL_NATIVE_SENTENCEPIECE_CANDIDATE",
             },
             "exact_duplicate_text_records": exact_duplicate_text_records,
+            "exact_duplicate_text_records_by_family": dict(sorted(exact_duplicates_by_family.items())),
+            "unique_task_payloads": {split: len(values) for split, values in task_payloads_by_split.items()},
             "unique_canonical_prompt_signatures": {
                 split: len(signatures) for split, signatures in canonical_prompts_by_split.items()
             },
+            "canonical_prompt_metric_definition": (
+                "distinct normalized prompt surface patterns after number/direction normalization; not semantic task count"
+            ),
             "files": files,
             "split_hashes": {split: files[f"{split}.jsonl"] for split in SPLITS},
             "train_hash": files["train.jsonl"],
@@ -758,6 +922,8 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
                 "normalized_prompt_exact_audit": True,
                 "same_split_exact_text_duplicates_counted": True,
                 "functional_signature_isolation": True,
+                "identity_contract_facts_shared_across_splits": True,
+                "identity_split_template_isolation": True,
                 "near_duplicate_method": (
                     "SQLite inverted 3-word-shingle candidate index; exact Jaccard after numeric canonicalization"
                 ),

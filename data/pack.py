@@ -180,6 +180,8 @@ def iter_clean_records(input_dir: Path, split: str, manifest: dict,
             or manifest.get("external_text_sources") != [] \
             or manifest.get("external_llm_generation") is not False:
         raise PackContractError("packer accepts only audit-only NULLXES synthetic corpus manifests")
+    if manifest.get("identity_contract_sha256") != config["identity"].get("contract_sha256"):
+        raise PackContractError("corpus identity contract SHA256 differs from configs/shinra.yaml")
     families = {family["family_id"]: family for family in config["data"]["synthetic"]["families"]}
     path = input_dir / f"{split}.jsonl"
     expected_hash = manifest.get("files", {}).get(f"{split}.jsonl")
@@ -198,6 +200,7 @@ def iter_clean_records(input_dir: Path, split: str, manifest: dict,
             if not isinstance(row, dict):
                 raise PackContractError(f"{path}:{line_no}: record must be an object")
             required = ("record_id", "text", "prompt", "answer", "language", "split", "family_id",
+                        "category",
                         "functional_family", "template_family", "scenario_family", "functional_signature", "generator_id",
                         "generator_version", "answer_verifier", "verifier_version", "validation_status",
                         "task_sha256", "text_sha256")
@@ -217,6 +220,9 @@ def iter_clean_records(input_dir: Path, split: str, manifest: dict,
             if row["generator_id"] != family["task_kind"] or row["generator_version"] != ENGINE_VERSION \
                     or row["verifier_version"] != VERIFIER_VERSION or row["validation_status"] != "verified":
                 raise PackContractError(f"{path}:{line_no}: generator/verifier admission is invalid")
+            expected_category = "identity_foundation" if family["task_kind"] == "identity" else "synthetic_reasoning"
+            if row["category"] != expected_category:
+                raise PackContractError(f"{path}:{line_no}: category differs from the configured task family")
             if type(row.get("seed")) is not int or type(row.get("ordinal")) is not int or row["ordinal"] < 0:
                 raise PackContractError(f"{path}:{line_no}: generator seed/ordinal is malformed")
             if row["seed"] != _seed(int(manifest["root_seed"]), row["family_id"], row["ordinal"]):
@@ -499,6 +505,7 @@ def pack_documents(input_dir: Path, tokenizer_path: Path, output_dir: Path, sequ
                     "tokenizer_bundle_sha256": bundle_sha,
                     "record_id": record["record_id"],
                     "family_id": record["family_id"],
+                    "category": record["category"],
                     "functional_family": record["functional_family"],
                     "template_family": record["template_family"],
                     "scenario_family": record["scenario_family"],

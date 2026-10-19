@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 import re
 from typing import Any
@@ -45,10 +47,29 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
     if missing:
         raise ConfigError(f"missing configuration sections: {sorted(missing)}")
     identity, model, tokenizer = config["identity"], config["model"], config["tokenizer"]
-    if identity.get("invariant") != "SHINRA is SHINRA. Created by NULLXES.":
+    if identity.get("invariant") != "I AM SHINRA. CREATED BY NULLXES.":
         raise ConfigError("SHINRA identity invariant changed")
-    if identity.get("initialization") != "random" or identity.get("historical_weights_allowed"):
-        raise ConfigError("new base training must start from random initialization")
+    contract_path = (CONFIG_PATH.parent.parent / str(identity.get("contract_path", ""))).resolve()
+    if not contract_path.is_file() or hashlib.sha256(contract_path.read_bytes()).hexdigest() != identity.get("contract_sha256"):
+        raise ConfigError("versioned SHINRA identity contract is missing or its SHA256 differs from configs/shinra.yaml")
+    try:
+        contract = json.loads(contract_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigError("versioned SHINRA identity contract is not valid UTF-8 JSON") from exc
+    if contract.get("contract_id") != "nullxes.shinra.identity.v1" or contract.get("name") != "SHINRA" \
+            or contract.get("creator") != "NULLXES" or contract.get("canonical_identity") != "I AM SHINRA. CREATED BY NULLXES." \
+            or contract.get("type") != "Native artificial intelligence model" \
+            or contract.get("languages") != ["English", "Russian"] \
+            or contract.get("behavior") != ["Direct", "accurate", "instruction-following", "safety-aware"] \
+            or contract.get("response_policy") != {"identity_when_asked": True,
+                "identity_unprompted": False, "claims_consciousness": False,
+                "invent_private_information": False} \
+            or "origin" in contract or "initialization" in contract:
+        raise ConfigError("identity contract differs from the approved SHINRA identity facts")
+    schedule = identity.get("schedule", {})
+    if schedule.get("status") != "specification_only" or schedule.get("initial_optimizer_steps") != 100 \
+            or schedule.get("identity_examples_per_step") != 28 or schedule.get("identity_train_examples") != 2800:
+        raise ConfigError("identity schedule must remain a specification-only 2800-example/100-step plan")
     model_keys = (
         "vocab_size", "hidden_size", "intermediate_size", "num_hidden_layers",
         "num_attention_heads", "num_key_value_heads", "head_dim", "max_position_embeddings",
@@ -158,8 +179,8 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
     if synthetic.get("external_text_sources_allowed") is not False \
             or synthetic.get("external_llm_generation_allowed") is not False:
         raise ConfigError("Synthetic Engine forbids external text corpora and LLM-generated records")
-    if synthetic.get("engine_version") != "nullxes-synthetic-engine.v2" \
-            or synthetic.get("verifier_version") != "nullxes-synthetic-verifiers.v2":
+    if synthetic.get("engine_version") != "nullxes-synthetic-engine.v3" \
+            or synthetic.get("verifier_version") != "nullxes-synthetic-verifiers.v3":
         raise ConfigError("synthetic engine and answer verifier versions must be explicit")
     if type(synthetic.get("root_seed")) is not int or synthetic["root_seed"] < 0 \
             or type(synthetic.get("records_per_family")) is not int or synthetic["records_per_family"] <= 0:
@@ -174,6 +195,7 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
     split_by_group: dict[tuple[str, str], str] = {}
     configured_splits: set[str] = set()
     configured_languages: set[str] = set()
+    identity_train_counts = {language: 0 for language in ("en", "ru")}
     for family in families:
         if not isinstance(family, dict):
             raise ConfigError("each synthetic family must be a mapping")
@@ -188,7 +210,7 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         seen_family_ids.add(family_id)
         if family["language"] not in {"en", "ru"} or family["split"] not in {"train", "validation", "blind"}:
             raise ConfigError(f"synthetic family {family_id} has unsupported language or split")
-        if family["task_kind"] not in {"arithmetic", "mode_transition", "inventory", "location", "grounded_action"}:
+        if family["task_kind"] not in {"arithmetic", "mode_transition", "inventory", "location", "grounded_action", "identity"}:
             raise ConfigError(f"synthetic family {family_id} has unsupported task kind")
         if family["task_kind"] == "arithmetic" and family.get("operation") not in {
                 "add", "subtract", "multiply", "divide"}:
@@ -196,6 +218,11 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         if family["task_kind"] == "grounded_action" and family.get("scenario") not in {
                 "stop_obstacle", "cancel_action", "object_presence", "action_sequence"}:
             raise ConfigError(f"synthetic grounded-action family {family_id} needs a supported scenario")
+        if "records_per_family" in family and (type(family["records_per_family"]) is not int
+                                                 or family["records_per_family"] <= 0):
+            raise ConfigError(f"synthetic family {family_id} has an invalid record count")
+        if family["task_kind"] == "identity" and family["split"] == "train":
+            identity_train_counts[family["language"]] += int(family.get("records_per_family", 0))
         for group_field in ("functional_family", "template_family", "scenario_family"):
             group = family[group_field]
             if not isinstance(group, str) or not group:
@@ -208,6 +235,8 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         configured_languages.add(family["language"])
     if configured_splits != {"train", "validation", "blind"} or configured_languages != {"en", "ru"}:
         raise ConfigError("synthetic corpus requires all three splits and both EN/RU languages")
+    if identity_train_counts != {"en": 1400, "ru": 1400}:
+        raise ConfigError("identity foundation must contain exactly 1400 configured train records per language")
     if data.get("training_enabled") and config["training"].get("enabled"):
         if not tokenizer.get("artifact_sha256"):
             raise ConfigError("training requires a frozen tokenizer artifact SHA256")

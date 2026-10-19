@@ -21,6 +21,7 @@ from data.packed_data import ShardError
 
 class PackedParquetDataset(Dataset):
     LANGUAGE_CODES = {"en": 0, "ru": 1}
+    CATEGORY_CODES = {"synthetic_reasoning": 0, "identity_foundation": 1}
 
     def __init__(self, data_dir: str | Path, config: dict | None = None, expected_split: str | None = None,
                  *, allow_smoke_test: bool = False, allow_audit_data: bool = False,
@@ -67,6 +68,7 @@ class PackedParquetDataset(Dataset):
         self._row_groups: list[tuple[int, int, int, int]] = []
         total_rows = 0
         languages: list[np.ndarray] = []
+        categories: list[np.ndarray] = []
         targets: list[np.ndarray] = []
         self._row_group_starts: list[int] = []
         self._parquet_files = [pq.ParquetFile(path) for path in self.files]
@@ -89,7 +91,7 @@ class PackedParquetDataset(Dataset):
                 parquet.schema_arrow.names
             ):
                 raise ShardError(f"{path}: required tokenizer, corpus or sequence fields are missing")
-            row_metadata_fields = {"record_id", "family_id", "functional_family", "template_family",
+            row_metadata_fields = {"record_id", "family_id", "category", "functional_family", "template_family",
                 "scenario_family", "generator_id", "generator_version", "generator_seed", "answer_verifier",
                 "verifier_version", "validation_status", "functional_signature", "task_sha256", "text_sha256",
                 "language", "split", "window_semantics", "chunk_index", "chunk_count", "token_start",
@@ -115,6 +117,12 @@ class PackedParquetDataset(Dataset):
                     raise ShardError(f"{path}: unsupported language labels: {unknown}")
                 language_codes = np.fromiter((self.LANGUAGE_CODES[value] for value in language_values),
                                              dtype=np.uint8, count=row_count)
+                category_values = table.column("category").to_pylist()
+                unknown_categories = sorted(set(category_values) - self.CATEGORY_CODES.keys())
+                if unknown_categories:
+                    raise ShardError(f"{path}: unsupported training categories: {unknown_categories}")
+                category_codes = np.fromiter((self.CATEGORY_CODES[value] for value in category_values),
+                                             dtype=np.uint8, count=row_count)
                 label_array = table.column("labels").combine_chunks()
                 offsets = label_array.offsets.to_numpy(zero_copy_only=False)
                 values = label_array.values.to_numpy(zero_copy_only=False)
@@ -133,6 +141,9 @@ class PackedParquetDataset(Dataset):
                     if family.get("split") != packed_manifest.get("split") \
                             or family.get("language") != metadata_columns["language"][row_idx]:
                         raise ShardError(f"{path}: family split or language differs from the YAML contract")
+                    expected_category = "identity_foundation" if family.get("task_kind") == "identity" else "synthetic_reasoning"
+                    if metadata_columns["category"][row_idx] != expected_category:
+                        raise ShardError(f"{path}: row category differs from the configured family contract")
                     for field in ("functional_family", "template_family", "scenario_family"):
                         if metadata_columns[field][row_idx] != family.get(field):
                             raise ShardError(f"{path}: synthetic {field} differs from the YAML family contract")
@@ -185,6 +196,7 @@ class PackedParquetDataset(Dataset):
                     eod_tokens_seen += int(final_window)
                     target_tokens_seen += int(counts[row_idx])
                 languages.append(language_codes)
+                categories.append(category_codes)
                 targets.append(counts)
                 self._row_groups.append((total_rows, total_rows + row_count, file_idx, row_group_idx))
                 total_rows += row_count
@@ -199,6 +211,7 @@ class PackedParquetDataset(Dataset):
         if frozen_corpus is not None and frozen_corpus != self.corpus_manifest_sha256:
             raise ShardError(f"{root}: corpus differs from frozen YAML identity")
         self.language_codes = np.concatenate(languages) if languages else np.empty(0, dtype=np.uint8)
+        self.category_codes = np.concatenate(categories) if categories else np.empty(0, dtype=np.uint8)
         self.target_tokens = np.concatenate(targets) if targets else np.empty(0, dtype=np.uint16)
         self.length = total_rows
         if self.length == 0 or np.any(self.target_tokens == 0):

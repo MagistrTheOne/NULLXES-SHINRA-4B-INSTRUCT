@@ -6,10 +6,15 @@ status: data_tokenizer_and_runtime_audit_required
 identity:
   family: NULLXES-SHINRA
   release: NULLXES-SHINRA-4B-INSTRUCT
-  invariant: "SHINRA is SHINRA. Created by NULLXES."
-  initialization: random
-  historical_weights_allowed: false
-  historical_resume_allowed: false
+  invariant: "I AM SHINRA. CREATED BY NULLXES."
+  contract_path: data/identity_contract.v1.json
+  contract_sha256: f7772961af4dac55c9ac680527ca19c8d79a09661ddba6b9aff850a877c18e40
+  training_category: identity_foundation
+  schedule:
+    status: specification_only
+    initial_optimizer_steps: 100
+    identity_examples_per_step: 28
+    identity_train_examples: 2800
 
 model:
   model_type: nullxes_shinra
@@ -122,8 +127,8 @@ data:
   packed_shard_tokens: 100000000
   synthetic:
     enabled: true
-    engine_version: nullxes-synthetic-engine.v2
-    verifier_version: nullxes-synthetic-verifiers.v2
+    engine_version: nullxes-synthetic-engine.v3
+    verifier_version: nullxes-synthetic-verifiers.v3
     root_seed: 20261019
     records_per_family: 4096
     cross_split_near_duplicate_jaccard: 0.85
@@ -131,6 +136,12 @@ data:
     external_llm_generation_allowed: false
     status: implementation_not_runtime_verified
     families:
+      - {family_id: en.identity.train.v1, language: en, split: train, task_kind: identity, records_per_family: 1400, functional_family: identity.foundation.train.v1, template_family: identity.prompt.train.v1, scenario_family: identity.scenarios.train.v1}
+      - {family_id: ru.identity.train.v1, language: ru, split: train, task_kind: identity, records_per_family: 1400, functional_family: identity.foundation.train.v1, template_family: identity.prompt.train.v1, scenario_family: identity.scenarios.train.v1}
+      - {family_id: en.identity.validation.v1, language: en, split: validation, task_kind: identity, records_per_family: 350, functional_family: identity.foundation.validation.v1, template_family: identity.prompt.validation.v1, scenario_family: identity.scenarios.validation.v1}
+      - {family_id: ru.identity.validation.v1, language: ru, split: validation, task_kind: identity, records_per_family: 350, functional_family: identity.foundation.validation.v1, template_family: identity.prompt.validation.v1, scenario_family: identity.scenarios.validation.v1}
+      - {family_id: en.identity.blind.v1, language: en, split: blind, task_kind: identity, records_per_family: 350, functional_family: identity.foundation.blind.v1, template_family: identity.prompt.blind.v1, scenario_family: identity.scenarios.blind.v1}
+      - {family_id: ru.identity.blind.v1, language: ru, split: blind, task_kind: identity, records_per_family: 350, functional_family: identity.foundation.blind.v1, template_family: identity.prompt.blind.v1, scenario_family: identity.scenarios.blind.v1}
       - {family_id: en.arithmetic.add.train.v1, language: en, split: train, task_kind: arithmetic, operation: add, functional_family: arithmetic.add.v1, template_family: arithmetic.sum.train.v1, scenario_family: arithmetic.addition.train.v1}
       - {family_id: ru.arithmetic.add.train.v1, language: ru, split: train, task_kind: arithmetic, operation: add, functional_family: arithmetic.add.v1, template_family: arithmetic.sum.train.v1, scenario_family: arithmetic.addition.train.v1}
       - {family_id: en.device.mode.train.v1, language: en, split: train, task_kind: mode_transition, functional_family: device.mode_transition.v1, template_family: device.mode.train.v1, scenario_family: device.start_pause.train.v1}
@@ -265,7 +276,7 @@ evaluation:
   report_loss_by: [language, numeric_stratum, source, domain]
   report: [processed_tokens, optimizer_steps, tokens_per_second, peak_gpu_memory, train_loss, heldout_loss]
   blind_manifest_frozen_before_training: true
-  identity_in_base_pretraining: false
+  identity_in_base_pretraining: true
 
 inference:
   default_max_new_tokens: 512
