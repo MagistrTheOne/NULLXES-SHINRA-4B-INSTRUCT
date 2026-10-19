@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import json
 import multiprocessing
 import os
@@ -25,7 +26,7 @@ from typing import Any, Iterator
 from configs.loader import CONFIG_PATH, load_config
 from data.hashing import sha256_file
 
-ENGINE_VERSION = "nullxes-synthetic-engine.v4"
+ENGINE_VERSION = "nullxes-synthetic-engine.v5"
 CORPUS_SCHEMA = "nullxes.shinra.synthetic-corpus.v1"
 VERIFIER_VERSION = "nullxes-synthetic-verifiers.v3"
 SPLITS = ("train", "validation", "blind")
@@ -67,6 +68,35 @@ def _corpus_config_sha256(config: dict[str, Any]) -> str:
 def _seed(root_seed: int, family_id: str, ordinal: int) -> int:
     payload = f"{ENGINE_VERSION}\0{root_seed}\0{family_id}\0{ordinal}".encode("utf-8")
     return int.from_bytes(hashlib.sha256(payload).digest()[:16], "big")
+
+
+def _unique_arithmetic_operands(
+    operation: str, ordinal: int, root_seed: int, family_id: str
+) -> tuple[int, int]:
+    """Map each family ordinal to a deterministic, non-repeating operand pair."""
+    if operation == "divide":
+        side = 96  # Divisor and quotient are each in [2, 97].
+        space = side * side
+    else:
+        side = 9998  # Operands are each in [2, 9999].
+        space = side * side
+    if ordinal < 0 or ordinal >= space:
+        raise SyntheticCorpusError(
+            f"arithmetic family supports at most {space} unique {operation} records"
+        )
+
+    family_seed = _seed(root_seed, family_id, 0)
+    multiplier = family_seed % space or 1
+    while math.gcd(multiplier, space) != 1:
+        multiplier = (multiplier + 1) % space or 1
+    offset = (family_seed >> 64) % space
+    pair_index = (multiplier * ordinal + offset) % space
+
+    if operation == "divide":
+        divisor = 2 + pair_index % side
+        quotient = 2 + pair_index // side
+        return divisor * quotient, divisor
+    return 2 + pair_index // side, 2 + pair_index % side
 
 
 def _render_arithmetic(language: str, operation: str, left: int, right: int) -> tuple[str, str]:
@@ -325,11 +355,9 @@ def _generate_task(family: dict[str, Any], rng: random.Random, ordinal: int,
         return _render_identity(language, scenario, ordinal, family["split"])
     if kind == "arithmetic":
         operation = family["operation"]
-        if operation == "divide":
-            right = rng.randint(2, 97)
-            left = right * rng.randint(2, 97)
-        else:
-            left, right = rng.randint(2, 9999), rng.randint(2, 9999)
+        left, right = _unique_arithmetic_operands(
+            operation, ordinal, root_seed, family["family_id"]
+        )
         prompt, answer = _render_arithmetic(language, operation, left, right)
         task = {"kind": kind, "operation": operation, "left": left, "right": right}
         verifier = f"arithmetic.{operation}.v1"
@@ -766,6 +794,15 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
                 raise SyntheticCorpusError(
                     f"location family {family['family_id']} exceeds the 40401 unique-start-point grid"
                 )
+            if family["task_kind"] == "arithmetic":
+                operation = family["operation"]
+                pair_capacity = 96 * 96 if operation == "divide" else 9998 * 9998
+                if family_record_targets[family["family_id"]] > pair_capacity:
+                    raise SyntheticCorpusError(
+                        f"arithmetic family {family['family_id']} requests "
+                        f"{family_record_targets[family['family_id']]} records but its "
+                        f"{operation} operand space supports only {pair_capacity} unique pairs"
+                    )
         jobs = [(index, family, family_record_targets[family["family_id"]], seed,
                  str(family_stage / f"family-{index:05d}.jsonl"))
                 for index, family in enumerate(families)]

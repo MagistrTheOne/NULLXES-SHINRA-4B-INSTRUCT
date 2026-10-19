@@ -179,7 +179,7 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
     if synthetic.get("external_text_sources_allowed") is not False \
             or synthetic.get("external_llm_generation_allowed") is not False:
         raise ConfigError("Synthetic Engine forbids external text corpora and LLM-generated records")
-    if synthetic.get("engine_version") != "nullxes-synthetic-engine.v4" \
+    if synthetic.get("engine_version") != "nullxes-synthetic-engine.v5" \
             or synthetic.get("verifier_version") != "nullxes-synthetic-verifiers.v3":
         raise ConfigError("synthetic engine and answer verifier versions must be explicit")
     if type(synthetic.get("root_seed")) is not int or synthetic["root_seed"] < 0 \
