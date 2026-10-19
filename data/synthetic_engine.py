@@ -43,6 +43,21 @@ def _sha(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _corpus_config_sha256(config: dict[str, Any]) -> str:
+    """Hash generation inputs while excluding mutable admission and artifact pins."""
+    data = dict(config["data"])
+    synthetic = dict(data["synthetic"])
+    synthetic.pop("status", None)
+    policy = {
+        "acquisition": data["acquisition"],
+        "split_salt": data["split_salt"],
+        "split_unit": data["split_unit"],
+        "synthetic": synthetic,
+        "cleaning": data["cleaning"],
+    }
+    return hashlib.sha256(_canonical(policy)).hexdigest()
+
+
 def _seed(root_seed: int, family_id: str, ordinal: int) -> int:
     payload = f"{ENGINE_VERSION}\0{root_seed}\0{family_id}\0{ordinal}".encode("utf-8")
     return int.from_bytes(hashlib.sha256(payload).digest()[:16], "big")
@@ -349,7 +364,9 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
         raise
     counts = {split: 0 for split in SPLITS}
     language_counts = {split: {language: 0 for language in sorted(LANGUAGES)} for split in SPLITS}
-    exact_by_split: dict[str, set[str]] = {split: set() for split in SPLITS}
+    canonical_prompts_by_split: dict[str, set[str]] = {split: set() for split in SPLITS}
+    exact_text_seen_by_split: dict[str, set[str]] = {split: set() for split in SPLITS}
+    exact_duplicate_text_records = {split: 0 for split in SPLITS}
     prompt_database = sqlite3.connect(stage / "near_duplicates.sqlite")
     prompt_database.execute(
         "CREATE TABLE prompts (split TEXT NOT NULL, digest TEXT NOT NULL, prompt TEXT NOT NULL, "
@@ -368,11 +385,17 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
             for record in _iter_family_records(family, count, seed):
                 normalized = _normalize_prompt(record["prompt"])
                 structural_sha = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-                if structural_sha in exact_by_split[split]:
-                    raise SyntheticCorpusError(f"within-split duplicate generated in {split}: {record['record_id']}")
-                exact_by_split[split].add(structural_sha)
-                prompt_database.execute("INSERT INTO prompts VALUES (?, ?, ?)",
-                                        (split, structural_sha, record["prompt"]))
+                canonical_prompts_by_split[split].add(structural_sha)
+                # Many valid same-split examples differ only in numbers or direction.
+                # Keep one canonical prompt per signature for cross-split near-dedup;
+                # separately report exact rendered-record repetition as a quality signal.
+                prompt_database.execute("INSERT OR IGNORE INTO prompts VALUES (?, ?, ?)",
+                                        (split, structural_sha, normalized))
+                exact_text_sha = hashlib.sha256(record["text"].encode("utf-8")).hexdigest()
+                if exact_text_sha in exact_text_seen_by_split[split]:
+                    exact_duplicate_text_records[split] += 1
+                else:
+                    exact_text_seen_by_split[split].add(exact_text_sha)
                 functional_splits[record["functional_signature"]].add(split)
                 encoded = _canonical(record) + b"\n"
                 if handles[split].write(encoded) != len(encoded):
@@ -410,7 +433,7 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
         prompt_database.close()
         prompt_database = None
         (stage / "near_duplicates.sqlite").unlink()
-        config_sha = hashlib.sha256(Path(config_path).read_bytes()).hexdigest()
+        config_sha = _corpus_config_sha256(config)
         generator_source_sha = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         manifest: dict[str, Any] = {
             "schema": CORPUS_SCHEMA,
@@ -423,6 +446,7 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
             "verifier_version": VERIFIER_VERSION,
             "generator_source_sha256": generator_source_sha,
             "config_sha256": config_sha,
+            "config_sha256_scope": "synthetic_generation_policy.v1",
             "root_seed": seed,
             "records_per_family": count,
             "families": {split: sorted(values) for split, values in families_by_split.items()},
@@ -430,6 +454,10 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
             "scenario_families": {split: sorted(values) for split, values in scenarios_by_split.items()},
             "record_counts": counts,
             "record_counts_by_language": language_counts,
+            "exact_duplicate_text_records": exact_duplicate_text_records,
+            "unique_canonical_prompt_signatures": {
+                split: len(signatures) for split, signatures in canonical_prompts_by_split.items()
+            },
             "files": files,
             "split_hashes": {split: files[f"{split}.jsonl"] for split in SPLITS},
             "train_hash": files["train.jsonl"],
@@ -440,8 +468,11 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
                 "template_isolation": True,
                 "scenario_isolation": True,
                 "normalized_prompt_exact_audit": True,
+                "same_split_exact_text_duplicates_counted": True,
                 "functional_signature_isolation": True,
-                "near_duplicate_method": "3-word-shingle Jaccard after numeric canonicalization",
+                "near_duplicate_method": (
+                    "unique canonical prompts; 3-word-shingle Jaccard after numeric canonicalization"
+                ),
                 "near_duplicate_jaccard_threshold": float(synthetic["cross_split_near_duplicate_jaccard"]),
             },
         }
