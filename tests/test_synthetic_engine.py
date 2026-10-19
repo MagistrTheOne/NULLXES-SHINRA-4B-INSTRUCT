@@ -23,9 +23,15 @@ def test_small_corpus_generation_is_reproducible_and_reports_exact_repeats(tmp_p
     second = generate_corpus(tmp_path / "second", records_per_family=2, root_seed=73)
 
     assert first == second
-    assert first["record_counts"] == {"train": 8, "validation": 8, "blind": 8}
-    assert first["exact_duplicate_text_records"]["train"] >= 2
+    assert first["record_counts"] == {"train": 16, "validation": 12, "blind": 12}
+    assert first["exact_duplicate_text_records"]["train"] == 0
     assert first["unique_canonical_prompt_signatures"]["train"] < first["record_counts"]["train"]
+    assert first["record_counts_by_language"] == {
+        "train": {"en": 8, "ru": 8},
+        "validation": {"en": 6, "ru": 6},
+        "blind": {"en": 6, "ru": 6},
+    }
+    assert first["text_length_characters"]["train"]["count"] == 16
     assert first["split_integrity"]["family_isolation"] is True
     assert first["split_integrity"]["template_isolation"] is True
     assert first["split_integrity"]["scenario_isolation"] is True

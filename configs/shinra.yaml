@@ -122,8 +122,8 @@ data:
   packed_shard_tokens: 100000000
   synthetic:
     enabled: true
-    engine_version: nullxes-synthetic-engine.v1
-    verifier_version: nullxes-synthetic-verifiers.v1
+    engine_version: nullxes-synthetic-engine.v2
+    verifier_version: nullxes-synthetic-verifiers.v2
     root_seed: 20261019
     records_per_family: 4096
     cross_split_near_duplicate_jaccard: 0.85
@@ -133,16 +133,24 @@ data:
     families:
       - {family_id: en.arithmetic.add.train.v1, language: en, split: train, task_kind: arithmetic, operation: add, functional_family: arithmetic.add.v1, template_family: arithmetic.sum.train.v1, scenario_family: arithmetic.addition.train.v1}
       - {family_id: ru.arithmetic.add.train.v1, language: ru, split: train, task_kind: arithmetic, operation: add, functional_family: arithmetic.add.v1, template_family: arithmetic.sum.train.v1, scenario_family: arithmetic.addition.train.v1}
-      - {family_id: en.device.mode.train.v1, language: en, split: train, task_kind: mode_transition, functional_family: device.mode_transition.v1, template_family: device.mode.train.v1, scenario_family: device.start_pause.train.v1, initial_state: idle}
-      - {family_id: ru.device.mode.train.v1, language: ru, split: train, task_kind: mode_transition, functional_family: device.mode_transition.v1, template_family: device.mode.train.v1, scenario_family: device.start_pause.train.v1, initial_state: idle}
+      - {family_id: en.device.mode.train.v1, language: en, split: train, task_kind: mode_transition, functional_family: device.mode_transition.v1, template_family: device.mode.train.v1, scenario_family: device.start_pause.train.v1}
+      - {family_id: ru.device.mode.train.v1, language: ru, split: train, task_kind: mode_transition, functional_family: device.mode_transition.v1, template_family: device.mode.train.v1, scenario_family: device.start_pause.train.v1}
+      - {family_id: en.robot.stop_obstacle.train.v2, language: en, split: train, task_kind: grounded_action, scenario: stop_obstacle, functional_family: robot.stop_obstacle.v1, template_family: robot.obstacle_stop.train.v2, scenario_family: robot.clearance_decision.train.v2}
+      - {family_id: ru.robot.stop_obstacle.train.v2, language: ru, split: train, task_kind: grounded_action, scenario: stop_obstacle, functional_family: robot.stop_obstacle.v1, template_family: robot.obstacle_stop.train.v2, scenario_family: robot.clearance_decision.train.v2}
+      - {family_id: en.robot.action_sequence.train.v2, language: en, split: train, task_kind: grounded_action, scenario: action_sequence, functional_family: robot.action_sequence.v1, template_family: robot.door_sequence.train.v2, scenario_family: robot.door_readiness.train.v2}
+      - {family_id: ru.robot.action_sequence.train.v2, language: ru, split: train, task_kind: grounded_action, scenario: action_sequence, functional_family: robot.action_sequence.v1, template_family: robot.door_sequence.train.v2, scenario_family: robot.door_readiness.train.v2}
       - {family_id: en.arithmetic.multiply.validation.v1, language: en, split: validation, task_kind: arithmetic, operation: multiply, functional_family: arithmetic.multiply.v1, template_family: arithmetic.product.validation.v1, scenario_family: arithmetic.multiplication.validation.v1}
       - {family_id: ru.arithmetic.multiply.validation.v1, language: ru, split: validation, task_kind: arithmetic, operation: multiply, functional_family: arithmetic.multiply.v1, template_family: arithmetic.product.validation.v1, scenario_family: arithmetic.multiplication.validation.v1}
       - {family_id: en.inventory.validation.v1, language: en, split: validation, task_kind: inventory, functional_family: inventory.add_remove.v1, template_family: inventory.box.validation.v1, scenario_family: inventory.parts.validation.v1}
       - {family_id: ru.inventory.validation.v1, language: ru, split: validation, task_kind: inventory, functional_family: inventory.add_remove.v1, template_family: inventory.box.validation.v1, scenario_family: inventory.parts.validation.v1}
+      - {family_id: en.robot.cancel_action.validation.v2, language: en, split: validation, task_kind: grounded_action, scenario: cancel_action, functional_family: robot.cancel_before_execution.v1, template_family: robot.cancel_queue.validation.v2, scenario_family: robot.cancel_pending_action.validation.v2}
+      - {family_id: ru.robot.cancel_action.validation.v2, language: ru, split: validation, task_kind: grounded_action, scenario: cancel_action, functional_family: robot.cancel_before_execution.v1, template_family: robot.cancel_queue.validation.v2, scenario_family: robot.cancel_pending_action.validation.v2}
       - {family_id: en.arithmetic.subtract.blind.v1, language: en, split: blind, task_kind: arithmetic, operation: subtract, functional_family: arithmetic.subtract.v1, template_family: arithmetic.difference.blind.v1, scenario_family: arithmetic.subtraction.blind.v1}
       - {family_id: ru.arithmetic.subtract.blind.v1, language: ru, split: blind, task_kind: arithmetic, operation: subtract, functional_family: arithmetic.subtract.v1, template_family: arithmetic.difference.blind.v1, scenario_family: arithmetic.subtraction.blind.v1}
       - {family_id: en.location.blind.v1, language: en, split: blind, task_kind: location, functional_family: state.location_navigation.v1, template_family: location.coordinates.blind.v1, scenario_family: location.cardinal_moves.blind.v1}
       - {family_id: ru.location.blind.v1, language: ru, split: blind, task_kind: location, functional_family: state.location_navigation.v1, template_family: location.coordinates.blind.v1, scenario_family: location.cardinal_moves.blind.v1}
+      - {family_id: en.robot.object_presence.blind.v2, language: en, split: blind, task_kind: grounded_action, scenario: object_presence, functional_family: robot.observed_object_presence.v1, template_family: robot.object_observation.blind.v2, scenario_family: robot.object_grounding.blind.v2}
+      - {family_id: ru.robot.object_presence.blind.v2, language: ru, split: blind, task_kind: grounded_action, scenario: object_presence, functional_family: robot.observed_object_presence.v1, template_family: robot.object_observation.blind.v2, scenario_family: robot.object_grounding.blind.v2}
   cleaning:
     unicode_normalization: NFC
     policy_version: nullxes-synthetic-text.v1

@@ -10,10 +10,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import multiprocessing
 import os
 import random
 import re
 import sqlite3
+import sys
+import time
+from concurrent.futures import ProcessPoolExecutor
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Iterator
@@ -21,9 +25,9 @@ from typing import Any, Iterator
 from configs.loader import CONFIG_PATH, load_config
 from data.hashing import sha256_file
 
-ENGINE_VERSION = "nullxes-synthetic-engine.v1"
+ENGINE_VERSION = "nullxes-synthetic-engine.v2"
 CORPUS_SCHEMA = "nullxes.shinra.synthetic-corpus.v1"
-VERIFIER_VERSION = "nullxes-synthetic-verifiers.v1"
+VERIFIER_VERSION = "nullxes-synthetic-verifiers.v2"
 SPLITS = ("train", "validation", "blind")
 LANGUAGES = {"en", "ru"}
 NUMBER = re.compile(r"(?<!\w)[+-]?\d+(?!\w)")
@@ -96,20 +100,99 @@ def _render_mode_transition(language: str, before: str, commands: list[str]) -> 
                   "en": {"idle": "idle", "active": "active", "paused": "paused"}}
     verbs = {"ru": {"start": "запусти", "pause": "приостанови", "resume": "возобнови"},
              "en": {"start": "start", "pause": "pause", "resume": "resume"}}
-    transitions = {"idle": {"start": "active"}, "active": {"pause": "paused"},
-                   "paused": {"resume": "active"}}
+    transitions = {("idle", "start"): "active", ("active", "pause"): "paused",
+                   ("paused", "resume"): "active"}
     state = before
     command_text: list[str] = []
-    for command in commands:
+    rejected_step = None
+    for step, command in enumerate(commands, start=1):
         command_text.append(verbs[language][command])
-        state = transitions[state][command]
+        if rejected_step is None:
+            next_state = transitions.get((state, command))
+            if next_state is None:
+                rejected_step = step
+            else:
+                state = next_state
+    if rejected_step is not None:
+        answer = (f"отклонена на шаге {rejected_step}; состояние: {mode_words[language][state]}"
+                  if language == "ru" else
+                  f"rejected at step {rejected_step}; state: {mode_words[language][state]}")
+    else:
+        answer = mode_words[language][state]
     if language == "ru":
         prompt = (f"Состояние устройства: {mode_words[language][before]}. Команды по порядку: "
-                  f"{'; затем '.join(command_text)}. Каково конечное состояние? Ответь одним словом.")
+                  f"{'; затем '.join(command_text)}. Укажи итог или шаг первой отклонённой команды и состояние.")
     else:
         prompt = (f"Device state: {mode_words[language][before]}. Commands in order: "
-                  f"{'; then '.join(command_text)}. What is the final state? Answer with one word.")
-    return prompt, mode_words[language][state]
+                  f"{'; then '.join(command_text)}. Give the final state or first rejected step and state.")
+    return prompt, answer
+
+
+def _render_grounded_action(language: str, scenario: str, task: dict[str, Any]) -> tuple[str, str]:
+    if scenario == "stop_obstacle":
+        action = task["action"]
+        action_words = {"en": {"forward": "forward", "left": "left", "right": "right"},
+                        "ru": {"forward": "вперёд", "left": "налево", "right": "направо"}}
+        blocked = task["obstacle_distance_cm"] <= task["braking_distance_cm"]
+        if language == "ru":
+            prompt = (f"Наблюдение {task['observation_id']}: робот должен двигаться «{action_words[language][action]}». Препятствие "
+                      f"на расстоянии {task['obstacle_distance_cm']} см; тормозной путь {task['braking_distance_cm']} см. "
+                      "Если путь не позволяет безопасно продолжать, ответь STOP; иначе ПРОДОЛЖАТЬ.")
+            answer = "STOP" if blocked else "ПРОДОЛЖАТЬ"
+        else:
+            prompt = (f"Observation {task['observation_id']}: a robot is commanded to move {action}. An obstacle is "
+                      f"{task['obstacle_distance_cm']} cm away and braking distance is {task['braking_distance_cm']} cm. "
+                      "Reply STOP if it cannot safely continue; otherwise reply PROCEED.")
+            answer = "STOP" if blocked else "PROCEED"
+        return prompt, answer
+    if scenario == "cancel_action":
+        action = task["action"]
+        action_words = {"move_forward": {"ru": "двигаться вперёд", "en": "move forward"},
+                        "open_door": {"ru": "открыть дверь", "en": "open the door"},
+                        "pick_object": {"ru": "поднять предмет", "en": "pick up the object"}}
+        rendered_action = action_words[action][language]
+        if language == "ru":
+            prompt = (f"Команда #{task['command_id']} «{rendered_action}» поставлена в очередь; до выполнения получена "
+                      "команда ОТМЕНА. Выполнять исходную команду?")
+            answer = "ОТМЕНЕНО; НЕ ВЫПОЛНЯТЬ"
+        else:
+            prompt = (f"Command #{task['command_id']} '{rendered_action}' is queued, then CANCEL arrives before execution. "
+                      "Should the original command execute?")
+            answer = "CANCELLED; DO NOT EXECUTE"
+        return prompt, answer
+    if scenario == "object_presence":
+        object_words = {"key": {"ru": "ключ", "en": "key"}, "crate": {"ru": "ящик", "en": "crate"},
+                        "tool": {"ru": "инструмент", "en": "tool"}, "panel": {"ru": "панель", "en": "panel"},
+                        "beacon": {"ru": "маяк", "en": "beacon"}, "cable": {"ru": "кабель", "en": "cable"},
+                        "valve": {"ru": "клапан", "en": "valve"}, "battery": {"ru": "аккумулятор", "en": "battery"}}
+        listed = ", ".join(object_words[item][language] for item in task["visible_objects"])
+        target = task["requested_object"]
+        present = target in task["visible_objects"]
+        if language == "ru":
+            prompt = f"Наблюдение {task['observation_id']}. Объекты: {listed}. Запрошен «{object_words[target][language]}». Он присутствует? ДА или НЕТ."
+            answer = "ДА" if present else "НЕТ"
+        else:
+            prompt = f"Observation {task['observation_id']}. Objects: {listed}. Requested: '{object_words[target][language]}'. Is it present? YES or NO."
+            answer = "YES" if present else "NO"
+        return prompt, answer
+    if scenario == "action_sequence":
+        completed = task["completed_actions"]
+        sequence = task["required_actions"]
+        ready = completed == sequence
+        names = {"ru": {"acquire_key": "получить ключ", "unlock": "отпереть замок", "open_door": "открыть дверь"},
+                 "en": {"acquire_key": "acquire the key", "unlock": "unlock the lock", "open_door": "open the door"}}
+        if language == "ru":
+            done = ", ".join(names[language][item] for item in completed) or "ничего"
+            needed = ", ".join(names[language][item] for item in sequence)
+            prompt = f"Сцена {task['scene_id']}. Выполнено: {done}. Для прохода нужны действия по порядку: {needed}. Дверь готова? ДА или НЕТ."
+            answer = "ДА" if ready else "НЕТ"
+        else:
+            done = ", ".join(names[language][item] for item in completed) or "none"
+            needed = ", ".join(names[language][item] for item in sequence)
+            prompt = f"Scene {task['scene_id']}. Completed: {done}. Required actions in order: {needed}. Is the door ready? YES or NO."
+            answer = "YES" if ready else "NO"
+        return prompt, answer
+    raise SyntheticCorpusError(f"unsupported grounded-action scenario: {scenario}")
 
 
 def _render_inventory(language: str, initial: int, commands: list[tuple[str, int]]) -> tuple[str, str]:
@@ -149,7 +232,8 @@ def _render_location(language: str, start: tuple[int, int], moves: list[str]) ->
     return prompt, f"{position[0]}, {position[1]}"
 
 
-def _generate_task(family: dict[str, Any], rng: random.Random) -> tuple[dict[str, Any], str, str, str]:
+def _generate_task(family: dict[str, Any], rng: random.Random, ordinal: int,
+                   root_seed: int) -> tuple[dict[str, Any], str, str, str]:
     language = family["language"]
     kind = family["task_kind"]
     if kind == "arithmetic":
@@ -163,13 +247,15 @@ def _generate_task(family: dict[str, Any], rng: random.Random) -> tuple[dict[str
         task = {"kind": kind, "operation": operation, "left": left, "right": right}
         verifier = f"arithmetic.{operation}.v1"
     elif kind == "mode_transition":
-        paths = {"idle": (["start"],), "active": (["pause"],), "paused": (["resume"],)}
-        before = family["initial_state"]
-        commands = list(paths[before][0])
-        if family.get("two_step", False):
-            followup = {"idle": "pause", "active": "resume", "paused": "pause"}.get(before)
-            if followup:
-                commands.append(followup)
+        sequence_space = 3 ** 10
+        family_offset = _seed(root_seed, family["family_id"], 0) % sequence_space
+        sequence_index = (ordinal + family_offset) % sequence_space
+        before = ("idle", "active", "paused")[sequence_index % 3]
+        encoded = sequence_index // 3
+        commands = []
+        for _ in range(9):
+            commands.append(("start", "pause", "resume")[encoded % 3])
+            encoded //= 3
         prompt, answer = _render_mode_transition(language, before, commands)
         task = {"kind": kind, "initial_state": before, "commands": commands}
         verifier = "state.mode_transition.v1"
@@ -188,6 +274,34 @@ def _generate_task(family: dict[str, Any], rng: random.Random) -> tuple[dict[str
         prompt, answer = _render_location(language, start, moves)
         task = {"kind": kind, "start": start, "moves": moves}
         verifier = "state.location.v1"
+    elif kind == "grounded_action":
+        scenario = family["scenario"]
+        if scenario == "stop_obstacle":
+            task = {"kind": kind, "scenario": scenario, "action": rng.choice(("forward", "left", "right")),
+                    "obstacle_distance_cm": rng.randint(0, 5000),
+                    "braking_distance_cm": rng.randint(25, 300), "observation_id": ordinal}
+        elif scenario == "cancel_action":
+            task = {"kind": kind, "scenario": scenario,
+                    "action": rng.choice(("move_forward", "open_door", "pick_object")),
+                    "command_id": ordinal}
+        elif scenario == "object_presence":
+            objects = ("key", "crate", "tool", "panel", "beacon", "cable", "valve", "battery")
+            visible = rng.sample(objects, rng.randint(2, 5))
+            target = rng.choice(objects)
+            task = {"kind": kind, "scenario": scenario, "visible_objects": visible,
+                    "requested_object": target, "observation_id": ordinal}
+        elif scenario == "action_sequence":
+            required = ["acquire_key", "unlock", "open_door"]
+            completed_count = rng.randrange(len(required) + 1)
+            completed = required[:completed_count]
+            if rng.random() < 0.2 and completed_count >= 2:
+                completed = [required[0], required[2]]
+            task = {"kind": kind, "scenario": scenario, "required_actions": required,
+                    "completed_actions": completed, "scene_id": ordinal}
+        else:
+            raise SyntheticCorpusError(f"unsupported grounded-action scenario in {family['family_id']}: {scenario}")
+        prompt, answer = _render_grounded_action(language, scenario, task)
+        verifier = f"grounded_action.{scenario}.v1"
     else:
         raise SyntheticCorpusError(f"unsupported task kind in family {family['family_id']}: {kind}")
     task["language"] = language
@@ -209,15 +323,24 @@ def _verify_task(task: dict[str, Any], answer: str, verifier: str) -> None:
         transitions = {("idle", "start"): "active", ("active", "pause"): "paused",
                        ("paused", "resume"): "active"}
         state = task["initial_state"]
-        for command in task["commands"]:
-            try:
-                state = transitions[(state, command)]
-            except KeyError as exc:
-                raise SyntheticCorpusError("mode transition contains an invalid command for the current state") from exc
+        rejected_step = None
+        commands = task.get("commands")
+        if not isinstance(commands, list) or not commands:
+            raise SyntheticCorpusError("mode transition requires a nonempty command sequence")
+        for step, command in enumerate(commands, start=1):
+            next_state = transitions.get((state, command))
+            if next_state is None:
+                rejected_step = step
+                break
+            state = next_state
         words = {"ru": {"idle": "ожидание", "active": "активен", "paused": "пауза"},
                  "en": {"idle": "idle", "active": "active", "paused": "paused"}}
         language = task["language"]
-        if answer != words[language][state]:
+        expected = (f"отклонена на шаге {rejected_step}; состояние: {words[language][state]}"
+                    if rejected_step is not None and language == "ru" else
+                    f"rejected at step {rejected_step}; state: {words[language][state]}"
+                    if rejected_step is not None else words[language][state])
+        if answer != expected:
             raise SyntheticCorpusError("mode-transition answer failed its independent verifier")
         return
     if verifier == "state.inventory.v1" and kind == "inventory":
@@ -239,6 +362,47 @@ def _verify_task(task: dict[str, Any], answer: str, verifier: str) -> None:
         if answer != f"{position[0]}, {position[1]}":
             raise SyntheticCorpusError("location answer failed its independent verifier")
         return
+    if verifier.startswith("grounded_action.") and kind == "grounded_action":
+        scenario = task.get("scenario")
+        if verifier != f"grounded_action.{scenario}.v1":
+            raise SyntheticCorpusError("grounded-action verifier does not match the scenario")
+        if scenario == "stop_obstacle":
+            obstacle_cm = int(task.get("obstacle_distance_cm", -1))
+            braking_cm = int(task.get("braking_distance_cm", -1))
+            if task.get("action") not in {"forward", "left", "right"} or not 0 <= obstacle_cm <= 5000 \
+                    or not 25 <= braking_cm <= 300 or int(task.get("observation_id", -1)) < 0:
+                raise SyntheticCorpusError("obstacle task state is invalid")
+            blocked = obstacle_cm <= braking_cm
+            expected = ("STOP" if blocked else "ПРОДОЛЖАТЬ") if task["language"] == "ru" else ("STOP" if blocked else "PROCEED")
+        elif scenario == "cancel_action":
+            if task.get("action") not in {"move_forward", "open_door", "pick_object"} \
+                    or int(task.get("command_id", -1)) < 0:
+                raise SyntheticCorpusError("cancel task action is invalid")
+            expected = "ОТМЕНЕНО; НЕ ВЫПОЛНЯТЬ" if task["language"] == "ru" else "CANCELLED; DO NOT EXECUTE"
+        elif scenario == "object_presence":
+            visible, target = task.get("visible_objects"), task.get("requested_object")
+            allowed = {"key", "crate", "tool", "panel", "beacon", "cable", "valve", "battery"}
+            if not isinstance(visible, list) or not 2 <= len(visible) <= 5 or not set(visible) <= allowed or target not in allowed:
+                raise SyntheticCorpusError("object-presence task state is invalid")
+            if int(task.get("observation_id", -1)) < 0:
+                raise SyntheticCorpusError("object-presence observation identity is invalid")
+            present = target in visible
+            expected = (("ДА" if present else "НЕТ") if task["language"] == "ru"
+                        else ("YES" if present else "NO"))
+        elif scenario == "action_sequence":
+            required, completed = task.get("required_actions"), task.get("completed_actions")
+            canonical = ["acquire_key", "unlock", "open_door"]
+            if required != canonical or not isinstance(completed, list) or any(item not in canonical for item in completed):
+                raise SyntheticCorpusError("action-sequence task state is invalid")
+            if int(task.get("scene_id", -1)) < 0:
+                raise SyntheticCorpusError("action-sequence scene identity is invalid")
+            expected = (("ДА" if completed == required else "НЕТ") if task["language"] == "ru"
+                        else ("YES" if completed == required else "NO"))
+        else:
+            raise SyntheticCorpusError(f"unsupported grounded-action verifier scenario: {scenario}")
+        if answer != expected:
+            raise SyntheticCorpusError("grounded-action answer failed its independent verifier")
+        return
     raise SyntheticCorpusError(f"verifier {verifier!r} does not support task kind {kind!r}")
 
 
@@ -251,16 +415,20 @@ def _validate_families(config: dict[str, Any]) -> list[dict[str, Any]]:
     required = {"family_id", "language", "split", "task_kind", "functional_family",
                 "template_family", "scenario_family"}
     for family in families:
-        if not isinstance(family, dict) or required - family.keys():
-            raise SyntheticCorpusError(f"generator family is missing fields: {sorted(required - family.keys())}")
+        missing = required - family.keys() if isinstance(family, dict) else required
+        if missing:
+            raise SyntheticCorpusError(f"generator family is missing fields: {sorted(missing)}")
         family_id = family["family_id"]
         if not isinstance(family_id, str) or not family_id or family_id in seen:
             raise SyntheticCorpusError(f"duplicate or invalid synthetic family_id: {family_id!r}")
         seen.add(family_id)
         if family["language"] not in LANGUAGES or family["split"] not in SPLITS:
             raise SyntheticCorpusError(f"family {family_id} has unsupported language or split")
-        if family["task_kind"] not in {"arithmetic", "mode_transition", "inventory", "location"}:
+        if family["task_kind"] not in {"arithmetic", "mode_transition", "inventory", "location", "grounded_action"}:
             raise SyntheticCorpusError(f"family {family_id} has unsupported task kind")
+        if family["task_kind"] == "grounded_action" and family.get("scenario") not in {
+                "stop_obstacle", "cancel_action", "object_presence", "action_sequence"}:
+            raise SyntheticCorpusError(f"family {family_id} has unsupported grounded-action scenario")
         for group_field in ("template_family", "scenario_family", "functional_family"):
             group = family[group_field]
             key = (group_field, group)
@@ -277,7 +445,7 @@ def _validate_families(config: dict[str, Any]) -> list[dict[str, Any]]:
 def _record(family: dict[str, Any], ordinal: int, root_seed: int) -> dict[str, Any]:
     seed = _seed(root_seed, family["family_id"], ordinal)
     rng = random.Random(seed)
-    task, prompt, answer, verifier = _generate_task(family, rng)
+    task, prompt, answer, verifier = _generate_task(family, rng, ordinal, root_seed)
     _verify_task(task, answer, verifier)
     language = family["language"]
     text = f"User: {prompt}\nAssistant: {answer}"
@@ -332,13 +500,41 @@ def _jaccard(left: set[tuple[str, ...]], right: set[tuple[str, ...]]) -> float:
     return len(left & right) / len(union) if union else 1.0
 
 
+def _length_summary(values: list[int]) -> dict[str, int | float]:
+    if not values:
+        return {"count": 0, "min": 0, "mean": 0.0, "p50": 0, "p95": 0, "max": 0}
+    ordered = sorted(values)
+    return {
+        "count": len(ordered), "min": ordered[0],
+        "mean": round(sum(ordered) / len(ordered), 3),
+        "p50": ordered[(len(ordered) - 1) // 2],
+        "p95": ordered[min(len(ordered) - 1, int((len(ordered) - 1) * 0.95))],
+        "max": ordered[-1],
+    }
+
+
 def _iter_family_records(family: dict[str, Any], count: int, seed: int) -> Iterator[dict[str, Any]]:
     for ordinal in range(count):
         yield _record(family, ordinal, seed)
 
 
+def _write_family_records(args: tuple[int, dict[str, Any], int, int, str]) -> tuple[int, str]:
+    """Generate one family to disk in a child process; parent merges in config order."""
+    index, family, count, seed, destination = args
+    path = Path(destination)
+    with path.open("xb") as stream:
+        for record in _iter_family_records(family, count, seed):
+            encoded = _canonical(record) + b"\n"
+            if stream.write(encoded) != len(encoded):
+                raise SyntheticCorpusError(f"short write while generating family {family['family_id']}")
+        stream.flush()
+        os.fsync(stream.fileno())
+    return index, str(path)
+
+
 def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_PATH,
-                    records_per_family: int | None = None, root_seed: int | None = None) -> dict[str, Any]:
+                    records_per_family: int | None = None, root_seed: int | None = None,
+                    workers: int | None = None) -> dict[str, Any]:
     config = load_config(config_path)
     synthetic = config["data"]["synthetic"]
     families = _validate_families(config)
@@ -346,6 +542,27 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
     seed = int(root_seed if root_seed is not None else synthetic["root_seed"])
     if count <= 0 or seed < 0:
         raise SyntheticCorpusError("records_per_family must be positive and root_seed non-negative")
+    cpu_count = os.cpu_count() or 1
+    try:
+        cpu_load_1m = os.getloadavg()[0]
+    except (AttributeError, OSError):
+        cpu_load_1m = 0.0
+    available_cpu_estimate = max(1, int(cpu_count - min(cpu_count - 1, cpu_load_1m)))
+    available_ram_gib = None
+    if hasattr(os, "sysconf"):
+        try:
+            available_ram_gib = (os.sysconf("SC_AVPHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")) / (1024 ** 3)
+        except (ValueError, OSError):
+            available_ram_gib = None
+    ram_worker_cap = max(1, int(available_ram_gib // 2)) if available_ram_gib is not None else 4
+    max_workers = min(32, len(families), available_cpu_estimate, ram_worker_cap)
+    worker_count = min(8, max_workers) if workers is None else int(workers)
+    if worker_count < 1 or worker_count > max_workers:
+        raise SyntheticCorpusError(f"workers must be in [1, {max_workers}] based on current CPU load and available RAM")
+    print(f"Synthetic generation workers: {worker_count}; detected CPUs: {cpu_count}; "
+          f"1m load average: {cpu_load_1m:.2f}; "
+          f"available RAM GiB: {available_ram_gib if available_ram_gib is not None else 'unknown'}",
+          file=sys.stderr, flush=True)
     output = Path(output_dir)
     if output.exists():
         raise FileExistsError(f"refusing to overwrite synthetic corpus output: {output}")
@@ -354,6 +571,7 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
     if stage.exists():
         raise FileExistsError(f"synthetic partial output already exists: {stage}; preserve and inspect it")
     stage.mkdir()
+    total_started = time.perf_counter()
     handles = {}
     prompt_database = None
     try:
@@ -364,6 +582,9 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
         raise
     counts = {split: 0 for split in SPLITS}
     language_counts = {split: {language: 0 for language in sorted(LANGUAGES)} for split in SPLITS}
+    family_counts = {split: defaultdict(int) for split in SPLITS}
+    character_lengths = {split: [] for split in SPLITS}
+    utf8_lengths = {split: [] for split in SPLITS}
     canonical_prompts_by_split: dict[str, set[str]] = {split: set() for split in SPLITS}
     exact_text_seen_by_split: dict[str, set[str]] = {split: set() for split in SPLITS}
     exact_duplicate_text_records = {split: 0 for split in SPLITS}
@@ -372,36 +593,72 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
         "CREATE TABLE prompts (split TEXT NOT NULL, digest TEXT NOT NULL, prompt TEXT NOT NULL, "
         "PRIMARY KEY(split, digest))"
     )
+    prompt_database.execute(
+        "CREATE TABLE prompt_sizes (split TEXT NOT NULL, digest TEXT NOT NULL, shingle_count INTEGER NOT NULL, "
+        "PRIMARY KEY(split, digest))"
+    )
+    prompt_database.execute(
+        "CREATE TABLE prompt_shingles (split TEXT NOT NULL, digest TEXT NOT NULL, shingle TEXT NOT NULL, "
+        "PRIMARY KEY(split, digest, shingle))"
+    )
+    prompt_database.execute("CREATE INDEX prompt_shingles_lookup ON prompt_shingles(shingle, split, digest)")
     functional_splits: dict[str, set[str]] = defaultdict(set)
     families_by_split: dict[str, set[str]] = {split: set() for split in SPLITS}
     templates_by_split: dict[str, set[str]] = {split: set() for split in SPLITS}
     scenarios_by_split: dict[str, set[str]] = {split: set() for split in SPLITS}
     try:
-        for family in families:
+        family_stage = stage / "families"
+        family_stage.mkdir()
+        jobs = [(index, family, count, seed, str(family_stage / f"family-{index:05d}.jsonl"))
+                for index, family in enumerate(families)]
+        if worker_count == 1:
+            generated_files = [_write_family_records(job) for job in jobs]
+        else:
+            with ProcessPoolExecutor(max_workers=worker_count, mp_context=multiprocessing.get_context("spawn")) as executor:
+                generated_files = list(executor.map(_write_family_records, jobs))
+        generated_at = time.perf_counter()
+        print(f"family_generation_seconds={generated_at - total_started:.3f}", file=sys.stderr, flush=True)
+        generated_paths = {index: Path(path) for index, path in generated_files}
+        for family_index, family in enumerate(families):
             split = family["split"]
             families_by_split[split].add(family["family_id"])
             templates_by_split[split].add(family["template_family"])
             scenarios_by_split[split].add(family["scenario_family"])
-            for record in _iter_family_records(family, count, seed):
-                normalized = _normalize_prompt(record["prompt"])
-                structural_sha = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
-                canonical_prompts_by_split[split].add(structural_sha)
-                # Many valid same-split examples differ only in numbers or direction.
-                # Keep one canonical prompt per signature for cross-split near-dedup;
-                # separately report exact rendered-record repetition as a quality signal.
-                prompt_database.execute("INSERT OR IGNORE INTO prompts VALUES (?, ?, ?)",
-                                        (split, structural_sha, normalized))
-                exact_text_sha = hashlib.sha256(record["text"].encode("utf-8")).hexdigest()
-                if exact_text_sha in exact_text_seen_by_split[split]:
-                    exact_duplicate_text_records[split] += 1
-                else:
-                    exact_text_seen_by_split[split].add(exact_text_sha)
-                functional_splits[record["functional_signature"]].add(split)
-                encoded = _canonical(record) + b"\n"
-                if handles[split].write(encoded) != len(encoded):
-                    raise SyntheticCorpusError("short write while publishing a synthetic record")
-                counts[split] += 1
-                language_counts[split][record["language"]] += 1
+            with generated_paths[family_index].open("r", encoding="utf-8") as family_stream:
+                for line in family_stream:
+                    record = json.loads(line)
+                    normalized = _normalize_prompt(record["prompt"])
+                    structural_sha = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+                    canonical_prompts_by_split[split].add(structural_sha)
+                    # Keep one canonical prompt per signature for cross-split checks;
+                    # count exact rendered-record repeats separately as a quality signal.
+                    inserted = prompt_database.execute(
+                        "INSERT OR IGNORE INTO prompts VALUES (?, ?, ?)", (split, structural_sha, normalized)
+                    ).rowcount
+                    if inserted:
+                        shingles = _word_shingles(normalized)
+                        prompt_database.execute("INSERT INTO prompt_sizes VALUES (?, ?, ?)",
+                                                (split, structural_sha, len(shingles)))
+                        prompt_database.executemany(
+                            "INSERT INTO prompt_shingles VALUES (?, ?, ?)",
+                            ((split, structural_sha, _canonical(shingle).decode("utf-8")) for shingle in shingles),
+                        )
+                    exact_text_sha = hashlib.sha256(record["text"].encode("utf-8")).hexdigest()
+                    if exact_text_sha in exact_text_seen_by_split[split]:
+                        exact_duplicate_text_records[split] += 1
+                    else:
+                        exact_text_seen_by_split[split].add(exact_text_sha)
+                    functional_splits[record["functional_signature"]].add(split)
+                    encoded = _canonical(record) + b"\n"
+                    if handles[split].write(encoded) != len(encoded):
+                        raise SyntheticCorpusError("short write while publishing a synthetic record")
+                    counts[split] += 1
+                    language_counts[split][record["language"]] += 1
+                    family_counts[split][family["family_id"]] += 1
+                    character_lengths[split].append(len(record["text"]))
+                    utf8_lengths[split].append(len(record["text"].encode("utf-8")))
+            generated_paths[family_index].unlink()
+        family_stage.rmdir()
         prompt_database.commit()
         for left_index, left in enumerate(SPLITS):
             for right in SPLITS[left_index + 1:]:
@@ -411,19 +668,34 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
                 ).fetchone()
                 if structural_overlap:
                     raise SyntheticCorpusError(f"normalized task duplicates cross {left}/{right}")
-                left_cursor = prompt_database.execute("SELECT prompt FROM prompts WHERE split=? ORDER BY digest", (left,))
-                for (left_prompt,) in left_cursor:
-                    left_shingles = _word_shingles(left_prompt)
-                    right_cursor = prompt_database.execute("SELECT prompt FROM prompts WHERE split=? ORDER BY digest", (right,))
-                    for (right_prompt,) in right_cursor:
-                        if _jaccard(left_shingles, _word_shingles(right_prompt)) >= float(
-                                synthetic["cross_split_near_duplicate_jaccard"]):
-                            raise SyntheticCorpusError(
-                                f"near-duplicate task prompts cross {left}/{right}; review template partitioning"
-                            )
+                threshold = float(synthetic["cross_split_near_duplicate_jaccard"])
+                candidates = prompt_database.execute(
+                    "SELECT l.digest, r.digest, COUNT(*) AS shared, ls.shingle_count, rs.shingle_count "
+                    "FROM prompt_shingles l "
+                    "JOIN prompt_shingles r ON r.shingle=l.shingle "
+                    "JOIN prompt_sizes ls ON ls.split=l.split AND ls.digest=l.digest "
+                    "JOIN prompt_sizes rs ON rs.split=r.split AND rs.digest=r.digest "
+                    "WHERE l.split=? AND r.split=? "
+                    "GROUP BY l.digest, r.digest, ls.shingle_count, rs.shingle_count "
+                    "HAVING COUNT(*) * (1.0 + ?) >= ? * (ls.shingle_count + rs.shingle_count)",
+                    (left, right, threshold, threshold),
+                )
+                for left_digest, right_digest, _shared, _left_size, _right_size in candidates:
+                    left_prompt = prompt_database.execute(
+                        "SELECT prompt FROM prompts WHERE split=? AND digest=?", (left, left_digest)
+                    ).fetchone()[0]
+                    right_prompt = prompt_database.execute(
+                        "SELECT prompt FROM prompts WHERE split=? AND digest=?", (right, right_digest)
+                    ).fetchone()[0]
+                    if _jaccard(_word_shingles(left_prompt), _word_shingles(right_prompt)) >= threshold:
+                        raise SyntheticCorpusError(
+                            f"near-duplicate task prompts cross {left}/{right}; review template partitioning"
+                        )
         crossed_functional = sorted(signature for signature, splits in functional_splits.items() if len(splits) > 1)
         if crossed_functional:
             raise SyntheticCorpusError(f"functional task signatures cross splits: {crossed_functional[:5]}")
+        audited_at = time.perf_counter()
+        print(f"merge_and_integrity_audit_seconds={audited_at - generated_at:.3f}", file=sys.stderr, flush=True)
         for handle in handles.values():
             handle.flush()
             os.fsync(handle.fileno())
@@ -454,6 +726,22 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
             "scenario_families": {split: sorted(values) for split, values in scenarios_by_split.items()},
             "record_counts": counts,
             "record_counts_by_language": language_counts,
+            "record_counts_by_family": {
+                split: dict(sorted(values.items())) for split, values in family_counts.items()
+            },
+            "text_length_characters": {
+                split: _length_summary(values) for split, values in character_lengths.items()
+            },
+            "text_length_utf8_bytes": {
+                split: _length_summary(values) for split, values in utf8_lengths.items()
+            },
+            "tokenizer_build_recommendation": {
+                "status": "recommendation_only_requires_review",
+                "max_chars": sum(character_lengths["train"]),
+                "input_sentence_size": counts["train"],
+                "num_threads": min(16, cpu_count, ram_worker_cap),
+                "vocab_65536_sufficiency": "UNVERIFIED_UNTIL_NATIVE_SENTENCEPIECE_CANDIDATE",
+            },
             "exact_duplicate_text_records": exact_duplicate_text_records,
             "unique_canonical_prompt_signatures": {
                 split: len(signatures) for split, signatures in canonical_prompts_by_split.items()
@@ -471,7 +759,7 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
                 "same_split_exact_text_duplicates_counted": True,
                 "functional_signature_isolation": True,
                 "near_duplicate_method": (
-                    "unique canonical prompts; 3-word-shingle Jaccard after numeric canonicalization"
+                    "SQLite inverted 3-word-shingle candidate index; exact Jaccard after numeric canonicalization"
                 ),
                 "near_duplicate_jaccard_threshold": float(synthetic["cross_split_near_duplicate_jaccard"]),
             },
@@ -481,6 +769,9 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
             json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         os.replace(stage, output)
+        finished_at = time.perf_counter()
+        print(f"hash_and_publish_seconds={finished_at - audited_at:.3f}", file=sys.stderr, flush=True)
+        print(f"synthetic_corpus_total_seconds={finished_at - total_started:.3f}", file=sys.stderr, flush=True)
         return manifest
     except Exception:
         if prompt_database is not None:
@@ -497,9 +788,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--config", default=str(CONFIG_PATH))
     parser.add_argument("--records-per-family", type=int, default=None)
     parser.add_argument("--root-seed", type=int, default=None)
+    parser.add_argument("--workers", type=int, default=None,
+                        help="family workers (default: half of available CPUs, capped at 8)")
     args = parser.parse_args(argv)
     manifest = generate_corpus(args.output_dir, config_path=args.config,
-                               records_per_family=args.records_per_family, root_seed=args.root_seed)
+                               records_per_family=args.records_per_family, root_seed=args.root_seed,
+                               workers=args.workers)
     print(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True))
 
 

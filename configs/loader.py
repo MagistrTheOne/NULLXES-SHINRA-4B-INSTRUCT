@@ -158,8 +158,8 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
     if synthetic.get("external_text_sources_allowed") is not False \
             or synthetic.get("external_llm_generation_allowed") is not False:
         raise ConfigError("Synthetic Engine forbids external text corpora and LLM-generated records")
-    if synthetic.get("engine_version") != "nullxes-synthetic-engine.v1" \
-            or synthetic.get("verifier_version") != "nullxes-synthetic-verifiers.v1":
+    if synthetic.get("engine_version") != "nullxes-synthetic-engine.v2" \
+            or synthetic.get("verifier_version") != "nullxes-synthetic-verifiers.v2":
         raise ConfigError("synthetic engine and answer verifier versions must be explicit")
     if type(synthetic.get("root_seed")) is not int or synthetic["root_seed"] < 0 \
             or type(synthetic.get("records_per_family")) is not int or synthetic["records_per_family"] <= 0:
@@ -188,11 +188,14 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         seen_family_ids.add(family_id)
         if family["language"] not in {"en", "ru"} or family["split"] not in {"train", "validation", "blind"}:
             raise ConfigError(f"synthetic family {family_id} has unsupported language or split")
-        if family["task_kind"] not in {"arithmetic", "mode_transition", "inventory", "location"}:
+        if family["task_kind"] not in {"arithmetic", "mode_transition", "inventory", "location", "grounded_action"}:
             raise ConfigError(f"synthetic family {family_id} has unsupported task kind")
         if family["task_kind"] == "arithmetic" and family.get("operation") not in {
                 "add", "subtract", "multiply", "divide"}:
             raise ConfigError(f"synthetic arithmetic family {family_id} needs a supported operation")
+        if family["task_kind"] == "grounded_action" and family.get("scenario") not in {
+                "stop_obstacle", "cancel_action", "object_presence", "action_sequence"}:
+            raise ConfigError(f"synthetic grounded-action family {family_id} needs a supported scenario")
         for group_field in ("functional_family", "template_family", "scenario_family"):
             group = family[group_field]
             if not isinstance(group, str) or not group:
