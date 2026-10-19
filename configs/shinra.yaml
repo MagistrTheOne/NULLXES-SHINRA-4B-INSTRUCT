@@ -113,6 +113,7 @@ data:
   acquisition: nullxes_synthetic_engine
   training_enabled: false
   corpus_manifest_required: true
+  source_manifest_required: false
   manifest_sha256: null
   split_salt: "NULLXES-SHINRA-SYNTHETIC-v1"
   # Descriptive legacy fields only; the actual split is assigned by isolated semantic families below.

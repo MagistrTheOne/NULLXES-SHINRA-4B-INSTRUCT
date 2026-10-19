@@ -14,6 +14,8 @@ def test_single_config_is_complete_and_training_is_gated():
     assert config["status"] == "data_tokenizer_and_runtime_audit_required"
     assert config["training"]["enabled"] is False
     assert config["data"]["training_enabled"] is False
+    assert config["data"]["corpus_manifest_required"] is True
+    assert config["data"]["source_manifest_required"] is False
     assert config["runtime"]["colab_launch_allowed"] is False
     assert config["identity"]["invariant"] == "SHINRA is SHINRA. Created by NULLXES."
 
@@ -24,7 +26,6 @@ def test_ready_configuration_can_enable_colab_only_after_all_review_gates():
     config["training"]["enabled"] = True
     config["data"]["training_enabled"] = True
     config["runtime"]["colab_launch_allowed"] = True
-    config["data"]["sources"] = [{"id": "audited/source", "revision": "immutable", "status": "approved"}]
     config["tokenizer"]["artifact_sha256"] = "a" * 64
     config["data"]["manifest_sha256"] = "b" * 64
     validate_config(config, require_ready=True)
