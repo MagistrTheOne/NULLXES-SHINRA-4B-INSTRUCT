@@ -127,7 +127,7 @@ data:
   packed_shard_tokens: 100000000
   synthetic:
     enabled: true
-    engine_version: nullxes-synthetic-engine.v3
+    engine_version: nullxes-synthetic-engine.v4
     verifier_version: nullxes-synthetic-verifiers.v3
     root_seed: 20261019
     records_per_family: 4096

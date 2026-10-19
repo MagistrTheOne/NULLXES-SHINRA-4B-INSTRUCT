@@ -25,7 +25,7 @@ from typing import Any, Iterator
 from configs.loader import CONFIG_PATH, load_config
 from data.hashing import sha256_file
 
-ENGINE_VERSION = "nullxes-synthetic-engine.v3"
+ENGINE_VERSION = "nullxes-synthetic-engine.v4"
 CORPUS_SCHEMA = "nullxes.shinra.synthetic-corpus.v1"
 VERIFIER_VERSION = "nullxes-synthetic-verifiers.v3"
 SPLITS = ("train", "validation", "blind")
@@ -358,7 +358,18 @@ def _generate_task(family: dict[str, Any], rng: random.Random, ordinal: int,
         verifier = "state.inventory.v1"
     elif kind == "location":
         directions = ["north", "south", "east", "west"]
-        start = (rng.randint(-100, 100), rng.randint(-100, 100))
+        # The bounded 201x201 coordinate grid has enough unique start points
+        # for the configured family size. An affine permutation with multiplier
+        # 2 is bijective modulo 40401, so each ordinal receives a unique start
+        # point while retaining deterministic, seed-specific placement.
+        grid_size = 201 * 201
+        if ordinal >= grid_size:
+            raise SyntheticCorpusError(
+                f"location family supports at most {grid_size} records without reusing a start point"
+            )
+        family_offset = _seed(root_seed, family["family_id"], 0) % grid_size
+        cell = (2 * ordinal + family_offset) % grid_size
+        start = (cell % 201 - 100, cell // 201 - 100)
         moves = [rng.choice(directions) for _ in range(rng.randint(2, 5))]
         prompt, answer = _render_location(language, start, moves)
         task = {"kind": kind, "start": start, "moves": moves}
@@ -750,6 +761,11 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
                                      else family.get("records_per_family", synthetic["records_per_family"]))
             for family in families
         }
+        for family in families:
+            if family["task_kind"] == "location" and family_record_targets[family["family_id"]] > 201 * 201:
+                raise SyntheticCorpusError(
+                    f"location family {family['family_id']} exceeds the 40401 unique-start-point grid"
+                )
         jobs = [(index, family, family_record_targets[family["family_id"]], seed,
                  str(family_stage / f"family-{index:05d}.jsonl"))
                 for index, family in enumerate(families)]
