@@ -17,7 +17,6 @@ from configs.loader import load_config
 from data.pack import iter_clean_records
 from .bundle import file_sha256, verify_bundle, write_manifest, write_native_metadata
 from .contract import encode_chat, plain_text, special_ids
-from .special_tokens import render_chat_template
 
 
 def audit_corpus(root: Path, config: dict, database: Path) -> dict:
@@ -158,18 +157,92 @@ def evaluate_tokenizer(output: Path, root: Path, manifest: dict, config: dict) -
               " ", "  ", "\t", "\n", "<0x41> <0xFF>"]
     for text in probes:
         check(text)
-    from .native import ShinraNativeTokenizer
-    from .special_tokens import render_chat_template
-    tokenizer = ShinraNativeTokenizer(str(output / "tokenizer.model"), config=config,
-                                     require_frozen_bundle=False)
-    tokenizer.chat_template = render_chat_template(config)
-    chat_ids = encode_chat(tokenizer, [{"role": "user", "content": "  Привет!\n"}],
-                           config["model"]["max_position_embeddings"], config)
     return {"vocab_size": sp.get_piece_size(), "special_ids": expected, "heldout": totals, "languages": languages,
             "bytes_per_token": totals["bytes"] / totals["tokens"], "unk_count": 0,
-            "roundtrip_failures": 0, "chat_roundtrip_verified": True,
-            "chat_contract_tokens": len(chat_ids), "contract_probe_count": len(probes),
+            "roundtrip_failures": 0, "chat_roundtrip_status": "NOT_CHECKED_BUNDLE_NOT_FINALIZED",
+            "contract_probe_count": len(probes),
             "evaluation_split": "validation", "validation_split_sha256": manifest["files"]["validation.jsonl"]}
+
+
+def verify_native_chat_bundle(output: Path, config: dict) -> dict:
+    """Verify the actual packaged Native wrapper after its manifest exists."""
+    from . import load_shinra_tokenizer
+
+    tokenizer = load_shinra_tokenizer(output, config, require_frozen_bundle=False)
+    chat_ids = encode_chat(
+        tokenizer, [{"role": "user", "content": "  Привет!\n"}],
+        config["model"]["max_position_embeddings"], config,
+    )
+    expected = special_ids(config)
+    if not chat_ids or chat_ids[0] != expected[config["tokenizer"]["special_tokens"]["bos"]]:
+        raise ValueError("Native chat template did not emit the configured BOS token")
+    return {"chat_roundtrip_verified": True, "chat_contract_tokens": len(chat_ids)}
+
+
+def _publish_bundle(stage: Path, output: Path, root: Path, manifest: dict, config: dict,
+                    stats: dict, model_sha: str) -> str:
+    stats["native_model_sha256"] = model_sha
+    report = evaluate_tokenizer(stage, root, manifest, config)
+    (stage / "corpus_stats.json").write_text(
+        json.dumps(stats, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    (stage / "tokenizer_stats.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    provenance = {
+        "source_model_sha256": model_sha,
+        "corpus_manifest_sha256": manifest["manifest_sha256"],
+        "generator_version": config["data"]["synthetic"]["engine_version"],
+        "training_split_sha256": manifest["files"]["train.jsonl"],
+    }
+    write_native_metadata(stage, config, provenance=provenance)
+    digest = write_manifest(stage, config, backend="sentencepiece_native", provenance=provenance)
+    verify_bundle(stage, config, require_frozen=False, backend="sentencepiece_native")
+    report.update(verify_native_chat_bundle(stage, config))
+    (stage / "tokenizer_stats.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    digest = write_manifest(stage, config, backend="sentencepiece_native", provenance=provenance)
+    verify_bundle(stage, config, require_frozen=False, backend="sentencepiece_native")
+    if output.exists():
+        raise FileExistsError(f"refusing to overwrite finalized tokenizer bundle: {output}")
+    stage.replace(output)
+    return digest
+
+
+def finalize_candidate(candidate: Path, output: Path, root: Path, config: dict) -> str:
+    """Package a reviewed model candidate without retraining SentencePiece."""
+    if output.exists():
+        raise FileExistsError(f"refusing to overwrite finalized tokenizer bundle: {output}")
+    expected_model_sha = config["tokenizer"].get("native_model_sha256")
+    if not isinstance(expected_model_sha, str) or not expected_model_sha:
+        raise ValueError("freeze the reviewed native_model_sha256 in configs/shinra.yaml first")
+    identity_path = candidate / "candidate_identity.json"
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    if identity.get("status") != "candidate_not_frozen":
+        raise ValueError("tokenizer candidate status is invalid")
+    model_sha = file_sha256(candidate / "tokenizer.model")
+    if model_sha != expected_model_sha or identity.get("native_model_sha256") != model_sha:
+        raise ValueError("candidate tokenizer.model SHA differs from the reviewed YAML identity")
+    audit_parent = output.parent
+    audit_parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=".tokenizer-finalize-", dir=audit_parent) as temporary:
+        temp = Path(temporary)
+        audit = audit_corpus(root, config, temp / "identities.sqlite")
+        manifest = audit["manifest"]
+        if (identity.get("corpus_manifest_sha256") != manifest["manifest_sha256"]
+                or identity.get("training_split_sha256") != manifest["files"]["train.jsonl"]):
+            raise ValueError("candidate was built from a different corpus manifest or training split")
+        if not (candidate / "tokenizer.vocab").is_file():
+            raise ValueError("candidate Native vocabulary file is missing")
+        stage = temp / "bundle"
+        stage.mkdir()
+        shutil.copy2(candidate / "tokenizer.model", stage / "tokenizer.model")
+        shutil.copy2(candidate / "tokenizer.vocab", stage / "tokenizer.vocab")
+        stats_path = candidate / "candidate_corpus_stats.json"
+        stats = json.loads(stats_path.read_text(encoding="utf-8"))
+        digest = _publish_bundle(stage, output, root, manifest, config, stats, model_sha)
+    return digest
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -177,6 +250,10 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--corpus-dir", required=True)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--config", default="configs/shinra.yaml")
+    parser.add_argument(
+        "--finalize-candidate", default=None,
+        help="package this reviewed candidate without rerunning SentencePiece training",
+    )
     args = parser.parse_args(argv)
     config = load_config(args.config)
     build = config["tokenizer"]["build"]
@@ -189,6 +266,10 @@ def main(argv: list[str] | None = None) -> None:
         raise ValueError("SentencePiece sampled input_sentence_size must exceed 100")
     root = Path(args.corpus_dir).resolve()
     output = Path(args.output_dir or config["tokenizer"]["artifact_dir"]).resolve()
+    if args.finalize_candidate:
+        digest = finalize_candidate(Path(args.finalize_candidate).resolve(), output, root, config)
+        print(f"native_tokenizer_bundle_sha256={digest}; tokenizer bundle verified")
+        return
     if output.exists():
         raise FileExistsError(f"refusing to overwrite tokenizer output: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -223,29 +304,29 @@ def main(argv: list[str] | None = None) -> None:
                             "training_split_sha256": manifest["files"]["train.jsonl"]},
                            ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
+            candidate_stats = dict(stats)
+            (stage / "candidate_corpus_stats.json").write_text(
+                json.dumps(candidate_stats, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            candidate_report = evaluate_tokenizer(stage, root, manifest, config)
+            (stage / "candidate_tokenizer_stats.json").write_text(
+                json.dumps(candidate_report, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
             (stage / "identities.sqlite").unlink()
             stage.replace(candidate)
             raise ValueError(
                 "Native model candidate was preserved for review; freeze native_model_sha256 in YAML, "
-                f"then rerun to build and validate the final bundle: candidate={candidate}; sha256={model_sha}"
+                "then rerun with --finalize-candidate to package these exact model bytes without retraining: "
+                f"candidate={candidate}; sha256={model_sha}"
             )
-        stats["native_model_sha256"] = model_sha
-        report = evaluate_tokenizer(stage, root, manifest, config)
         # Recheck inputs after all reads; never publish a bundle from changing files.
         for split in ("train", "validation", "blind"):
             if file_sha256(root / f"{split}.jsonl") != manifest["files"][f"{split}.jsonl"]:
                 raise ValueError("corpus changed during tokenizer build")
-        (stage / "corpus_stats.json").write_text(json.dumps(stats, indent=2) + "\n", encoding="utf-8")
-        (stage / "tokenizer_stats.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         (stage / "identities.sqlite").unlink()
-        provenance = {"source_model_sha256": model_sha,
-                      "corpus_manifest_sha256": manifest["manifest_sha256"],
-                      "generator_version": config["data"]["synthetic"]["engine_version"],
-                      "training_split_sha256": manifest["files"]["train.jsonl"]}
-        write_native_metadata(stage, config, provenance=provenance)
-        digest = write_manifest(stage, config, backend="sentencepiece_native", provenance=provenance)
-        verify_bundle(stage, config, require_frozen=False, backend="sentencepiece_native")
-        stage.replace(output)
+        digest = _publish_bundle(stage, output, root, manifest, config, stats, model_sha)
     print(f"candidate_native_tokenizer_bundle_sha256={digest}; manual review and YAML freeze are required")
 
 
