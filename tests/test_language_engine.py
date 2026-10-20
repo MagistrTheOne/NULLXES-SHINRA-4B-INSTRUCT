@@ -20,6 +20,21 @@ def test_tokenizer_language_records_are_reproducible_bilingual_and_unique(tmp_pa
     assert all(row["text_sha256"] == hashlib.sha256(row["text"].encode()).hexdigest() for row in first)
     assert any("controller" in row["text"] for row in first if row["language"] == "en")
     assert any("Регулятор" in row["text"] for row in first if row["language"] == "ru")
+    assert any(row["domain"] == "distributed_systems" for row in first)
+    assert any(row["domain"] == "robot_trajectory" for row in first)
+
+
+def test_expanded_engine_preserves_claim_order_and_generates_distinct_forms():
+    from data.language_engine import CONCEPTS, _authored_text
+
+    assert len(CONCEPTS) >= 40
+    for concept in CONCEPTS:
+        for language in ("en", "ru"):
+            samples = [_authored_text(concept, language, ordinal) for ordinal in range(128)]
+            assert len(set(samples)) == 128
+            claims = concept[2:6] if language == "en" else concept[6:10]
+            assert all(samples[0].index(claims[index]) < samples[0].index(claims[index + 1])
+                       for index in range(3))
 
 
 def test_tokenizer_language_artifact_is_stream_written_and_reports_measured_stats(tmp_path):

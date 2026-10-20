@@ -906,7 +906,7 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
             os.fsync(handle.fileno())
         for handle in handles.values():
             handle.close()
-        from data.language_engine import ENGINE_VERSION as LANGUAGE_ENGINE_VERSION, write_corpus
+        from data.language_engine import ENGINE_VERSION as LANGUAGE_ENGINE_VERSION, SCHEMA as LANGUAGE_SCHEMA, write_corpus
 
         language_policy = config["data"]["tokenizer_language"]
         language_path = stage / language_policy["artifact_name"]
@@ -939,7 +939,7 @@ def generate_corpus(output_dir: str | Path, *, config_path: str | Path = CONFIG_
             "verifier_version": VERIFIER_VERSION,
             "generator_source_sha256": generator_source_sha,
             "tokenizer_language_corpus": {
-                "schema": "nullxes.shinra.tokenizer-language-corpus.v1",
+                "schema": LANGUAGE_SCHEMA,
                 "purpose": "tokenizer_training_only",
                 "engine_version": LANGUAGE_ENGINE_VERSION,
                 "source_sha256": language_source_sha,

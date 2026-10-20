@@ -14,7 +14,7 @@ from contextlib import closing
 from pathlib import Path
 
 from configs.loader import load_config
-from data.language_engine import _sha_bytes
+from data.language_engine import RECORD_SCHEMA, SCHEMA as LANGUAGE_SCHEMA, _sha_bytes
 from data.pack import iter_clean_records
 from .bundle import file_sha256, verify_bundle, write_manifest, write_native_metadata
 from .contract import encode_chat, plain_text, special_ids
@@ -39,7 +39,7 @@ def audit_corpus(root: Path, config: dict, database: Path) -> dict:
     if frozen and frozen != claimed:
         raise ValueError("corpus manifest differs from configured identity")
     language = manifest.get("tokenizer_language_corpus")
-    if not isinstance(language, dict) or language.get("schema") != "nullxes.shinra.tokenizer-language-corpus.v1" \
+    if not isinstance(language, dict) or language.get("schema") != LANGUAGE_SCHEMA \
             or language.get("purpose") != "tokenizer_training_only" \
             or language.get("external_text_sources") != [] \
             or language.get("external_llm_generation") is not False:
@@ -88,7 +88,7 @@ def audit_corpus(root: Path, config: dict, database: Path) -> dict:
                     row = json.loads(line)
                 except json.JSONDecodeError as exc:
                     raise ValueError(f"{language_path}:{line_number}: malformed tokenizer-only JSON") from exc
-                if not isinstance(row, dict) or row.get("schema") != "nullxes.shinra.tokenizer-language-record.v1" \
+                if not isinstance(row, dict) or row.get("schema") != RECORD_SCHEMA \
                         or row.get("purpose") != "tokenizer_training_only" \
                         or row.get("generator_version") != language.get("engine_version") \
                         or row.get("language") not in language_counts:
