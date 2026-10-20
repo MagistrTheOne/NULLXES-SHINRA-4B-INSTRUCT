@@ -77,7 +77,6 @@ CONCEPTS: tuple[tuple[str, ...], ...] = (
     ("decision_constraints", "reasoning", "A constrained decision selects an available action that satisfies required conditions.", "The objective ranks feasible choices according to a stated preference.", "A hard constraint removes an action even when its score is otherwise high.", "If no feasible action remains, the system should report that fact instead of inventing one.", "Решение с ограничениями выбирает доступное действие, удовлетворяющее обязательным условиям.", "Целевая функция ранжирует допустимые варианты согласно заданному предпочтению.", "Жёсткое ограничение исключает действие даже при высокой оценке.", "Если допустимых действий не осталось, система должна сообщить об этом, а не выдумывать вариант."),
     ("versioned_interfaces", "engineering", "An interface contract defines the inputs and outputs expected by connected components.", "A version change can alter meaning even when field names remain unchanged.", "Compatibility checks should test behavior as well as data shape.", "An undocumented assumption becomes a failure point when components evolve independently.", "Контракт интерфейса определяет входы и выходы связанных компонентов.", "Изменение версии может изменить смысл, даже если названия полей сохранились.", "Проверка совместимости должна охватывать поведение, а не только форму данных.", "Недокументированное предположение становится точкой отказа при независимом развитии компонентов."),
 )
-)
 
 _WORD = re.compile(r"[^\W\d_]+(?:['’-][^\W\d_]+)*", re.UNICODE)
 
