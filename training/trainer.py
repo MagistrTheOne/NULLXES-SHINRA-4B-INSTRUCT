@@ -286,46 +286,55 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
             raise ShardIdentityError("resume checkpoint admission differs from the explicitly selected run mode")
         if resumed_bundle_sha != bundle_sha:
             raise ShardIdentityError("resume checkpoint Native tokenizer bundle differs from the selected bundle")
-    if cfg.stage != "pretrain":
+    if cfg.stage not in {"pretrain", "identity-only"}:
         raise SystemExit("only causal pretraining is active; instruction tuning is a future phase")
-    corpus_root = cfg.data_dir
-    data_manifest_path = corpus_root / "manifest.json"
-    if not data_manifest_path.is_file():
-        raise FileNotFoundError("training data manifest.json is required")
-    data_manifest = json.loads(data_manifest_path.read_text(encoding="utf-8"))
-    if data_manifest.get("schema") != "nullxes.shinra.synthetic-corpus.v1" \
-            or data_manifest.get("external_text_sources") != [] \
-            or data_manifest.get("external_llm_generation") is not False \
-            or data_manifest.get("training_enabled") is not False:
-        raise ShardIdentityError("training corpus manifest violates the NULLXES synthetic-only audit contract")
-    if not isinstance(data_manifest.get("generator_source_sha256"), str) \
-            or not re.fullmatch(r"[a-f0-9]{64}", data_manifest["generator_source_sha256"]):
-        raise ShardIdentityError("training corpus manifest lacks a valid Synthetic Engine source identity")
-    split_hashes = data_manifest.get("split_hashes")
-    if not isinstance(split_hashes, dict) or set(split_hashes) != {"train", "validation", "blind"} \
-            or any(not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value)
-                   for value in split_hashes.values()):
-        raise ShardIdentityError("training corpus manifest lacks all three valid frozen split identities")
-    if data_manifest.get("train_hash") != split_hashes["train"] \
-            or data_manifest.get("validation_hash") != split_hashes["validation"] \
-            or data_manifest.get("blind_hash") != split_hashes["blind"]:
-        raise ShardIdentityError("training corpus split aliases differ from the manifest split inventory")
-    if len(set(split_hashes.values())) != 3:
-        raise ShardIdentityError("training corpus split identities overlap")
-    expected_counts = data_manifest.get("record_counts", {})
-    if not isinstance(expected_counts, dict) or set(expected_counts) != {"train", "validation", "blind"} \
-            or any(type(value) is not int or value <= 0 for value in expected_counts.values()):
-        raise ShardIdentityError("training corpus manifest must declare nonempty measured split record counts")
-    if data_manifest.get("purpose") != "pretraining" or data_manifest.get("admission") != "audit_only":
-        raise ShardIdentityError("diagnostic audit mode requires an audit_only synthetic pretraining corpus")
-    manifest_sha = data_manifest.get("manifest_sha256")
-    manifest_without_self_hash = dict(data_manifest)
-    manifest_without_self_hash.pop("manifest_sha256", None)
-    expected_manifest_sha = hashlib.sha256(json.dumps(manifest_without_self_hash, sort_keys=True).encode()).hexdigest()
-    if manifest_sha != expected_manifest_sha:
-        raise ShardIdentityError("corpus manifest self-hash is invalid")
-    if approved["data"].get("manifest_sha256") != manifest_sha:
-        raise ShardIdentityError("dataset manifest SHA256 does not match configs/shinra.yaml")
+    identity_splits = None
+    if cfg.stage == "identity-only":
+        from .identity_data import read_identity
+        if cfg.max_steps != 100 or cfg.schedule_steps != 100:
+            raise ValueError("identity-only requires exactly 100 total optimizer steps")
+        data_manifest, identity_splits = read_identity(cfg.data_dir, approved["data"]["manifest_sha256"])
+        manifest_sha = data_manifest["manifest_sha256"]
+        data_manifest = {**data_manifest, "admission": "audit_only"}
+    else:
+        corpus_root = cfg.data_dir
+        data_manifest_path = corpus_root / "manifest.json"
+        if not data_manifest_path.is_file():
+            raise FileNotFoundError("training data manifest.json is required")
+        data_manifest = json.loads(data_manifest_path.read_text(encoding="utf-8"))
+        if data_manifest.get("schema") != "nullxes.shinra.synthetic-corpus.v1" \
+                or data_manifest.get("external_text_sources") != [] \
+                or data_manifest.get("external_llm_generation") is not False \
+                or data_manifest.get("training_enabled") is not False:
+            raise ShardIdentityError("training corpus manifest violates the NULLXES synthetic-only audit contract")
+        if not isinstance(data_manifest.get("generator_source_sha256"), str) \
+                or not re.fullmatch(r"[a-f0-9]{64}", data_manifest["generator_source_sha256"]):
+            raise ShardIdentityError("training corpus manifest lacks a valid Synthetic Engine source identity")
+        split_hashes = data_manifest.get("split_hashes")
+        if not isinstance(split_hashes, dict) or set(split_hashes) != {"train", "validation", "blind"} \
+                or any(not isinstance(value, str) or not re.fullmatch(r"[a-f0-9]{64}", value)
+                       for value in split_hashes.values()):
+            raise ShardIdentityError("training corpus manifest lacks all three valid frozen split identities")
+        if data_manifest.get("train_hash") != split_hashes["train"] \
+                or data_manifest.get("validation_hash") != split_hashes["validation"] \
+                or data_manifest.get("blind_hash") != split_hashes["blind"]:
+            raise ShardIdentityError("training corpus split aliases differ from the manifest split inventory")
+        if len(set(split_hashes.values())) != 3:
+            raise ShardIdentityError("training corpus split identities overlap")
+        expected_counts = data_manifest.get("record_counts", {})
+        if not isinstance(expected_counts, dict) or set(expected_counts) != {"train", "validation", "blind"} \
+                or any(type(value) is not int or value <= 0 for value in expected_counts.values()):
+            raise ShardIdentityError("training corpus manifest must declare nonempty measured split record counts")
+        if data_manifest.get("purpose") != "pretraining" or data_manifest.get("admission") != "audit_only":
+            raise ShardIdentityError("diagnostic audit mode requires an audit_only synthetic pretraining corpus")
+        manifest_sha = data_manifest.get("manifest_sha256")
+        manifest_without_self_hash = dict(data_manifest)
+        manifest_without_self_hash.pop("manifest_sha256", None)
+        expected_manifest_sha = hashlib.sha256(json.dumps(manifest_without_self_hash, sort_keys=True).encode()).hexdigest()
+        if manifest_sha != expected_manifest_sha:
+            raise ShardIdentityError("corpus manifest self-hash is invalid")
+        if approved["data"].get("manifest_sha256") != manifest_sha:
+            raise ShardIdentityError("dataset manifest SHA256 does not match configs/shinra.yaml")
 
     if not Path("/content").exists():
         raise RuntimeError("training is restricted to the approved Google Colab runtime")
@@ -369,29 +378,39 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
         )
     if not approved["tokenizer"].get("artifact_sha256"):
         raise RuntimeError("tokenizer artifact SHA256 is not frozen")
-    heldout_dir = cfg.heldout_dir or cfg.data_dir / "validation"
-    if not heldout_dir.is_dir():
-        raise FileNotFoundError("held-out validation data is required")
-    train_dir = cfg.data_dir / "train"
-    train_data = load_packed_dataset(train_dir, config=approved, expected_split="train",
-                                     allow_audit_data=True, include_row_indices=True)
-    validation_data = load_packed_dataset(heldout_dir, config=approved, expected_split="validation",
-                                         allow_audit_data=True)
-    if train_data.tokenizer_bundle_sha256 != bundle_sha or validation_data.tokenizer_bundle_sha256 != bundle_sha:
-        raise ShardIdentityError("packed train/validation tokenizer bundle differs from the verified selected bundle")
-    if train_data.admission != "audit_only" or validation_data.admission != "audit_only":
-        raise ShardIdentityError("diagnostic audit mode requires audit_only packed train and validation artifacts")
-    packed_manifest_shas = {"train": train_data.packed_manifest_sha256,
-                            "validation": validation_data.packed_manifest_sha256}
-    packed_data_manifests_sha = _sha(packed_manifest_shas)
-    if not data_manifest.get("train_hash") or not data_manifest.get("validation_hash") or not data_manifest.get("blind_hash"):
-        raise ShardIdentityError("manifest missing frozen train/validation/blind split hashes")
-    if len({data_manifest["train_hash"], data_manifest["validation_hash"], data_manifest["blind_hash"]}) != 3:
-        raise ShardIdentityError("train/evaluation split hashes overlap")
-    if getattr(train_data, "corpus_manifest_sha256", None) != manifest_sha:
-        raise ShardIdentityError("packed train corpus manifest differs from frozen manifest")
-    if getattr(validation_data, "corpus_manifest_sha256", None) != manifest_sha:
-        raise ShardIdentityError("packed validation corpus manifest differs from frozen manifest")
+    if cfg.stage == "identity-only":
+        from .identity_data import IdentityDataset
+        identity_tokenizer = load_shinra_tokenizer(cfg.tokenizer_path, approved, require_frozen_bundle=True)
+        train_data = IdentityDataset(identity_splits["train"], identity_tokenizer, approved,
+                                     manifest_sha, bundle_sha, include_row_indices=True)
+        validation_data = IdentityDataset(identity_splits["validation"], identity_tokenizer,
+                                          approved, manifest_sha, bundle_sha)
+        packed_data_manifests_sha = _sha({"train": train_data.packed_manifest_sha256,
+                                         "validation": validation_data.packed_manifest_sha256})
+    else:
+        heldout_dir = cfg.heldout_dir or cfg.data_dir / "validation"
+        if not heldout_dir.is_dir():
+            raise FileNotFoundError("held-out validation data is required")
+        train_dir = cfg.data_dir / "train"
+        train_data = load_packed_dataset(train_dir, config=approved, expected_split="train",
+                                         allow_audit_data=True, include_row_indices=True)
+        validation_data = load_packed_dataset(heldout_dir, config=approved, expected_split="validation",
+                                             allow_audit_data=True)
+        if train_data.tokenizer_bundle_sha256 != bundle_sha or validation_data.tokenizer_bundle_sha256 != bundle_sha:
+            raise ShardIdentityError("packed train/validation tokenizer bundle differs from the verified selected bundle")
+        if train_data.admission != "audit_only" or validation_data.admission != "audit_only":
+            raise ShardIdentityError("diagnostic audit mode requires audit_only packed train and validation artifacts")
+        packed_manifest_shas = {"train": train_data.packed_manifest_sha256,
+                                "validation": validation_data.packed_manifest_sha256}
+        packed_data_manifests_sha = _sha(packed_manifest_shas)
+        if not data_manifest.get("train_hash") or not data_manifest.get("validation_hash") or not data_manifest.get("blind_hash"):
+            raise ShardIdentityError("manifest missing frozen train/validation/blind split hashes")
+        if len({data_manifest["train_hash"], data_manifest["validation_hash"], data_manifest["blind_hash"]}) != 3:
+            raise ShardIdentityError("train/evaluation split hashes overlap")
+        if getattr(train_data, "corpus_manifest_sha256", None) != manifest_sha:
+            raise ShardIdentityError("packed train corpus manifest differs from frozen manifest")
+        if getattr(validation_data, "corpus_manifest_sha256", None) != manifest_sha:
+            raise ShardIdentityError("packed validation corpus manifest differs from frozen manifest")
     # Gradient accumulation is advanced explicitly below. Keeping the Accelerator
     # unaware of DataLoaders and accumulation phases avoids hidden lookahead or
     # phase state that would have to be reconstructed after a Colab disconnect.
@@ -412,7 +431,7 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
     training_config_sha = _sha({"training": approved["training"], "budget_kind": cfg.budget_kind,
                                 "target_tokens": cfg.max_tokens, "language_mix": approved["data"]["mix"],
                                 "packed_data_manifests_sha256": packed_data_manifests_sha,
-                                "admission": cfg.admission, "schedule_steps": cfg.schedule_steps})
+                                "admission": cfg.admission, "schedule_steps": cfg.schedule_steps, "stage": cfg.stage})
     resume_state = None
     if cfg.resume_from:
         state_file = cfg.resume_from / "trainer_state.pt"
@@ -668,7 +687,7 @@ def _run_lm_training(cfg: TrainConfig) -> dict:
         )
     if mix_report["absolute_token_imbalance"] > max_row_targets:
         raise RuntimeError("actual EN/RU supervised-token mix exceeded one packed-row tolerance")
-    completed = consumed >= cfg.max_tokens
+    completed = step == 100 if cfg.stage == "identity-only" else consumed >= cfg.max_tokens
     status = "complete" if completed else "budget_incomplete"
     training_metrics = {
         "admission": cfg.admission,

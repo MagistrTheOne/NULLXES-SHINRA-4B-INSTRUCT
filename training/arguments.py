@@ -77,7 +77,7 @@ def build_train_config(stage: str, args: argparse.Namespace) -> TrainConfig:
         raise ValueError("diagnostic training requires frozen Native tokenizer and synthetic corpus identities")
     if raw["model"].get("loss_memory_status") != "runtime_verified":
         raise ValueError("diagnostic training is blocked until chunked loss memory and gradients are verified remotely")
-    if stage != "pretrain":
+    if stage not in {"pretrain", "identity-only"}:
         raise ValueError("diagnostic audit mode is available only for causal pretraining")
     train, model = raw["training"], raw["model"]
     opt, sched = train["optimizer"], train["scheduler"]
@@ -92,6 +92,13 @@ def build_train_config(stage: str, args: argparse.Namespace) -> TrainConfig:
     if not isinstance(budget_tokens, int) or budget_tokens <= 0:
         raise ValueError(f"training.{budget_kind}_tokens must be approved and positive before this budget can run")
     schedule_steps = math.ceil(budget_tokens / int(train["global_tokens_per_update"]))
+    if stage == "identity-only":
+        if diagnostic_steps not in (None, 100):
+            raise ValueError("identity-only stage requires 100 total optimizer steps")
+        max_steps = schedule_steps = 100
+        maximum_targets = max_steps * int(train["gradient_accumulation_steps"]) * int(train["micro_batch_size"]) * (int(train["sequence_length"]) - 1)
+        if budget_tokens < maximum_targets:
+            raise ValueError("diagnostic token budget could stop identity training before step 100")
     admission = "diagnostic_audit"
     default_output = Path(raw["checkpoint"]["output_dir"]) / "diagnostic-audit"
     output = Path(args.output_dir or default_output)
@@ -125,7 +132,7 @@ def build_train_config(stage: str, args: argparse.Namespace) -> TrainConfig:
         seed=int(train["seed"]),
         logging_steps=int(train["logging_steps"]),
         eval_steps=int(train["eval_steps"]),
-        save_steps=1,
+        save_steps=int(train["save_steps"]) if stage == "identity-only" else 1,
         gradient_checkpointing=bool(train["gradient_checkpointing"]),
         attention_implementation=str(model["attention_implementation"]),
         dataloader_num_workers=int(train["dataloader_num_workers"]),
