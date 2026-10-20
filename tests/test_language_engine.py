@@ -20,14 +20,16 @@ def test_tokenizer_language_records_are_reproducible_bilingual_and_unique(tmp_pa
     assert all(row["text_sha256"] == hashlib.sha256(row["text"].encode()).hexdigest() for row in first)
     assert any("controller" in row["text"] for row in first if row["language"] == "en")
     assert any("Регулятор" in row["text"] for row in first if row["language"] == "ru")
-    assert any(row["domain"] == "distributed_systems" for row in first)
-    assert any(row["domain"] == "robot_trajectory" for row in first)
+    assert any(row["family_id"] == "language.distributed_systems.v3" for row in first)
+    assert any(row["family_id"] == "language.robot_trajectory.v3" for row in first)
+    assert any(row["family_id"] == "language.morphology.v3" for row in first)
 
 
 def test_expanded_engine_preserves_claim_order_and_generates_distinct_forms():
     from data.language_engine import CONCEPTS, _authored_text
 
-    assert len(CONCEPTS) >= 40
+    assert len(CONCEPTS) >= 100
+    assert len({concept[0] for concept in CONCEPTS}) == len(CONCEPTS)
     for concept in CONCEPTS:
         for language in ("en", "ru"):
             samples = [_authored_text(concept, language, ordinal) for ordinal in range(128)]
@@ -52,6 +54,22 @@ def test_tokenizer_language_artifact_is_stream_written_and_reports_measured_stat
     assert set(first["records_by_language"]) == {"en", "ru"}
     assert first["records_by_language"]["en"] == first["records_by_language"]["ru"]
     assert not (tmp_path / "train.jsonl").exists()
+    from data.language_engine import _WORD
+    measured = {language: set() for language in ("en", "ru")}
+    totals = {language: 0 for language in ("en", "ru")}
+    for row in rows:
+        tokens = [token.casefold() for token in _WORD.findall(row["text"])]
+        measured[row["language"]].update(tokens)
+        totals[row["language"]] += len(tokens)
+    assert first["unique_casefolded_word_forms_by_language"] == {
+        language: len(tokens) for language, tokens in measured.items()
+    }
+    assert first["alphabetic_word_tokens_by_language"] == totals
+    assert first["lexical_type_token_ratio_by_language"] == {
+        language: round(len(measured[language]) / totals[language], 6)
+        for language in ("en", "ru")
+    }
+    assert first["concept_count"] >= 100
 
 
 def test_sentencepiece_reads_tokenizer_only_file_not_model_training_splits(tmp_path, monkeypatch):

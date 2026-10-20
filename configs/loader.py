@@ -239,7 +239,7 @@ def validate_config(config: dict[str, Any], *, require_ready: bool = False) -> N
         raise ConfigError("identity foundation must contain exactly 1400 configured train records per language")
     tokenizer_language = data.get("tokenizer_language", {})
     if tokenizer_language.get("enabled") is not True \
-            or tokenizer_language.get("engine_version") != "nullxes-native-language-engine.v2" \
+            or tokenizer_language.get("engine_version") != "nullxes-native-language-engine.v3" \
             or type(tokenizer_language.get("records_per_concept")) is not int \
             or not 1 <= tokenizer_language["records_per_concept"] <= 128 \
             or tokenizer_language.get("purpose") != "tokenizer_training_only" \
